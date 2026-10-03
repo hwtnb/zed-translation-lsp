@@ -4507,11 +4507,11 @@ mod chatgpt_tests {
         assert_eq!(request.method, "window/showMessageRequest");
         assert_eq!(
             request.params["actions"],
-            json!([{"title":"Synthetic model (synthetic-model)"},{"title":"Second (second)"}])
+            json!([{"title":"Synthetic model (synthetic-model) [current]"},{"title":"Second (second)"}])
         );
         server.ui.response(Response::new_ok(
             request.id,
-            json!({"title":"Synthetic model (synthetic-model)"}),
+            json!({"title":"Synthetic model (synthetic-model) [current]"}),
         ));
         server
             .finish(&connection, next(&completions).await)

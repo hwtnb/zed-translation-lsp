@@ -68,9 +68,13 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 対応する文書でCode Actions（macOSでは `⌘.`）を開き、`Connection and settings…` から `Continue with ChatGPT / Choose account` を実行します。アカウントの選択肢から新規追加または保存済みの登録を選び、ブラウザで認証と利用許可を完了してください。設定の読込、候補一覧の表示、Hoverだけでは認証を開始しません。利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。モデル一覧は利用可能なとき、サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
 
 - `Enable ChatGPT plan use` は、サインイン済みでプラン利用が許可されていない場合に使います。
-- `ChatGPT models` は、選択したアカウントのモデル一覧を表示します。この一覧は、対応するモデルの完全な一覧ではありません。一覧にあるslugも無いslugも `provider.model` に指定でき、利用可否は翻訳APIの応答で確認します。一覧の表示ではモデルを選択・適用しません。設定を編集し、言語サーバーを再起動してください。
+- `ChatGPT models` は、選択したアカウントの一覧と、実行中のモデル・推論強度を表示します。候補は取得した順に並び、実行中のモデルが一覧にある場合は `[current]` が付きます。推論強度の省略は `API default (not specified)`、明示した `none` は `none` と表示します。表示対象の一覧に無いモデルには `Not listed in this catalog` と表示し、候補が空なら表示対象のモデルが返されなかったことを案内します。どちらも非対応という意味ではありません。一覧は網羅的ではなく、記載の有無にかかわらず利用可否は翻訳APIが判断します。
 - `ChatGPT Usage` は、[ChatGPTの使用量設定](https://chatgpt.com/settings/usage)を開きます。利用枠やcreditsの許可はこの設定に従います。
 - `Sign out of ChatGPT` は、現在の登録のセッション終了を試み、その登録の認証情報を削除します。別の登録は残ります。通信のため終了を確認できなかった場合は案内に従ってChatGPT設定からアプリを切断できます。
+
+一覧の候補を押すと、設定用のslugと編集手順を表示します。一覧を開く・候補を押す・閉じる操作では、モデルと推論強度は変わりません。変更するには `zed: open settings file` を実行し、`lsp.zed-code-translation.initialization_options.provider.model` を編集します。必要に応じて `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` も指定し、APIの既定値を使う場合は省略してください。設定を保存してから、言語サーバーを再起動します。
+
+通知を自動で閉じるかどうかはZedの設定に従うため、案内を残すには表示中に `Copy Description` を使ってください。
 
 認証情報は拡張専用のローカル保存先に保持します。macOSでは `~/Library/Application Support/zed-code-translation/` です。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
 

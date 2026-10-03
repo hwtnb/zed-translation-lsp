@@ -284,22 +284,73 @@ impl TranslationProvider for ChatGptProvider {
                 let models = self
                     .unchanged(&access.key, self.catalog(&access.credentials.access_token))
                     .await?;
-                let choices: Vec<_> = models
+                let visible: Vec<_> = models
                     .iter()
                     .filter(|model| model.visibility == "list")
-                    .map(|model| format!("{} ({})", model.display_name, model.slug))
+                    .collect();
+                let effort_value = json!(self.effort);
+                let effort = effort_value
+                    .as_str()
+                    .unwrap_or("API default (not specified)");
+                let listed = visible.iter().any(|model| model.slug == self.model);
+                let current = format!(
+                    "- Current model: {}{}.\n- Current reasoning effort: {effort}.",
+                    self.model,
+                    if listed {
+                        ""
+                    } else {
+                        " (Not listed in this catalog)"
+                    },
+                );
+                let catalog_note =
+                    "This catalog is not exhaustive. The API determines availability.";
+                let instructions = concat!(
+                    "1. Open `zed: open settings file`.\n",
+                    "2. Edit these settings:\n",
+                    "   - `lsp.zed-code-translation.initialization_options.provider.model`\n",
+                    "   - `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` (optional)\n",
+                    "3. Save, then restart the language server."
+                );
+                if visible.is_empty() {
+                    return Ok(format!(
+                        "No models marked for display were returned. Settings unchanged.\n\n\
+                         {current}\n\n{catalog_note}\n\n{instructions}"
+                    ));
+                }
+                let choices: Vec<_> = visible
+                    .iter()
+                    .map(|model| {
+                        format!(
+                            "{} ({}){}",
+                            model.display_name,
+                            model.slug,
+                            if model.slug == self.model {
+                                " [current]"
+                            } else {
+                                ""
+                            },
+                        )
+                    })
                     .collect();
                 let selected = ui
                     .choose(
-                        concat!(
-                    "Available ChatGPT models, in account catalog order. Set provider.model ",
-                    "to the chosen slug in initialization_options, then restart the language ",
-                    "server. Reasoning effort support is checked by the API."
-                ),
+                        &format!(
+                            "Model catalog for reference only. Choosing an entry does not apply or save settings.\n\n\
+                             {current}\n\n{catalog_note}"
+                        ),
                         &choices,
                     )
                     .await?;
-                Ok(selected.map_or_else(|| "Model selection cancelled.".into(), |model| format!("Selected {model}. Update provider.model and restart the language server.")))
+                let notice = match selected
+                    .and_then(|title| choices.iter().position(|choice| *choice == title))
+                {
+                    Some(index) => format!(
+                        "Settings unchanged. Model slug for settings: {}.\n\n{current}\n\n{instructions}",
+                        visible[index].slug,
+                    ),
+                    None => format!("Catalog closed. Settings unchanged.\n\n{current}"),
+                };
+                Ok(notice)
             }
             _ => Err(Error::failed("Unknown ChatGPT command")),
         }
@@ -639,8 +690,205 @@ fn error_keys(value: &Value, secrets: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use lsp_server::{Connection, Message, Response};
+
+    use crate::lsp::ui::UiCapabilities;
+
     use super::test_support::Fixture;
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn catalog_is_reference_only_and_keeps_inference_settings() {
+        for (model, effort, chosen, effort_label, listed) in [
+            (
+                "synthetic-model",
+                Some(ReasoningEffort::Low),
+                Some("Second (second)"),
+                "low",
+                true,
+            ),
+            (
+                "unlisted-model",
+                None,
+                Some("Synthetic model (synthetic-model)"),
+                "API default (not specified)",
+                false,
+            ),
+            ("hidden", Some(ReasoningEffort::None), None, "none", false),
+            (
+                "synthetic-model",
+                Some(ReasoningEffort::High),
+                None,
+                "high",
+                true,
+            ),
+            ("second", Some(ReasoningEffort::Max), None, "max", true),
+        ] {
+            let fixture = Fixture::new().await;
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let before = auth.store.snapshot().unwrap().unwrap();
+            let mut provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                model.into(),
+            );
+            provider.effort = effort;
+            let context = provider.context().unwrap();
+            let (connection, client) = Connection::memory();
+            let ui = Ui::new(connection.sender, UiCapabilities::default());
+            let reply = async {
+                let Message::Request(request) = tokio::task::spawn_blocking(move || {
+                    client
+                        .receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap()
+                })
+                .await
+                .unwrap() else {
+                    panic!("Expected a catalog prompt");
+                };
+                assert_eq!(request.method, "window/showMessageRequest");
+                let message = request.params["message"].as_str().unwrap();
+                assert!(message.starts_with("Model catalog for reference only."));
+                assert!(message.contains("does not apply or save settings"));
+                assert!(message.contains(&format!("Current model: {model}")));
+                assert!(message.contains(&format!("Current reasoning effort: {effort_label}")));
+                assert_eq!(message.contains("Not listed in this catalog"), !listed);
+                assert!(message.contains("not exhaustive"));
+                let paragraphs: Vec<_> = message.split("\n\n").collect();
+                assert_eq!(
+                    paragraphs.len(),
+                    3,
+                    "Reference, current values, and catalog limits need separate Markdown paragraphs"
+                );
+                assert!(paragraphs[1].starts_with("- Current model:"));
+                assert!(paragraphs[1].contains("\n- Current reasoning effort:"));
+                assert_eq!(
+                    request.params["actions"],
+                    json!([
+                        {"title": if model == "synthetic-model" {"Synthetic model (synthetic-model) [current]"} else {"Synthetic model (synthetic-model)"}},
+                        {"title": if model == "second" {"Second (second) [current]"} else {"Second (second)"}}
+                    ])
+                );
+                ui.response(Response::new_ok(
+                    request.id,
+                    chosen.map_or(Value::Null, |title| json!({"title":title})),
+                ));
+            };
+            let (notice, ()) = tokio::join!(
+                provider.administer("zed-code-translation.models", &ui),
+                reply
+            );
+            let notice = notice.unwrap();
+            assert!(notice.contains("Settings unchanged."));
+            assert!(notice.contains(&format!("Current model: {model}")));
+            assert!(notice.contains(&format!("Current reasoning effort: {effort_label}")));
+            if chosen.is_some() {
+                let paragraphs: Vec<_> = notice.split("\n\n").collect();
+                assert_eq!(
+                    paragraphs.len(),
+                    3,
+                    "Reviewed slug, current values, and settings steps need separate Markdown paragraphs"
+                );
+                assert!(paragraphs[1].starts_with("- Current model:"));
+                assert!(paragraphs[2].starts_with("1. Open `zed: open settings file`."));
+                let slug = if listed { "second" } else { "synthetic-model" };
+                assert!(notice.contains(&format!("Model slug for settings: {slug}")));
+                for setting in ["model", "reasoning_effort"] {
+                    assert!(notice.contains(&format!(
+                        "lsp.zed-code-translation.initialization_options.provider.{setting}"
+                    )));
+                }
+                assert!(notice.contains("zed: open settings file"));
+                assert!(notice.contains("Save, then restart the language server"));
+                assert!(notice.contains(
+                    "\n   - `lsp.zed-code-translation.initialization_options.provider.model`"
+                ));
+            } else {
+                assert!(notice.starts_with("Catalog closed."));
+                assert!(notice.contains("\n\n- Current model:"));
+            }
+            let after = auth.store.snapshot().unwrap().unwrap();
+            assert_eq!(before.revision, after.revision);
+            assert_eq!(json!(before.state), json!(after.state));
+            assert_eq!(provider.context().unwrap(), context);
+            provider
+                .translate("Translate this.", "ja", context)
+                .await
+                .unwrap();
+            let state = fixture.state.lock().unwrap();
+            assert_eq!(state.records.len(), 2);
+            assert_eq!(state.records[0].path, "/v1/models");
+            assert_eq!(state.records[1].path, "/v1/responses");
+            assert!(
+                state
+                    .records
+                    .iter()
+                    .all(|record| record.authorization == "Bearer synthetic-access-0")
+            );
+            let body: Value = serde_json::from_str(&state.records[1].body).unwrap();
+            assert_eq!(body["model"], model);
+            if let Some(effort) = effort {
+                assert_eq!(body["reasoning"]["effort"], json!(effort));
+            } else {
+                assert!(body.get("reasoning").is_none());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn catalog_without_visible_models_is_not_an_availability_error() {
+        for hidden_only in [false, true] {
+            let fixture = Fixture::new().await;
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .models
+                .retain(|model| hidden_only && model["visibility"] == "hidden");
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                "unlisted-model".into(),
+            );
+            let context = provider.context().unwrap();
+            let before = auth.store.snapshot().unwrap().unwrap();
+            let (connection, client) = Connection::memory();
+            let ui = Ui::new(connection.sender, UiCapabilities::default());
+            let notice = tokio::time::timeout(
+                Duration::from_secs(2),
+                provider.administer("zed-code-translation.models", &ui),
+            )
+            .await
+            .expect("A catalog without visible entries must not open an empty picker")
+            .unwrap();
+            assert!(notice.contains("No models marked for display were returned"));
+            assert!(notice.contains("Settings unchanged."));
+            assert!(notice.contains("Current model: unlisted-model (Not listed in this catalog)"));
+            assert!(notice.contains("Current reasoning effort: low"));
+            assert!(notice.contains("not exhaustive"));
+            assert_eq!(notice.split("\n\n").count(), 4);
+            assert!(notice.contains("\n\n- Current model:"));
+            assert!(notice.contains("\n\n1. Open `zed: open settings file`."));
+            assert!(client.receiver.try_recv().is_err());
+            assert_eq!(
+                auth.store.snapshot().unwrap().unwrap().revision,
+                before.revision
+            );
+            assert_eq!(provider.context().unwrap(), context);
+            provider
+                .translate("Translate this.", "ja", context)
+                .await
+                .unwrap();
+            let state = fixture.state.lock().unwrap();
+            let body: Value = serde_json::from_str(&state.records[1].body).unwrap();
+            assert_eq!(body["model"], "unlisted-model");
+            assert_eq!(body["reasoning"]["effort"], "low");
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn stream_failures_keep_typed_diagnostics_without_dumping_payloads() {

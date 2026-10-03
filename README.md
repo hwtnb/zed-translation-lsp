@@ -74,9 +74,13 @@ When the account is ready, the connection item becomes `Change ChatGPT account` 
 The connection/settings menu includes:
 
 - `Enable ChatGPT plan use`: grant plan permission when signed in without it.
-- `ChatGPT models`: display the selected account's catalog. This list is not an exhaustive list of supported models. You can set a listed or unlisted slug in `provider.model`; the translation API determines whether it is available. The catalog does not select or apply a model. Edit the setting and restart the language server.
+- `ChatGPT models`: review the selected account's catalog alongside the running model and reasoning effort. Entries keep the catalog's order, and `[current]` marks the running model when listed. An omitted effort appears as `API default (not specified)`; an explicit `none` remains `none`. A model absent from the display list appears as `Not listed in this catalog`. An empty list reports that the catalog returned no models marked for display. Neither case establishes that a model is unsupported. The catalog is not exhaustive; the translation API determines availability for listed and unlisted slugs.
 - `ChatGPT Usage`: open [ChatGPT's usage settings](https://chatgpt.com/settings/usage), where your limits and credits apply.
 - `Sign out of ChatGPT`: attempt to end the current registration's session and clear its local credentials. Other registrations remain. If the remote session cannot be confirmed as ended, follow the message to disconnect the app in ChatGPT settings.
+
+Choosing a catalog entry shows its slug and settings instructions. Opening, choosing, or dismissing the catalog leaves the model and reasoning effort unchanged. To use another model, run `zed: open settings file` and edit `lsp.zed-code-translation.initialization_options.provider.model`. Set `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` if needed, or omit it to use the API default. Save the settings, then restart the language server.
+
+Zed may automatically dismiss this notification, so use `Copy Description` while it is visible to keep the instructions.
 
 Credentials are stored locally for this extension, at `~/Library/Application Support/zed-code-translation/` on macOS. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
