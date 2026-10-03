@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lsp_server::{Message, Notification, Request, RequestId, ResponseError};
+use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
 use serde_json::{Value, json};
 
 const COMMENT_DOCUMENT: &str = include_str!("../../../samples/comment.rs");
@@ -24,7 +24,7 @@ const READY: &str = "Translation ready. Hover over the selected text to view it.
 type Reply = Result<Value, ResponseError>;
 
 // Framing is read and written by the same published SDK used by the server.
-// Unexpected server requests (including workspace/applyEdit) fail every scenario.
+// Only advertised progress registration requests are accepted.
 struct Client {
     child: Child,
     stdin: ChildStdin,
@@ -34,10 +34,18 @@ struct Client {
     replies: HashMap<RequestId, Reply>,
     notifications: Vec<Value>,
     next_id: i32,
+    activity_capabilities: (bool, bool),
+    creates: Vec<Request>,
+    progress: Vec<Value>,
+    statuses: Vec<Value>,
 }
 
 impl Client {
     fn new(args: &[&str]) -> Self {
+        Self::with_activity(args, false, false)
+    }
+
+    fn with_activity(args: &[&str], progress: bool, status: bool) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_zed-code-translation-lsp"))
             .args(args)
             .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
@@ -80,6 +88,10 @@ impl Client {
             replies: HashMap::new(),
             notifications: Vec::new(),
             next_id: 0,
+            activity_capabilities: (progress, status),
+            creates: Vec::new(),
+            progress: Vec::new(),
+            statuses: Vec::new(),
         };
         let initialized = client
             .call(
@@ -89,6 +101,8 @@ impl Client {
                     "rootUri": null,
                     "capabilities": {
                         "general": { "positionEncodings": ["utf-16"] },
+                        "window": {"workDoneProgress": progress},
+                        "experimental": {"serverStatusNotification": status},
                         "textDocument": {
                             "hover": { "contentFormat": ["markdown"] },
                             "codeAction": { "codeActionLiteralSupport": {
@@ -142,26 +156,77 @@ impl Client {
                 .recv_timeout(remaining)
                 .expect("LSP response timed out or process exited")
                 .expect("Invalid stdout framing");
-            match message {
-                Message::Response(response) => {
-                    assert!(
-                        self.replies
-                            .insert(response.id, response.response_result)
-                            .is_none(),
-                        "Duplicate response"
-                    );
-                }
-                Message::Notification(notification)
-                    if notification.method == "window/showMessage" =>
-                {
-                    assert!(matches!(notification.params["type"].as_u64(), Some(1 | 3)));
-                    assert!(notification.params["message"].is_string());
-                    assert_eq!(notification.params.as_object().unwrap().len(), 2);
-                    self.notifications.push(notification.params);
-                }
-                other => panic!("Unexpected server message: {other:?}"),
-            }
+            self.record(message);
         }
+    }
+
+    fn record(&mut self, message: Message) {
+        match message {
+            Message::Response(response) => {
+                assert!(
+                    self.replies
+                        .insert(response.id, response.response_result)
+                        .is_none(),
+                    "Duplicate response"
+                );
+            }
+            Message::Request(request)
+                if self.activity_capabilities.0
+                    && request.method == "window/workDoneProgress/create" =>
+            {
+                self.creates.push(request);
+            }
+            Message::Notification(notification)
+                if self.activity_capabilities.0 && notification.method == "$/progress" =>
+            {
+                self.progress.push(notification.params);
+            }
+            Message::Notification(notification)
+                if self.activity_capabilities.1
+                    && notification.method == "experimental/serverStatus" =>
+            {
+                self.statuses.push(notification.params);
+            }
+            Message::Notification(notification) if notification.method == "window/showMessage" => {
+                assert!(matches!(notification.params["type"].as_u64(), Some(1 | 3)));
+                assert!(notification.params["message"].is_string());
+                assert_eq!(notification.params.as_object().unwrap().len(), 2);
+                self.notifications.push(notification.params);
+            }
+            other => panic!("Unexpected server message: {other:?}"),
+        }
+    }
+
+    fn pump(&mut self) {
+        let message = self.messages.recv_timeout(TIMEOUT).unwrap().unwrap();
+        self.record(message);
+    }
+
+    fn create_progress(&mut self) -> Request {
+        while self.creates.is_empty() {
+            self.pump();
+        }
+        self.creates.remove(0)
+    }
+
+    fn progress_kind(&mut self, kind: &str) -> Value {
+        loop {
+            if let Some(index) = self
+                .progress
+                .iter()
+                .position(|params| params["value"]["kind"] == kind)
+            {
+                return self.progress.remove(index);
+            }
+            self.pump();
+        }
+    }
+
+    fn status(&mut self) -> Value {
+        while self.statuses.is_empty() {
+            self.pump();
+        }
+        self.statuses.remove(0)
     }
 
     fn call(&mut self, method: &str, params: Value) -> Reply {
@@ -209,8 +274,8 @@ impl Client {
         assert_eq!(actions.as_array().unwrap().len(), 1);
         let action = &actions[0];
         assert!(action.get("edit").is_none());
-        assert!(action["title"].as_str().unwrap().contains("Japanese"));
-        assert!(action["title"].as_str().unwrap().contains("mock"));
+        assert_eq!(action["title"], "Translate selection to ja");
+        assert_eq!(action["command"]["title"], action["title"]);
         action["command"].clone()
     }
 
@@ -294,9 +359,9 @@ fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Valu
     assert_eq!(hover["range"], *range);
     assert_eq!(hover["contents"]["kind"], "markdown");
     let text = hover["contents"]["value"].as_str().unwrap();
-    assert!(
-        text.starts_with("> **Zed Code Translation**\n>\n> 模擬翻訳（固定サンプル）\n\n---\n\n")
-    );
+    assert!(text.starts_with(
+        "> **Zed Code Translation**\n>\n> Mock translation (fixed sample)\n\n---\n\n"
+    ));
     assert!(!text.contains("**Original**"));
     assert!(
         !text.contains(original),
@@ -307,6 +372,224 @@ fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Valu
 
 fn assert_error(reply: Reply, code: i32) {
     assert_eq!(reply.unwrap_err().code, code);
+}
+
+#[test]
+fn progress_registration_does_not_block_hover_or_coalesced_waiter_cancellation() {
+    let mut client = Client::with_activity(&["--mock-delay-ms", "700"], true, true);
+    let uri = "file:///progress.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let position = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+    let first = client.request_hover(uri, position.clone());
+    let create = client.create_progress();
+    assert!(client.progress.is_empty());
+    let sync = Instant::now();
+    assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+    assert!(sync.elapsed() < Duration::from_millis(400));
+    let second = client.request_hover(uri, position);
+    client.notify("$/cancelRequest", json!({"id":first}));
+    assert_error(client.receive(first, TIMEOUT), -32800);
+    client.send(Response::new_ok(create.id, Value::Null).into());
+    let begin = client.progress_kind("begin");
+    assert_eq!(begin["token"], create.params["token"]);
+    assert_eq!(
+        begin["value"],
+        json!({
+            "kind":"begin", "title":"Code Translation", "cancellable":false,
+            "message":"Translating: 1, queued: 0"
+        })
+    );
+    assert_preview(
+        &client.receive(second, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range_for(COMMENT_DOCUMENT, COMMENT),
+    );
+    assert_eq!(client.progress_kind("end")["token"], create.params["token"]);
+    assert!(
+        client.creates.is_empty(),
+        "Coalesced owners count as one job"
+    );
+    assert!(client.statuses.is_empty());
+    assert!(
+        client.notifications.is_empty(),
+        "Automatic Hover does not add INFO"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn delayed_progress_ack_and_old_cancel_do_not_revive_edited_or_closed_work() {
+    let mut client = Client::with_activity(&["--mock-delay-ms", "1500"], true, true);
+    let uri = "file:///progress-edited.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let position = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+    let old_hover = client.request_hover(uri, position.clone());
+    let old_create = client.create_progress();
+    client.change(uri, 2, json!([{"text":COMMENT_DOCUMENT}]));
+    assert_error(client.receive(old_hover, TIMEOUT), -32801);
+    let current_hover = client.request_hover(uri, position);
+    assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+    assert!(
+        client.creates.is_empty(),
+        "One outstanding registration only"
+    );
+    client.send(Response::new_ok(old_create.id.clone(), Value::Null).into());
+    let old_begin = client.progress_kind("begin");
+    assert_eq!(old_begin["token"], old_create.params["token"]);
+    assert!(old_begin["value"].get("message").is_none());
+    assert_eq!(
+        client.progress_kind("end")["token"],
+        old_create.params["token"]
+    );
+    let current_create = client.create_progress();
+    assert_ne!(current_create.params["token"], old_create.params["token"]);
+    client.notify(
+        "window/workDoneProgress/cancel",
+        json!({"token":old_create.params["token"]}),
+    );
+    client.send(Response::new_ok(old_create.id, Value::Null).into());
+    client.send(Response::new_ok(current_create.id, Value::Null).into());
+    assert_eq!(
+        client.progress_kind("begin")["token"],
+        current_create.params["token"]
+    );
+    client.close(uri);
+    assert_error(client.receive(current_hover, TIMEOUT), -32801);
+    assert_eq!(
+        client.progress_kind("end")["token"],
+        current_create.params["token"]
+    );
+    assert!(client.statuses.is_empty());
+    assert!(client.notifications.is_empty());
+    client.finish(true);
+}
+
+#[test]
+fn progress_cancel_retires_running_and_queued_jobs_and_shutdown_flushes_end() {
+    let mut client = Client::with_activity(&["--mock-delay-ms", "1500"], true, false);
+    let position = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+    let mut owners = Vec::new();
+    for index in 0..3 {
+        let uri = format!("file:///progress-queue-{index}.rs");
+        client.open(&uri, "rust", COMMENT_DOCUMENT, 1);
+        owners.push(client.request_hover(&uri, position.clone()));
+    }
+    let create = client.create_progress();
+    assert!(
+        client
+            .hover(
+                "file:///progress-queue-0.rs",
+                json!({"line":0,"character":0})
+            )
+            .is_null()
+    );
+    client.send(Response::new_ok(create.id, Value::Null).into());
+    assert_eq!(
+        client.progress_kind("begin")["value"]["message"],
+        "Translating: 1, queued: 2"
+    );
+    client.notify(
+        "window/workDoneProgress/cancel",
+        json!({"token":create.params["token"]}),
+    );
+    for id in owners {
+        assert_error(client.receive(id, TIMEOUT), -32800);
+    }
+    assert_eq!(client.progress_kind("end")["token"], create.params["token"]);
+    let pending = client.request_hover("file:///progress-queue-0.rs", position);
+    let create = client.create_progress();
+    client.send(Response::new_ok(create.id, Value::Null).into());
+    client.progress_kind("begin");
+    let shutdown = client.request("shutdown", Value::Null);
+    assert_error(client.receive(pending, TIMEOUT), -32800);
+    assert!(client.receive(shutdown, TIMEOUT).unwrap().is_null());
+    assert_eq!(client.progress_kind("end")["token"], create.params["token"]);
+    client.notify("exit", Value::Null);
+    assert!(client.child.wait().unwrap().success());
+    client.reader.take().unwrap().join().unwrap();
+    assert!(client.messages.try_iter().next().is_none());
+    assert!(client.stderr.take().unwrap().join().unwrap().is_empty());
+}
+
+#[test]
+fn translation_problems_clear_on_edit_and_fallback_channels_remain_independent() {
+    for (args, expected) in [
+        (vec!["--mock-fail"], "Failed. Retry manually."),
+        (
+            vec!["--mock-delay-ms", "1000", "--mock-timeout-ms", "80"],
+            "Timed out. Retry manually.",
+        ),
+    ] {
+        let mut client = Client::with_activity(&args, false, true);
+        let uri = "file:///problem.rs";
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        let position = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+        let failed = client.request_hover(uri, position);
+        assert_error(client.receive(failed, TIMEOUT), -32803);
+        assert_eq!(
+            client.status(),
+            json!({
+                "health":"warning", "quiescent":true, "message":expected
+            })
+        );
+        client.change(uri, 2, json!([{"text":COMMENT_DOCUMENT}]));
+        assert_eq!(client.status(), json!({"health":"ok","quiescent":true}));
+        assert!(client.creates.is_empty());
+        assert!(client.progress.is_empty());
+        assert!(client.notifications.is_empty());
+        client.finish(true);
+    }
+    let mut client = Client::with_activity(&["--mock-delay-ms", "60"], true, false);
+    let uri = "file:///declined.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let hover = client.request_hover(uri, range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone());
+    let create = client.create_progress();
+    client.send(Response::new_err(create.id, -32601, "unsupported".into()).into());
+    assert!(
+        client.receive(hover, TIMEOUT).unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains(COMMENT_JA)
+    );
+    assert!(client.progress.is_empty());
+    client.finish(true);
+}
+
+#[test]
+fn a_failed_ticket_reports_its_problem_while_another_ticket_remains_busy() {
+    let mut client = Client::with_activity(
+        &["--mock-delay-ms", "1000", "--mock-timeout-ms", "120"],
+        false,
+        true,
+    );
+    let position = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+    client.open("file:///problem-first.rs", "rust", COMMENT_DOCUMENT, 1);
+    let first = client.request_hover("file:///problem-first.rs", position.clone());
+    assert!(
+        client
+            .hover("file:///problem-first.rs", json!({"line":0,"character":0}))
+            .is_null()
+    );
+    thread::sleep(Duration::from_millis(50));
+    client.open("file:///problem-second.rs", "rust", COMMENT_DOCUMENT, 1);
+    let second = client.request_hover("file:///problem-second.rs", position);
+    assert_error(client.receive(first, TIMEOUT), -32803);
+    assert_eq!(
+        client.status(),
+        json!({
+            "health":"warning", "quiescent":false, "message":"Timed out. Retry manually."
+        })
+    );
+    assert_error(client.receive(second, TIMEOUT), -32803);
+    assert_eq!(
+        client.status(),
+        json!({
+            "health":"warning", "quiescent":true, "message":"Timed out. Retry manually."
+        })
+    );
+    assert!(client.notifications.is_empty());
+    client.finish(true);
 }
 
 #[test]

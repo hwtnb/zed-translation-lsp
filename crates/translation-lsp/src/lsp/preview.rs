@@ -15,7 +15,7 @@ impl Preview {
             return None;
         }
         let header = if matches!(self.context, crate::providers::Context::Mock) {
-            "> **Zed Code Translation**\n>\n> 模擬翻訳（固定サンプル）"
+            "> **Zed Code Translation**\n>\n> Mock translation (fixed sample)"
         } else {
             "> **Zed Code Translation**"
         };
@@ -75,7 +75,10 @@ mod tests {
             };
             assert!(content.value.starts_with("> **Zed Code Translation**"));
             assert!(!content.value.contains("ChatGPT 翻訳"));
-            assert_eq!(content.value.contains("模擬翻訳（固定サンプル）"), is_mock);
+            assert_eq!(
+                content.value.contains("Mock translation (fixed sample)"),
+                is_mock
+            );
             assert!(content.value.ends_with(&fenced_text(source)));
             let events: Vec<_> = pulldown_cmark::Parser::new(&content.value).collect();
             assert_eq!(

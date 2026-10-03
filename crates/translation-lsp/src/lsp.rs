@@ -1,3 +1,4 @@
+mod activity;
 mod document;
 mod preview;
 pub(crate) mod server;

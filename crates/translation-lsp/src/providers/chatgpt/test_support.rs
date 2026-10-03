@@ -27,7 +27,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::lsp::ui::Ui;
+use crate::lsp::ui::{Ui, UiCapabilities};
 
 use super::{
     auth::Auth,
@@ -171,7 +171,13 @@ impl Fixture {
         enable: bool,
     ) -> Result<String, crate::providers::error::Error> {
         let (connection, client) = lsp_server::Connection::memory();
-        let ui = Ui::new(connection.sender.clone(), true);
+        let ui = Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                external_documents: true,
+                ..Default::default()
+            },
+        );
         let ui_driver = ui.clone();
         let state = self.state.clone();
         let browser = async move {

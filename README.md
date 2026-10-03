@@ -44,7 +44,7 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
 }
 ```
 
-`target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language. `provider.model` is required for ChatGPT. `reasoning_effort` is optional and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported models or effort values return an error.
+UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language. `provider.model` is required for ChatGPT. `reasoning_effort` is optional and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported models or effort values return an error.
 
 Restart the language server after changing these settings. Model and effort changes do not apply to a running server. See [Zed's language server settings](https://zed.dev/docs/configuring-languages#configuring-language-servers).
 
@@ -52,7 +52,7 @@ If `binary.path` is omitted, the extension looks for `zed-code-translation-lsp` 
 
 ## Connecting to ChatGPT
 
-Open Code Actions in a supported document (`⌘.` on macOS), choose `接続・設定…` (connection/settings), then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, displaying candidates, and Hover do not start an OAuth sign-in flow.
+Open Code Actions in a supported document (`⌘.` on macOS), choose `Connection and settings…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, displaying candidates, and Hover do not start an OAuth sign-in flow.
 
 When the account is ready, the connection item becomes `Change ChatGPT account` and the plan permission item is hidden. The models item appears only when plan use is enabled, and sign-out appears only while signed in. While a management operation is running, duplicate management candidates are hidden. If the connection state cannot be read, use `Check ChatGPT connection…` and follow its message.
 
@@ -69,11 +69,15 @@ Credentials are stored locally for this extension, at `~/Library/Application Sup
 
 Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. Adjacent line comments of the same kind and indentation are translated together; blank lines or code split the group. Each block comment is handled separately. Comment markers and one following ASCII space are removed from the text submitted for translation.
 
+While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Other language-server activity can take priority in this shared area.
+
+The spinner disappears when work ends, including cancellation and timeout. Hover over the original text to check the result. On clients that support server status, translation failures and timeouts leave a warning that clears on retry, editing, or closing the document. Clients without these display capabilities retain Hover and explicit-operation notifications.
+
 With ChatGPT connected and plan use enabled, select Markdown prose and keep the selection stable for about 0.7 seconds. Translation starts in the background; Hover over that range to read it. There is no background completion notification. Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action. Selecting prose just to copy it can also send it for translation.
 
-To translate immediately or recover from a background failure, use the `選択範囲を翻訳（…）` Code Action (translate selection). Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `接続・設定…` first. The translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `Connection and settings…` first. The translation action is hidden when there is no selection.
 
-Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `接続・設定…` → `Continue with ChatGPT / Choose account` to reconnect.
+Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `Connection and settings…` → `Continue with ChatGPT / Choose account` to reconnect.
 
 Only the extracted comment body or selected text is submitted, including its protected segments. The extension does not submit the entire document or conversation history. Code, link destinations, Markdown syntax, and line endings recognized in the submitted input are preserved in the translation.
 
@@ -81,7 +85,7 @@ The server keeps the last translated range for each document in memory. Editing 
 
 ## Mock mode
 
-To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to Japanese (mock preview / 模擬翻訳)` from Code Actions, then Hover over the selection. Mock mode requires manual execution for Markdown.
+To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
 
 Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
 

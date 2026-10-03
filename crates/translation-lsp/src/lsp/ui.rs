@@ -5,7 +5,7 @@ use std::{
 
 use crossbeam_channel::Sender;
 use lsp_server::{Message, Request, RequestId, Response};
-use lsp_types::MessageType;
+use lsp_types::{ClientCapabilities, MessageType};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
@@ -13,9 +13,36 @@ use crate::providers::error::Error;
 
 #[derive(Clone)]
 pub(crate) struct Ui {
-    sender: Sender<Message>,
+    pub(super) sender: Sender<Message>,
     replies: Arc<Mutex<HashMap<RequestId, oneshot::Sender<Response>>>>,
-    external_documents: bool,
+    pub(super) capabilities: UiCapabilities,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct UiCapabilities {
+    pub external_documents: bool,
+    pub work_done_progress: bool,
+    pub server_status: bool,
+}
+
+impl From<&ClientCapabilities> for UiCapabilities {
+    fn from(client: &ClientCapabilities) -> Self {
+        Self {
+            external_documents: client
+                .window
+                .as_ref()
+                .and_then(|window| window.show_document.as_ref())
+                .is_some_and(|document| document.support),
+            work_done_progress: client
+                .window
+                .as_ref()
+                .is_some_and(|window| window.work_done_progress == Some(true)),
+            server_status: client
+                .experimental
+                .as_ref()
+                .is_some_and(|extra| extra["serverStatusNotification"] == true),
+        }
+    }
 }
 
 struct PendingUi {
@@ -24,11 +51,11 @@ struct PendingUi {
 }
 
 impl Ui {
-    pub fn new(sender: Sender<Message>, external_documents: bool) -> Self {
+    pub fn new(sender: Sender<Message>, capabilities: UiCapabilities) -> Self {
         Self {
             sender,
             replies: Arc::default(),
-            external_documents,
+            capabilities,
         }
     }
 
@@ -65,7 +92,7 @@ impl Ui {
     }
 
     pub async fn open(&self, uri: &str) -> Result<(), Error> {
-        if !self.external_documents {
+        if !self.capabilities.external_documents {
             return Err(Error::failed(
                 "The editor must support window/showDocument with external URLs",
             ));

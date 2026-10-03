@@ -13,7 +13,7 @@ use lsp_types::{
     DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, NumberOrString, Position,
     PositionEncodingKind, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    TextDocumentSyncKind, TextDocumentSyncOptions, Uri, WorkDoneProgressCancelParams,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Notification,
     },
@@ -34,9 +34,10 @@ use crate::{
 };
 
 use super::{
+    activity::{Activity, Phase, Problem, Work},
     document::{Document, utf16_offset},
     preview::Preview,
-    ui::Ui,
+    ui::{Ui, UiCapabilities},
 };
 
 type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -45,7 +46,6 @@ type RequestResult<T> = Result<T, ResponseError>;
 const COMMAND: &str = "zed-code-translation.preview";
 const SETTINGS_COMMAND: &str = "zed-code-translation.settings";
 const SELECTION_STABILITY: Duration = Duration::from_millis(450);
-const ACTION_TITLE: &str = "Translate selection to Japanese (mock preview / 模擬翻訳)";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
 const ADMIN_COMMANDS: [(&str, &str); 5] = [
@@ -153,6 +153,11 @@ struct Finished {
     result: Result<Outcome, ProviderError>,
 }
 
+enum WorkerEvent {
+    Started(u64),
+    Finished(Finished),
+}
+
 enum Outcome {
     SettingsChoice(Option<String>),
     Translation(Translated),
@@ -178,6 +183,8 @@ enum PendingReply {
 }
 
 struct Translation {
+    context: Context,
+    phase: Phase,
     target: TranslationTarget,
     is_comment: bool,
     deadline: watch::Sender<Option<Instant>>,
@@ -189,6 +196,8 @@ struct Server<P: TranslationProvider> {
     provider: P,
     settings: Settings,
     ui: Ui,
+    activity: Activity,
+    problem_target: Option<(TranslationTarget, Option<Context>)>,
     administrations: HashMap<RequestId, Administration>,
     documents: HashMap<Uri, Document>,
     pending: HashMap<RequestId, Pending>,
@@ -228,11 +237,7 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
     let chatgpt = matches!(settings.provider, ProviderSettings::Chatgpt { .. });
     let ui = Ui::new(
         connection.sender.clone(),
-        params
-            .capabilities
-            .window
-            .and_then(|window| window.show_document)
-            .is_some_and(|document| document.support),
+        UiCapabilities::from(&params.capabilities),
     );
     let initialized = capabilities(chatgpt);
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
@@ -307,6 +312,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
     let (finished_sender, finished) = bounded(MAX_JOBS);
     let mut server = Server::configured(options, finished_sender, provider, settings, ui)?;
     let result = (|| {
+        server.publish_activity();
         loop {
             let deadline = server
                 .pending
@@ -319,6 +325,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         .values()
                         .filter_map(|work| work.background_deadline),
                 )
+                .chain(server.activity.deadline())
                 .chain(
                     server
                         .selection
@@ -334,6 +341,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                     Message::Request(request) => {
                         if request.method == Shutdown::METHOD {
                             server.cancel_all(connection)?;
+                            server.activity.shutdown();
                             connection.handle_shutdown(&request)?;
                             break;
                         }
@@ -345,11 +353,23 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         }
                         server.notification(connection, notification)?;
                     }
-                    Message::Response(response) => server.ui.response(response),
+                    Message::Response(response) => {
+                        if !server.activity.response(&response) {
+                            server.ui.response(response);
+                        }
+                    },
                 },
-                recv(finished) -> completion => server.finish(connection, completion?)?,
+                recv(finished) -> event => match event? {
+                    WorkerEvent::Started(ticket) => {
+                        if let Some(work) = server.translations.get_mut(&ticket) {
+                            work.phase = Phase::Running;
+                        }
+                    }
+                    WorkerEvent::Finished(completion) => server.finish(connection, completion)?,
+                },
                 recv(deadline) -> _ => server.expire(connection)?,
             }
+            server.publish_activity();
         }
         Ok(())
     })();
@@ -361,7 +381,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
 
 impl Server<MockProvider> {
     #[cfg(test)]
-    fn new(options: MockOptions, finished: Sender<Finished>) -> ServerResult<Self> {
+    fn new(options: MockOptions, finished: Sender<WorkerEvent>) -> ServerResult<Self> {
         Self::new_with_provider(options, finished, MockProvider)
     }
 }
@@ -370,7 +390,7 @@ impl<P: TranslationProvider> Server<P> {
     #[cfg(test)]
     fn new_with_provider(
         options: MockOptions,
-        finished: Sender<Finished>,
+        finished: Sender<WorkerEvent>,
         provider: P,
     ) -> ServerResult<Self> {
         let (sender, _) = bounded(1);
@@ -379,13 +399,13 @@ impl<P: TranslationProvider> Server<P> {
             finished,
             provider,
             Settings::default(),
-            Ui::new(sender, false),
+            Ui::new(sender, UiCapabilities::default()),
         )
     }
 
     fn configured(
         options: MockOptions,
-        finished: Sender<Finished>,
+        finished: Sender<WorkerEvent>,
         provider: P,
         settings: Settings,
         ui: Ui,
@@ -403,10 +423,13 @@ impl<P: TranslationProvider> Server<P> {
             .spawn(move || {
                 runtime.block_on(worker(jobs, admin_jobs, finished, options, worker_provider))
             })?;
+        let activity = Activity::new(ui.sender.clone(), ui.capabilities);
         Ok(Self {
             provider,
             settings,
             ui,
+            activity,
+            problem_target: None,
             administrations: HashMap::new(),
             documents: HashMap::new(),
             pending: HashMap::new(),
@@ -422,7 +445,77 @@ impl<P: TranslationProvider> Server<P> {
         })
     }
 
+    fn clear_problem(&mut self) {
+        self.problem_target = None;
+        self.activity.clear_problem();
+    }
+
+    fn target_is_current(&self, target: &TranslationTarget) -> bool {
+        self.documents.get(&target.uri).is_some_and(|document| {
+            document.version == target.version
+                && document.session == target.session
+                && document.text.is_some()
+        })
+    }
+
+    fn publish_activity(&mut self) {
+        if !self.ui.capabilities.work_done_progress && !self.ui.capabilities.server_status {
+            return;
+        }
+        if self
+            .problem_target
+            .as_ref()
+            .is_some_and(|(target, previous)| {
+                !self.target_is_current(target)
+                    || self.provider.context().map_or_else(
+                        |_| {
+                            self.provider.is_chatgpt()
+                                && matches!(
+                                    self.provider.auth_ui_state(),
+                                    AuthUiState::SignedOut | AuthUiState::PlanDisabled
+                                )
+                        },
+                        |current| previous.as_ref() != Some(&current),
+                    )
+            })
+        {
+            self.clear_problem();
+        }
+        let mut activity = Work::default();
+        for work in self.translations.values() {
+            match work.phase {
+                Phase::Queued => activity.queued += 1,
+                Phase::Running => activity.running += 1,
+            }
+        }
+        activity.waiting = self.selection.as_ref().is_some_and(|selection| {
+            selection.start.is_some()
+                && self.target_is_current(&selection.target)
+                && !self
+                    .translations
+                    .values()
+                    .any(|work| work.target == selection.target)
+        });
+        self.activity.publish(activity, Instant::now());
+    }
+
+    fn record_problem(&mut self, work: &Translation, problem: Problem) {
+        if !self.ui.capabilities.server_status {
+            return;
+        }
+        let context = self.provider.context().ok();
+        if self.target_is_current(&work.target)
+            && context
+                .as_ref()
+                .is_none_or(|current| same_account(&work.context, current))
+        {
+            self.problem_target = Some((work.target.clone(), context));
+            self.activity.problem(problem);
+        }
+    }
+
     fn clear_previews(&mut self) {
+        self.clear_problem();
         for document in self.documents.values_mut() {
             document.preview = None;
         }
@@ -511,6 +604,11 @@ impl<P: TranslationProvider> Server<P> {
 
     fn code_actions(&mut self, params: CodeActionParams) -> RequestResult<Vec<CodeAction>> {
         let state = self.provider.auth_ui_state();
+        if self.provider.is_chatgpt()
+            && matches!(state, AuthUiState::SignedOut | AuthUiState::PlanDisabled)
+        {
+            self.clear_problem();
+        }
         self.observe_selection(&params, state);
         if params.context.only.as_ref().is_some_and(|kinds| {
             !kinds.iter().any(|kind| {
@@ -527,10 +625,10 @@ impl<P: TranslationProvider> Server<P> {
         }
         let actions = if self.provider.is_chatgpt() {
             vec![CodeAction {
-                title: "接続・設定…".into(),
+                title: "Connection and settings…".into(),
                 kind: Some(CodeActionKind::new(ACTION_KIND)),
                 command: Some(Command {
-                    title: "接続・設定…".into(),
+                    title: "Connection and settings…".into(),
                     command: SETTINGS_COMMAND.into(),
                     arguments: None,
                 }),
@@ -558,11 +656,7 @@ impl<P: TranslationProvider> Server<P> {
             range: params.range,
             target_language: self.settings.target_language.clone(),
         };
-        let title = if self.provider.is_chatgpt() {
-            format!("選択範囲を翻訳（{}）", self.settings.target_language)
-        } else {
-            ACTION_TITLE.into()
-        };
+        let title = format!("Translate selection to {}", self.settings.target_language);
         let mut actions = actions;
         actions.insert(
             0,
@@ -651,6 +745,9 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn retire_selection(&mut self) {
+        if self.selection.is_some() {
+            self.clear_problem();
+        }
         let Some(selection) = self.selection.take() else {
             return;
         };
@@ -945,7 +1042,7 @@ impl<P: TranslationProvider> Server<P> {
             task: Task::Translation {
                 text: input.text,
                 target_language: target.target_language.clone(),
-                context,
+                context: context.clone(),
             },
         };
         self.jobs.as_ref().unwrap().try_send(job).map_err(|_| {
@@ -955,9 +1052,13 @@ impl<P: TranslationProvider> Server<P> {
             )
         })?;
         document.preview = None;
+        self.activity.clear_problem();
+        self.problem_target = None;
         self.translations.insert(
             ticket,
             Translation {
+                context,
+                phase: Phase::Queued,
                 target,
                 is_comment: input.is_comment,
                 deadline: deadline_sender,
@@ -1080,6 +1181,18 @@ impl<P: TranslationProvider> Server<P> {
             });
             Ok(())
         })();
+        if let Err(error) = &result
+            && error.code != ErrorCode::ContentModified as i32
+            && error.code != ErrorCode::RequestCanceled as i32
+        {
+            self.record_problem(&work, Problem::Failed);
+        } else if self
+            .problem_target
+            .as_ref()
+            .is_some_and(|(target, _)| target == &work.target)
+        {
+            self.clear_problem();
+        }
         self.complete(connection, completion.ticket, &work, result)
     }
 
@@ -1153,7 +1266,7 @@ impl<P: TranslationProvider> Server<P> {
                 .get_mut(&ticket)
                 .unwrap()
                 .background_deadline = None;
-            self.update_deadline(ticket);
+            self.expire_owner(ticket);
         }
         let ids: Vec<_> = self
             .pending
@@ -1171,7 +1284,7 @@ impl<P: TranslationProvider> Server<P> {
                     self.command_failure(&error)?;
                 }
             }
-            self.update_deadline(pending.ticket);
+            self.expire_owner(pending.ticket);
             respond(connection, id, Err(error))?;
         }
         if self.selection.as_ref().is_some_and(|selection| {
@@ -1184,6 +1297,36 @@ impl<P: TranslationProvider> Server<P> {
             if context.is_some() && self.provider.context().ok() == context {
                 let _ = self.queue_translation(target, None);
             }
+        }
+        Ok(())
+    }
+
+    fn expire_owner(&mut self, ticket: u64) {
+        if let Some(work) = self.translations.get(&ticket) {
+            let has_owner = work.background_deadline.is_some()
+                || self
+                    .pending
+                    .values()
+                    .any(|pending| pending.ticket == ticket);
+            if !has_owner {
+                let work = self.translations.remove(&ticket).unwrap();
+                work.deadline.send_replace(None);
+                self.record_problem(&work, Problem::TimedOut);
+                return;
+            }
+        }
+        self.update_deadline(ticket);
+    }
+
+    fn cancel_activity(&mut self, connection: &Connection) -> RequestResult<()> {
+        self.retire_selection();
+        self.clear_problem();
+        let ids: Vec<_> = self.pending.keys().cloned().collect();
+        for id in ids {
+            self.cancel(connection, &id, ErrorCode::RequestCanceled)?;
+        }
+        for (_, work) in self.translations.drain() {
+            work.deadline.send_replace(None);
         }
         Ok(())
     }
@@ -1244,6 +1387,12 @@ impl<P: TranslationProvider> Server<P> {
                     self.invalidate(connection, &params.text_document.uri)?;
                     self.documents.remove(&params.text_document.uri);
                 }
+                "window/workDoneProgress/cancel" => {
+                    let params: WorkDoneProgressCancelParams = parse(notification.params)?;
+                    if self.activity.matches_cancel(&params.token) {
+                        self.cancel_activity(connection)?;
+                    }
+                }
                 "$/cancelRequest" => {
                     let params: CancelParams = parse(notification.params)?;
                     let id = match params.id {
@@ -1264,6 +1413,13 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn invalidate(&mut self, connection: &Connection, uri: &Uri) -> RequestResult<()> {
+        if self
+            .problem_target
+            .as_ref()
+            .is_some_and(|(target, _)| &target.uri == uri)
+        {
+            self.clear_problem();
+        }
         if self
             .selection
             .as_ref()
@@ -1288,6 +1444,7 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn cancel_all(&mut self, connection: &Connection) -> ServerResult<()> {
+        self.clear_problem();
         self.retire_selection();
         let ids: Vec<_> = self
             .pending
@@ -1342,7 +1499,7 @@ impl<P: TranslationProvider> Server<P> {
 async fn worker<P: TranslationProvider>(
     jobs: mpsc::Receiver<Job>,
     administrations: mpsc::Receiver<Job>,
-    finished: Sender<Finished>,
+    finished: Sender<WorkerEvent>,
     options: MockOptions,
     provider: P,
 ) {
@@ -1359,7 +1516,7 @@ async fn worker<P: TranslationProvider>(
 
 async fn run_jobs<P: TranslationProvider>(
     mut jobs: mpsc::Receiver<Job>,
-    finished: Sender<Finished>,
+    finished: Sender<WorkerEvent>,
     options: MockOptions,
     provider: P,
 ) {
@@ -1370,6 +1527,11 @@ async fn run_jobs<P: TranslationProvider>(
         if deadline <= Instant::now() {
             continue;
         }
+        if matches!(job.task, Task::Translation { .. })
+            && finished.send(WorkerEvent::Started(job.ticket)).is_err()
+        {
+            break;
+        }
         let operation = async {
             match &job.task {
                 Task::Settings { ui } => {
@@ -1378,14 +1540,16 @@ async fn run_jobs<P: TranslationProvider>(
                         .iter()
                         .map(|command| command.title.clone())
                         .collect();
-                    ui.choose("接続・設定", &titles).await.map(|choice| {
-                        Outcome::SettingsChoice(choice.and_then(|title| {
-                            commands
-                                .into_iter()
-                                .find(|command| command.title == title)
-                                .map(|command| command.command)
-                        }))
-                    })
+                    ui.choose("Connection and settings…", &titles)
+                        .await
+                        .map(|choice| {
+                            Outcome::SettingsChoice(choice.and_then(|title| {
+                                commands
+                                    .into_iter()
+                                    .find(|command| command.title == title)
+                                    .map(|command| command.command)
+                            }))
+                        })
                 }
                 Task::Administration { command, ui } => provider
                     .administer(command, ui)
@@ -1429,10 +1593,10 @@ async fn run_jobs<P: TranslationProvider>(
             }
         };
         if finished
-            .send(Finished {
+            .send(WorkerEvent::Finished(Finished {
                 ticket: job.ticket,
                 result,
-            })
+            }))
             .is_err()
         {
             break;
@@ -1442,6 +1606,7 @@ async fn run_jobs<P: TranslationProvider>(
 
 impl<P: TranslationProvider> Drop for Server<P> {
     fn drop(&mut self) {
+        self.activity.shutdown();
         for work in self.translations.values() {
             let _ = work.deadline.send(None);
         }
@@ -1486,6 +1651,16 @@ fn management_commands(state: AuthUiState) -> Vec<Command> {
             })
         })
         .collect()
+}
+
+fn same_account(previous: &Context, current: &Context) -> bool {
+    match (previous, current) {
+        (Context::Mock, Context::Mock) => true,
+        (Context::ChatGpt(previous), Context::ChatGpt(current)) => {
+            previous.registration == current.registration
+        }
+        _ => false,
+    }
 }
 
 fn changes_account(command: &str) -> bool {
@@ -1591,7 +1766,13 @@ mod tests {
             parse(json!({"textDocument": {"uri": uri}, "position": position})).unwrap()
         };
         let finish = |server: &mut Server<RecordingProvider>, body: &str| {
-            let completion = completions.recv_timeout(Duration::from_secs(2)).unwrap();
+            let completion = loop {
+                if let WorkerEvent::Finished(completion) =
+                    completions.recv_timeout(Duration::from_secs(2)).unwrap()
+                {
+                    break completion;
+                }
+            };
             assert_eq!(recorded.recv().unwrap(), (body.to_owned(), "ja".into()));
             server.finish(&connection, completion).unwrap();
             let Message::Response(response) = client.receiver.try_recv().unwrap() else {
@@ -1742,11 +1923,373 @@ mod chatgpt_tests {
     use crate::providers::chatgpt::test_support::Fixture;
     use serde_json::json;
 
-    async fn next(receiver: &crossbeam_channel::Receiver<Finished>) -> Finished {
+    #[tokio::test(flavor = "current_thread")]
+    async fn activity_problem_survives_busy_store_and_clears_confirmed_external_invalidation() {
+        for plan_disabled in [false, true] {
+            let fixture = Fixture::new().await;
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions {
+                    fail: true,
+                    ..Default::default()
+                },
+                finished,
+                provider,
+                Settings::default(),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        server_status: true,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap();
+            let uri: Uri = "file:///problem-account.rs".parse().unwrap();
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, "rust".into(), "// Translate this.".into()),
+            );
+            server
+                .hover(
+                    1.into(),
+                    parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                        .unwrap(),
+                )
+                .unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            let Message::Response(failed) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected failure");
+            };
+            assert!(failed.response_result.is_err());
+            server.publish_activity();
+            let Message::Notification(problem) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected warning");
+            };
+            assert_eq!(problem.params["health"], "warning");
+            let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+            assert_eq!(auth.ui_state(), AuthUiState::Unavailable);
+            server.publish_activity();
+            assert!(
+                client.receiver.is_empty(),
+                "Busy is not a confirmed account change"
+            );
+            let id = locked.state.active_registration.unwrap();
+            let registration = locked.state.registrations.get_mut(&id).unwrap();
+            if plan_disabled {
+                registration.credentials.as_mut().unwrap().scopes.clear();
+            } else {
+                registration.credentials = None;
+            }
+            locked.save().unwrap();
+            drop(locked);
+            assert_eq!(
+                auth.ui_state(),
+                if plan_disabled {
+                    AuthUiState::PlanDisabled
+                } else {
+                    AuthUiState::SignedOut
+                }
+            );
+            server.publish_activity();
+            let Message::Notification(clear) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected clear");
+            };
+            assert_eq!(clear.params, json!({"health":"ok","quiescent":true}));
+            server.publish_activity();
+            assert!(client.receiver.is_empty());
+            assert!(fixture.state.lock().unwrap().records.is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_refresh() {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().stream_tail_delay = Duration::from_millis(300);
+        let auth = fixture.auth();
+        fixture.connected(&auth, 0).await;
+        fixture.state.lock().unwrap().delay = Duration::from_millis(200);
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions {
+                delay: Duration::from_millis(100),
+                ..Default::default()
+            },
+            finished,
+            provider.clone(),
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    work_done_progress: true,
+                    server_status: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///activity-background.md".parse().unwrap();
+        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+        );
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        server
+            .hover(
+                1.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                    .unwrap(),
+            )
+            .unwrap();
+        let ticket = server.pending[&1.into()].ticket;
+        let original_context = server.translations[&ticket].context.clone();
+        server.publish_activity();
+        let Message::Request(create) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected create");
+        };
+        assert!(
+            server
+                .activity
+                .response(&Response::new_ok(create.id, Value::Null))
+        );
+        server.publish_activity();
+        let Message::Notification(begin) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected begin");
+        };
+        assert_eq!(begin.params["value"]["message"], "Queued: 1");
+        let locked = auth.store.lock(false).await.unwrap().unwrap();
+        let events = completions.clone();
+        let started = tokio::task::spawn_blocking(move || {
+            events.recv_timeout(Duration::from_secs(2)).unwrap()
+        })
+        .await
+        .unwrap();
+        let WorkerEvent::Started(started_ticket) = started else {
+            panic!("Expected worker Started");
+        };
+        assert_eq!(started_ticket, ticket);
+        server.translations.get_mut(&ticket).unwrap().phase = Phase::Running;
+        assert!(matches!(
+            auth.store.snapshot(),
+            Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+        ));
+        assert!(provider.context().is_err());
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        server.publish_activity();
+        let Message::Notification(running) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected running report during store lock");
+        };
+        assert_eq!(running.params["value"]["kind"], "report");
+        assert_eq!(
+            running.params["value"]["message"],
+            "Translating: 1, queued: 0"
+        );
+        server.pending.get_mut(&1.into()).unwrap().deadline = Instant::now();
+        server.expire(&connection).unwrap();
+        server.publish_activity();
+        let Message::Response(expired) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected expired Hover");
+        };
+        assert_eq!(
+            expired.response_result.unwrap_err().code,
+            ErrorCode::RequestFailed as i32
+        );
+        assert!(server.translations[&ticket].background_deadline.is_some());
+        assert!(
+            client.receiver.is_empty(),
+            "Remaining background owner keeps progress alive"
+        );
+        drop(locked);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .any(|record| record.path == "/token")
+            {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            auth.store.snapshot(),
+            Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+        ));
+        server.publish_activity();
+        assert!(
+            client.receiver.is_empty(),
+            "HTTP refresh holding auth lock keeps progress alive"
+        );
+        let completion = next(&completions).await;
+        assert_ne!(
+            provider.context().unwrap(),
+            original_context,
+            "Synthetic expired credentials must refresh"
+        );
+        server.publish_activity();
+        assert!(
+            client.receiver.is_empty(),
+            "Credential revision change must not end valid work"
+        );
+        server.finish(&connection, completion).unwrap();
+        server.publish_activity();
+        let Message::Notification(end) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected end");
+        };
+        assert_eq!(
+            end.params,
+            json!({"token":create.params["token"],"value":{"kind":"end"}})
+        );
+        assert!(server.documents[&uri].preview.is_some());
+        assert!(
+            client.receiver.is_empty(),
+            "Background completion adds no status or INFO"
+        );
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn activity_cancellation_leaves_settings_picker_and_its_deadline_alive() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions {
+                delay: Duration::from_secs(1),
+                ..Default::default()
+            },
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    work_done_progress: true,
+                    server_status: true,
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///activity-picker.md".parse().unwrap();
+        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+        );
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        server.publish_activity();
+        let Message::Request(create) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected create");
+        };
+        server
+            .activity
+            .response(&Response::new_ok(create.id, Value::Null));
+        server.publish_activity();
+        let _begin = client.receiver.try_recv().unwrap();
+        server
+            .request(
+                &connection,
+                Request::new(
+                    2.into(),
+                    ExecuteCommand::METHOD.into(),
+                    json!({"command":SETTINGS_COMMAND}),
+                ),
+            )
+            .unwrap();
+        let Message::Request(picker) = protocol_message(&client).await else {
+            panic!("Expected picker");
+        };
+        assert_eq!(picker.method, "window/showMessageRequest");
+        let deadline = server.administrations[&2.into()].deadline;
+        server
+            .notification(
+                &connection,
+                lsp_server::Notification::new(
+                    "window/workDoneProgress/cancel".into(),
+                    json!({"token":create.params["token"]}),
+                ),
+            )
+            .unwrap();
+        server.publish_activity();
+        assert!(server.translations.is_empty());
+        assert!(server.selection.is_none());
+        assert_eq!(
+            *server.administrations[&2.into()].stop.borrow(),
+            Some(deadline)
+        );
+        let Message::Notification(end) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected end");
+        };
+        assert_eq!(end.params["value"]["kind"], "end");
+        assert!(client.receiver.is_empty(), "Picker must remain pending");
+        server.ui.response(Response::new_ok(picker.id, Value::Null));
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let Message::Response(dismissed) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected picker dismissal");
+        };
+        assert_eq!(dismissed.id, 2.into());
+        assert!(dismissed.response_result.unwrap().is_null());
+        assert!(client.receiver.is_empty());
+        assert!(fixture.state.lock().unwrap().records.is_empty());
+    }
+
+    async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
         let receiver = receiver.clone();
-        tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(3)).unwrap())
-            .await
-            .unwrap()
+        tokio::task::spawn_blocking(move || {
+            loop {
+                if let WorkerEvent::Finished(completion) =
+                    receiver.recv_timeout(Duration::from_secs(3)).unwrap()
+                {
+                    break completion;
+                }
+            }
+        })
+        .await
+        .unwrap()
     }
 
     fn command_notice(client: &Connection, id: i32, level: u64) -> RequestResult<Value> {
@@ -1808,7 +2351,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///deadline.rs".parse().unwrap();
@@ -2011,7 +2560,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///command-failure.md".parse().unwrap();
@@ -2094,7 +2649,7 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), false),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
         )
         .unwrap();
         server
@@ -2197,7 +2752,13 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), true),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            ),
         )
         .unwrap();
         let uri: Uri = "file:///synthetic.rs".parse().unwrap();
@@ -2291,7 +2852,13 @@ mod chatgpt_tests {
                 finished,
                 provider.clone(),
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///failed-stream.rs".parse().unwrap();
@@ -2382,7 +2949,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///cancel-synthetic.rs".parse().unwrap();
@@ -2414,8 +2987,13 @@ mod chatgpt_tests {
                 *server.translations[&ticket].deadline.borrow(),
                 Some(server.pending[&2.into()].deadline)
             );
-            // All completion events arrived, but EOF is still pending.
-            assert!(completions.is_empty());
+            assert!(
+                matches!(completions.try_recv().unwrap(), WorkerEvent::Started(started) if started == ticket)
+            );
+            assert!(
+                completions.is_empty(),
+                "Stream EOF has not completed the worker"
+            );
             assert!(server.documents[&uri].preview.is_none());
             assert_eq!(
                 fixture
@@ -2513,7 +3091,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///background.md".parse().unwrap();
@@ -2663,7 +3247,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///changes.md".parse().unwrap();
@@ -2857,7 +3447,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///excluded.md".parse().unwrap();
@@ -2901,7 +3497,13 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), true),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            ),
         )
         .unwrap();
         let uri: Uri = "file:///context.md".parse().unwrap();
@@ -3075,7 +3677,13 @@ mod chatgpt_tests {
         );
         let (connection, client) = Connection::memory();
         let server = thread::spawn(move || {
-            let ui = Ui::new(connection.sender.clone(), true);
+            let ui = Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            );
             serve_initialized(
                 &connection,
                 MockOptions::default(),
@@ -3160,7 +3768,7 @@ mod chatgpt_tests {
             "Picker must not wait for translation EOF"
         );
         assert_eq!(request.params["actions"].as_array().unwrap().len(), 4);
-        assert_eq!(request.params["message"], "接続・設定");
+        assert_eq!(request.params["message"], "Connection and settings…");
         client
             .sender
             .send(
@@ -3279,7 +3887,13 @@ mod chatgpt_tests {
                 finished,
                 provider,
                 Settings::default(),
-                Ui::new(connection.sender.clone(), true),
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        external_documents: true,
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
             let uri: Uri = "file:///picker.rs".parse().unwrap();
@@ -3359,7 +3973,13 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), true),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            ),
         )
         .unwrap();
         let commands = serde_json::to_value(capabilities(true)).unwrap()["capabilities"]
@@ -3438,7 +4058,13 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), true),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            ),
         )
         .unwrap();
         let uri: Uri = "file:///state-actions.rs".parse().unwrap();
@@ -3653,7 +4279,13 @@ mod chatgpt_tests {
             finished,
             provider,
             Settings::default(),
-            Ui::new(connection.sender.clone(), true),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    external_documents: true,
+                    ..Default::default()
+                },
+            ),
         )
         .unwrap();
         let uri: Uri = "file:///actions.rs".parse().unwrap();
