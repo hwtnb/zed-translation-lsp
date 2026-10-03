@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/zed-extension", "crates/translation-lsp"]
+default-members = ["crates/zed-extension"]
+resolver = "3"

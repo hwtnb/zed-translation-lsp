@@ -1,0 +1,16 @@
+id = "zed-code-translation"
+name = "Zed Code Translation"
+version = "0.1.0"
+schema_version = 1
+description = "Translate code comments and selected text with ChatGPT while keeping the original source unchanged."
+
+[language_servers.zed-code-translation]
+name = "Zed Code Translation"
+languages = ["Rust", "JavaScript", "TypeScript", "TSX", "Markdown"]
+
+[language_servers.zed-code-translation.language_ids]
+Rust = "rust"
+JavaScript = "javascript"
+TypeScript = "typescript"
+TSX = "typescriptreact"
+Markdown = "markdown"

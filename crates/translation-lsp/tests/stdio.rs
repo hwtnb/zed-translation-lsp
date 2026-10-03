@@ -1,0 +1,1341 @@
+use std::{
+    collections::HashMap,
+    io::{BufReader, Read},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::{Duration, Instant},
+};
+
+use lsp_server::{Message, Notification, Request, RequestId, ResponseError};
+use serde_json::{Value, json};
+
+const COMMENT_DOCUMENT: &str = include_str!("../../../samples/comment.rs");
+const MARKDOWN_DOCUMENT: &str = include_str!("../../../samples/paragraph.md");
+const COMMENT: &str = "// Retry only if the remote service\n    // reports a temporary failure.";
+const PARAGRAPH: &str =
+    "The `retry_count` value is preserved.\nRetry only after a temporary failure. 🚀";
+const COMMENT_JA: &str = "リモートサービスが一時的な障害を報告した場合に限り、再試行する。";
+const PARAGRAPH_JA: &str =
+    "`retry_count` の値を維持する。\n一時的な障害が発生した場合に限り再試行する。🚀";
+const TIMEOUT: Duration = Duration::from_secs(8);
+const READY: &str = "Translation ready. Hover over the selected text to view it.";
+
+type Reply = Result<Value, ResponseError>;
+
+// Framing is read and written by the same published SDK used by the server.
+// Unexpected server requests (including workspace/applyEdit) fail every scenario.
+struct Client {
+    child: Child,
+    stdin: ChildStdin,
+    messages: Receiver<Result<Message, String>>,
+    reader: Option<thread::JoinHandle<()>>,
+    stderr: Option<thread::JoinHandle<String>>,
+    replies: HashMap<RequestId, Reply>,
+    notifications: Vec<Value>,
+    next_id: i32,
+}
+
+impl Client {
+    fn new(args: &[&str]) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zed-code-translation-lsp"))
+            .args(args)
+            .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stderr = child.stderr.take().unwrap();
+        let (sender, messages) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            loop {
+                match Message::read(&mut stdout) {
+                    Ok(Some(message)) => {
+                        if sender.send(Ok(message)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = sender.send(Err(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+        let stderr = thread::spawn(move || {
+            let mut text = String::new();
+            stderr.read_to_string(&mut text).unwrap();
+            text
+        });
+        let mut client = Self {
+            child,
+            stdin,
+            messages,
+            reader: Some(reader),
+            stderr: Some(stderr),
+            replies: HashMap::new(),
+            notifications: Vec::new(),
+            next_id: 0,
+        };
+        let initialized = client
+            .call(
+                "initialize",
+                json!({
+                    "processId": null,
+                    "rootUri": null,
+                    "capabilities": {
+                        "general": { "positionEncodings": ["utf-16"] },
+                        "textDocument": {
+                            "hover": { "contentFormat": ["markdown"] },
+                            "codeAction": { "codeActionLiteralSupport": {
+                                "codeActionKind": { "valueSet": ["translation.preview"] }
+                            }}
+                        }
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(initialized["capabilities"]["positionEncoding"], "utf-16");
+        assert_eq!(initialized["capabilities"]["textDocumentSync"]["change"], 2);
+        assert_eq!(
+            initialized["capabilities"]["executeCommandProvider"]["commands"],
+            json!(["zed-code-translation.preview"])
+        );
+        client.notify("initialized", json!({}));
+        client
+    }
+
+    fn send(&mut self, message: Message) {
+        message.write(&mut self.stdin).unwrap();
+    }
+
+    fn notify(&mut self, method: &str, params: Value) {
+        self.send(Notification::new(method.into(), params).into());
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> RequestId {
+        self.next_id += 1;
+        let id = RequestId::from(self.next_id);
+        self.request_with_id(id.clone(), method, params);
+        id
+    }
+
+    fn request_with_id(&mut self, id: RequestId, method: &str, params: Value) {
+        self.send(Request::new(id, method.into(), params).into());
+    }
+
+    fn receive(&mut self, id: RequestId, timeout: Duration) -> Reply {
+        let start = Instant::now();
+        loop {
+            if let Some(reply) = self.replies.remove(&id) {
+                return reply;
+            }
+            let remaining = timeout
+                .checked_sub(start.elapsed())
+                .expect("LSP response timed out");
+            let message = self
+                .messages
+                .recv_timeout(remaining)
+                .expect("LSP response timed out or process exited")
+                .expect("Invalid stdout framing");
+            match message {
+                Message::Response(response) => {
+                    assert!(
+                        self.replies
+                            .insert(response.id, response.response_result)
+                            .is_none(),
+                        "Duplicate response"
+                    );
+                }
+                Message::Notification(notification)
+                    if notification.method == "window/showMessage" =>
+                {
+                    assert!(matches!(notification.params["type"].as_u64(), Some(1 | 3)));
+                    assert!(notification.params["message"].is_string());
+                    assert_eq!(notification.params.as_object().unwrap().len(), 2);
+                    self.notifications.push(notification.params);
+                }
+                other => panic!("Unexpected server message: {other:?}"),
+            }
+        }
+    }
+
+    fn call(&mut self, method: &str, params: Value) -> Reply {
+        let id = self.request(method, params);
+        self.receive(id, TIMEOUT)
+    }
+
+    fn open(&mut self, uri: &str, language: &str, text: &str, version: i32) {
+        self.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri, "languageId": language, "version": version, "text": text
+            }}),
+        );
+    }
+
+    fn change(&mut self, uri: &str, version: i32, changes: Value) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": version }, "contentChanges": changes
+            }),
+        );
+    }
+
+    fn close(&mut self, uri: &str) {
+        self.notify(
+            "textDocument/didClose",
+            json!({ "textDocument": { "uri": uri }}),
+        );
+    }
+
+    fn actions(&mut self, uri: &str, range: Value) -> Value {
+        self.call(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": [] }
+            }),
+        )
+        .unwrap()
+    }
+
+    fn action(&mut self, uri: &str, range: Value) -> Value {
+        let actions = self.actions(uri, range);
+        assert_eq!(actions.as_array().unwrap().len(), 1);
+        let action = &actions[0];
+        assert!(action.get("edit").is_none());
+        assert!(action["title"].as_str().unwrap().contains("Japanese"));
+        assert!(action["title"].as_str().unwrap().contains("mock"));
+        action["command"].clone()
+    }
+
+    fn hover(&mut self, uri: &str, position: Value) -> Value {
+        self.call(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": uri }, "position": position
+            }),
+        )
+        .unwrap()
+    }
+
+    fn request_hover(&mut self, uri: &str, position: Value) -> RequestId {
+        self.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": uri }, "position": position
+            }),
+        )
+    }
+
+    fn execute(&mut self, action: Value) -> RequestId {
+        self.request("workspace/executeCommand", action)
+    }
+
+    fn finish(&mut self, expect_clean_stderr: bool) {
+        assert!(self.call("shutdown", Value::Null).unwrap().is_null());
+        self.notify("exit", Value::Null);
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "Shutdown failed to exit promptly"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(status.success());
+        self.reader.take().unwrap().join().unwrap();
+        assert!(
+            self.messages.try_iter().next().is_none(),
+            "Unconsumed or invalid protocol output"
+        );
+        assert!(self.replies.is_empty(), "Unconsumed responses");
+        let stderr = self.stderr.take().unwrap().join().unwrap();
+        if expect_clean_stderr {
+            assert!(stderr.is_empty(), "Unexpected stderr: {stderr}");
+        }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        if let Some(stderr) = self.stderr.take() {
+            let _ = stderr.join();
+        }
+    }
+}
+
+fn position(text: &str) -> Value {
+    json!({
+        "line": text.bytes().filter(|&byte| byte == b'\n').count(),
+        "character": text.rsplit('\n').next().unwrap().encode_utf16().count()
+    })
+}
+
+fn range_for(document: &str, selected: &str) -> Value {
+    let start = document.find(selected).unwrap();
+    json!({ "start": position(&document[..start]), "end": position(&document[..start + selected.len()]) })
+}
+
+fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Value) {
+    assert_eq!(hover["range"], *range);
+    assert_eq!(hover["contents"]["kind"], "markdown");
+    let text = hover["contents"]["value"].as_str().unwrap();
+    assert!(
+        text.starts_with("> **Zed Code Translation**\n>\n> 模擬翻訳（固定サンプル）\n\n---\n\n")
+    );
+    assert!(!text.contains("**Original**"));
+    assert!(
+        !text.contains(original),
+        "Original must stay in the editor: {text}"
+    );
+    assert!(text.contains(&format!("```text\n{translation}\n```")));
+}
+
+fn assert_error(reply: Reply, code: i32) {
+    assert_eq!(reply.unwrap_err().code, code);
+}
+
+#[test]
+fn comment_and_markdown_selection_preview_leave_source_unchanged() {
+    let mut client = Client::new(&["--mock-delay-ms", "40"]);
+    for (uri, language, document, selected, translated) in [
+        (
+            "file:///comment.rs",
+            "rust",
+            COMMENT_DOCUMENT,
+            COMMENT,
+            COMMENT_JA,
+        ),
+        (
+            "file:///paragraph.md",
+            "markdown",
+            MARKDOWN_DOCUMENT,
+            PARAGRAPH,
+            PARAGRAPH_JA,
+        ),
+    ] {
+        client.open(uri, language, document, 1);
+        let range = range_for(document, selected);
+        let action = client.action(uri, range.clone());
+        // Allow enough time for an incorrectly started mock job to finish.
+        thread::sleep(Duration::from_millis(100));
+        if language == "markdown" {
+            assert!(client.hover(uri, range["start"].clone()).is_null());
+        }
+        let started = Instant::now();
+        let execution = client.execute(action.clone());
+        assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
+        assert_eq!(
+            client.notifications,
+            vec![json!({"type":3,"message":READY})]
+        );
+        client.notifications.clear();
+        assert!(
+            started.elapsed() >= Duration::from_millis(35),
+            "Listing candidates must not start or cache a translation"
+        );
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            selected,
+            translated,
+            &range,
+        );
+        // Hover has no selection payload: the preview survives clearing the selection.
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            selected,
+            translated,
+            &range,
+        );
+        assert!(
+            client
+                .hover(uri, json!({"line": 0, "character": 0}))
+                .is_null()
+        );
+        assert_eq!(client.action(uri, range.clone()), action);
+        let cached = client.execute(action);
+        assert!(client.receive(cached, TIMEOUT).unwrap().is_null());
+        assert_eq!(
+            client.notifications,
+            vec![json!({"type":3,"message":READY})]
+        );
+        client.notifications.clear();
+    }
+    client.finish(true);
+}
+
+#[test]
+fn whole_line_whitespace_is_preserved_and_only_the_last_range_is_shown() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///two-selections.md";
+    let comment = format!("    {}\r\n", COMMENT.replace('\n', "\r\n"));
+    let paragraph = format!("{}\r\n", PARAGRAPH.replace('\n', "\r\n"));
+    let document = format!("前🚀\r\n{comment}separator\r\n{paragraph}Tail");
+    client.open(uri, "markdown", &document, 1);
+    let first_range = range_for(&document, &comment);
+    let action = client.action(uri, first_range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, first_range["end"].clone()),
+        &comment,
+        COMMENT_JA,
+        &first_range,
+    );
+
+    let last_range = range_for(&document, &paragraph);
+    let action = client.action(uri, last_range.clone());
+    assert_preview(
+        &client.hover(uri, first_range["start"].clone()),
+        &comment,
+        COMMENT_JA,
+        &first_range,
+    );
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert!(client.hover(uri, first_range["end"].clone()).is_null());
+    assert_preview(
+        &client.hover(uri, last_range["end"].clone()),
+        &paragraph,
+        PARAGRAPH_JA,
+        &last_range,
+    );
+    let mut beyond = last_range["end"].clone();
+    beyond["character"] = json!(beyond["character"].as_u64().unwrap() + 1);
+    assert!(client.hover(uri, beyond).is_null());
+    client.finish(true);
+}
+
+#[test]
+fn unsaved_utf16_crlf_and_incremental_updates_select_the_current_source() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///unsaved.md";
+    client.open(uri, "markdown", "Disk text", 1);
+    let original = PARAGRAPH.replace('\n', "\r\n");
+    let final_document = format!("前🚀 {original}\r\nTail");
+    let initial_document = final_document.replace("temporary", "permanent");
+    client.change(uri, 2, json!([{ "text": initial_document }]));
+    client.change(
+        uri,
+        3,
+        json!([{
+            "range": { "start": {"line": 1, "character": 19}, "end": {"line": 1, "character": 28} },
+            "text": "temporary"
+        }]),
+    );
+    let range = range_for(&final_document, &original);
+    assert_eq!(range["start"], json!({"line": 0, "character": 4}));
+    let action = client.action(uri, range.clone());
+    assert_eq!(action["arguments"][0]["version"], 3);
+    let execution = client.execute(action.clone());
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["end"].clone()),
+        &original,
+        PARAGRAPH_JA,
+        &range,
+    );
+
+    client.change(
+        uri,
+        4,
+        json!([{
+            "range": { "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0} },
+            "text": "extra "
+        }]),
+    );
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    let stale = client.execute(action);
+    assert_error(client.receive(stale, TIMEOUT), -32801);
+    let new_document = format!("extra {final_document}");
+    let range = range_for(&new_document, &original);
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        &original,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.finish(true);
+}
+
+#[test]
+fn five_second_first_hover_returns_translation_without_blocking_sync() {
+    let mut client = Client::new(&["--mock-delay-ms", "5000"]);
+    let slow_uri = "file:///slow.rs";
+    let other_uri = "file:///other.md";
+    client.open(slow_uri, "rust", COMMENT_DOCUMENT, 1);
+    client.open(other_uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let started = Instant::now();
+    let hover = client.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": slow_uri }, "position": range["start"]
+        }),
+    );
+    let outside_started = Instant::now();
+    assert!(
+        client
+            .hover(slow_uri, json!({"line": 0, "character": 0}))
+            .is_null()
+    );
+    let outside_hover = outside_started.elapsed();
+    let other_started = Instant::now();
+    assert!(
+        client
+            .hover(other_uri, json!({"line": 0, "character": 0}))
+            .is_null()
+    );
+    let other_hover = other_started.elapsed();
+    let change_started = Instant::now();
+    let updated = format!("heading\n{MARKDOWN_DOCUMENT}");
+    client.change(other_uri, 2, json!([{ "text": updated }]));
+    let action = client.action(other_uri, range_for(&updated, PARAGRAPH));
+    assert_eq!(action["arguments"][0]["version"], 2);
+    let sync_round_trip = change_started.elapsed();
+    assert!(outside_hover < Duration::from_millis(500));
+    assert!(other_hover < Duration::from_millis(500));
+    assert!(sync_round_trip < Duration::from_millis(500));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(
+        !client.replies.contains_key(&hover),
+        "First Hover replied before its work completed"
+    );
+    assert_preview(
+        &client.receive(hover, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    let translation_time = started.elapsed();
+    assert!(translation_time >= Duration::from_millis(4900));
+    let mut durations = Vec::new();
+    for _ in 0..100 {
+        let started = Instant::now();
+        assert_preview(
+            &client.hover(slow_uri, range["end"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        durations.push(started.elapsed());
+    }
+    durations.sort();
+    let p95 = durations[94];
+    assert!(
+        p95 < Duration::from_millis(50),
+        "Cached stdio hover P95: {p95:?}"
+    );
+    eprintln!(
+        "stdio (5000ms first Hover): outside={outside_hover:?}, other={other_hover:?}, sync={sync_round_trip:?}, first={translation_time:?}, cached P95={p95:?} (n=100)"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn edits_and_close_cancel_work_and_reopen_rejects_old_actions() {
+    let mut client = Client::new(&["--mock-delay-ms", "200"]);
+    let uri = "file:///changing.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let old_action = client.action(uri, range.clone());
+    let execution = client.execute(old_action.clone());
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.change(uri, 2, json!([{ "text": MARKDOWN_DOCUMENT }]));
+    assert_error(client.receive(execution, TIMEOUT), -32801);
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    let stale = client.execute(old_action);
+    assert_error(client.receive(stale, TIMEOUT), -32801);
+
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action.clone());
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.close(uri);
+    assert_error(client.receive(execution, TIMEOUT), -32801);
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 2);
+    let stale = client.execute(action);
+    assert_error(client.receive(stale, TIMEOUT), -32801);
+    thread::sleep(Duration::from_millis(300));
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    assert!(
+        client.notifications.is_empty(),
+        "Document changes should be silent"
+    );
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        PARAGRAPH,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.close(uri);
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.finish(true);
+}
+
+#[test]
+fn cancellation_accepts_string_ids_and_does_not_publish_a_result() {
+    let mut client = Client::new(&["--mock-delay-ms", "200"]);
+    let uri = "file:///cancel.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let action = client.action(uri, range.clone());
+    let id = RequestId::from("reuse-after-cancel".to_owned());
+    client.request_with_id(id.clone(), "workspace/executeCommand", action.clone());
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.notify("$/cancelRequest", json!({ "id": "reuse-after-cancel" }));
+    assert_error(client.receive(id.clone(), TIMEOUT), -32800);
+    thread::sleep(Duration::from_millis(300));
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.request_with_id(id.clone(), "workspace/executeCommand", action);
+    assert!(
+        client.notifications.is_empty(),
+        "Expected cancellation should be silent"
+    );
+    client.receive(id, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        PARAGRAPH,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.finish(true);
+}
+
+#[test]
+fn simulated_failure_and_unsupported_samples_leave_no_cached_translation() {
+    let mut client = Client::new(&["--mock-fail"]);
+    let uri = "file:///failure.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    let error = client.receive(execution, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32803);
+    assert_eq!(
+        client.notifications,
+        vec![json!({"type":1,"message":error.message})]
+    );
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.finish(true);
+
+    let mut client = Client::new(&[]);
+    client.open(uri, "markdown", "Arbitrary text", 1);
+    let arbitrary_range = range_for("Arbitrary text", "Arbitrary text");
+    let action = client.action(uri, arbitrary_range.clone());
+    let execution = client.execute(action);
+    let error = client.receive(execution, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32803);
+    assert!(error.message.contains("sample text"));
+    assert!(
+        client
+            .hover(uri, arbitrary_range["start"].clone())
+            .is_null()
+    );
+    client.change(uri, 2, json!([{ "text": MARKDOWN_DOCUMENT }]));
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        PARAGRAPH,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.finish(true);
+}
+
+#[test]
+fn invalid_ranges_empty_selections_and_command_arguments_are_rejected() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///invalid.md";
+    client.open(uri, "markdown", &format!("🚀 {PARAGRAPH}"), 1);
+    for range in [
+        json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}),
+        json!({"start": {"line": 0, "character": 2}, "end": {"line": 0, "character": 3}}),
+        json!({"start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 3}}),
+        json!({"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 5}}),
+        json!({"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}),
+        json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 999}}),
+    ] {
+        assert_eq!(client.actions(uri, range), json!([]));
+    }
+    let document = format!("🚀 {PARAGRAPH}");
+    let mut action = client.action(uri, range_for(&document, PARAGRAPH));
+    action["arguments"][0]["range"]["start"]["character"] = json!(1);
+    let execution = client.execute(action);
+    let error = client.receive(execution, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32602);
+    assert_eq!(
+        client.notifications,
+        vec![json!({"type":1,"message":error.message})]
+    );
+    client.notifications.clear();
+    let mut action = client.action(uri, range_for(&document, PARAGRAPH));
+    action["arguments"][0]["targetLanguage"] = json!("en");
+    let execution = client.execute(action);
+    assert_error(client.receive(execution, TIMEOUT), -32602);
+    let oversized = "a".repeat(16 * 1024 + 1);
+    client.change(uri, 2, json!([{ "text": oversized }]));
+    assert_eq!(
+        client.actions(uri, range_for(&oversized, &oversized)),
+        json!([])
+    );
+    assert_error(
+        client.call(
+            "workspace/executeCommand",
+            json!({ "command": "other", "arguments": [] }),
+        ),
+        -32602,
+    );
+    assert_error(
+        client.call("textDocument/hover", json!({ "bad": "parameters" })),
+        -32602,
+    );
+    assert_error(client.call("unknown/request", json!({})), -32601);
+    assert_eq!(
+        client.notifications.len(),
+        2,
+        "Only explicit command failures notify"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn queue_and_same_document_concurrency_are_bounded_and_shutdown_cancels_work() {
+    let mut client = Client::new(&["--mock-delay-ms", "5000"]);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let mut executions = Vec::new();
+    for index in 0..4 {
+        let uri = format!("file:///queue-{index}.md");
+        client.open(&uri, "markdown", MARKDOWN_DOCUMENT, 1);
+        let action = client.action(&uri, range.clone());
+        executions.push(client.execute(action.clone()));
+        assert!(client.hover(&uri, range["start"].clone()).is_null());
+        if index == 0 {
+            // Identical work is shared; a different range in the same document is bounded.
+            executions.push(client.execute(action));
+            let other_range = range_for(MARKDOWN_DOCUMENT, &format!("{PARAGRAPH}\n"));
+            let other_action = client.action(&uri, other_range);
+            let conflicting = client.execute(other_action);
+            assert_error(client.receive(conflicting, TIMEOUT), -32803);
+        }
+    }
+    let uri = "file:///queue-full.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let action = client.action(uri, range.clone());
+    let rejected = client.execute(action);
+    let start = Instant::now();
+    assert_error(client.receive(rejected, TIMEOUT), -32803);
+    assert!(start.elapsed() < Duration::from_millis(500));
+    for execution in executions {
+        client.notify(
+            "$/cancelRequest",
+            json!({ "id": serde_json::to_value(&execution).unwrap() }),
+        );
+        assert_error(client.receive(execution, TIMEOUT), -32800);
+    }
+    let action = client.action(uri, range);
+    let execution = client.execute(action);
+    let shutdown = client.request("shutdown", Value::Null);
+    assert!(client.receive(shutdown, TIMEOUT).unwrap().is_null());
+    assert_error(client.receive(execution, TIMEOUT), -32800);
+    client.notify("exit", Value::Null);
+    let start = Instant::now();
+    while client.child.try_wait().unwrap().is_none() {
+        assert!(start.elapsed() < Duration::from_secs(2));
+        thread::sleep(Duration::from_millis(5));
+    }
+    client.reader.take().unwrap().join().unwrap();
+    assert!(client.messages.try_iter().next().is_none());
+    assert!(client.replies.is_empty());
+    assert!(client.stderr.take().unwrap().join().unwrap().is_empty());
+}
+
+#[test]
+fn invalid_incremental_sync_discards_cache_and_recovers_with_full_text() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///bad-update.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    client.change(
+        uri,
+        2,
+        json!([{
+            "range": { "start": {"line": 3, "character": 38}, "end": {"line": 3, "character": 39} },
+            "text": "bad surrogate edit"
+        }]),
+    );
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    assert_eq!(client.actions(uri, range.clone()), json!([]));
+    client.change(uri, 3, json!([{ "text": MARKDOWN_DOCUMENT }]));
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        PARAGRAPH,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.finish(false);
+}
+
+#[test]
+fn automatic_hover_recognizes_comments_and_returns_only_known_translations() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///fixture.rs";
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    for ending in ["\n", "\r\n", "\r"] {
+        client.open(uri, "rust", &COMMENT_DOCUMENT.replace('\n', ending), 1);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        assert!(
+            client
+                .hover(uri, json!({"line": 3, "character": 10}))
+                .is_null()
+        );
+        client.close(uri);
+    }
+    client.open(uri, "markdown", COMMENT_DOCUMENT, 1);
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.open(uri, "rust", &format!("let text = r#\"{COMMENT}\"#;"), 1);
+    assert!(
+        client
+            .hover(uri, json!({"line": 1, "character": 10}))
+            .is_null()
+    );
+    client.open(uri, "rust", "// Arbitrary comment", 1);
+    assert_error(
+        client.call(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri}, "position": {"line": 0, "character": 5}
+            }),
+        ),
+        -32803,
+    );
+    assert!(
+        client.notifications.is_empty(),
+        "Automatic Hover should be silent"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
+    let mut client = Client::new(&[]);
+    for (uri, language, lead) in [
+        ("file:///general.rs", "rust", "let s = r#\"// string\"#;"),
+        (
+            "file:///general.js",
+            "javascript",
+            "const t = `// template`; const view = <div>// jsx text</div>;",
+        ),
+        (
+            "file:///general.jsx",
+            "javascript",
+            "const view = <div>// jsx text</div>;",
+        ),
+        ("file:///general.ts", "typescript", "const n: number = 1;"),
+        (
+            "untitled:general.tsx",
+            "typescriptreact",
+            "const view: Element = <div>// jsx text</div>;",
+        ),
+    ] {
+        let source = format!("{lead}\n    {COMMENT}\n");
+        let range = range_for(&source, COMMENT);
+        client.open(uri, language, &source, 1);
+        for point in [
+            json!({"line": 1, "character": 0}),
+            json!({"line": 2, "character": 2}),
+        ] {
+            assert!(client.hover(uri, point).is_null());
+        }
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        let literal = if language == "rust" {
+            format!("let t = r#\"{COMMENT}\"#;")
+        } else {
+            format!("const t = `{COMMENT}`;")
+        };
+        client.change(uri, 2, json!([{"text": literal}]));
+        assert!(
+            client
+                .hover(uri, json!({"line": 1, "character": 8}))
+                .is_null()
+        );
+        client.change(uri, 3, json!([{"text": source}]));
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        // The auxiliary selection path remains available in every registered language.
+        let action = client.action(uri, range.clone());
+        let execution = client.execute(action);
+        client.receive(execution, TIMEOUT).unwrap();
+        client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
+fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
+    let mut client = Client::new(&[]);
+    let first = "/* Retry only if the remote service\nreports a temporary failure. */";
+    for (uri, language) in [
+        ("file:///blocks.rs", "rust"),
+        ("file:///blocks.js", "javascript"),
+    ] {
+        let source = format!("{first}/* unknown */");
+        let range = range_for(&source, first);
+        client.open(uri, language, &source, 1);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            first,
+            COMMENT_JA,
+            &range,
+        );
+        assert_error(
+            client.call(
+                "textDocument/hover",
+                json!({"textDocument": {"uri": uri}, "position": range["end"]}),
+            ),
+            -32803,
+        );
+        client.change(
+            uri,
+            2,
+            json!([{"text": "/* Retry only if the remote service\nreports a temporary failure."}]),
+        );
+        assert!(
+            client
+                .hover(uri, json!({"line": 0, "character": 3}))
+                .is_null()
+        );
+        client.change(uri, 3, json!([{"text": first}]));
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            first,
+            COMMENT_JA,
+            &range,
+        );
+        // With no next token, the existing preview's keyboard end remains readable.
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            first,
+            COMMENT_JA,
+            &range,
+        );
+        client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
+fn cold_line_end_caret_translates_at_eof_and_original_line_endings() {
+    let mut client = Client::new(&["--mock-delay-ms", "20"]);
+    let range = json!({"start": {"line": 0, "character": 4}, "end": {"line": 1, "character": 35}});
+    for (uri, language) in [
+        ("file:///cold.rs", "rust"),
+        ("file:///cold.js", "javascript"),
+        ("file:///cold.ts", "typescript"),
+    ] {
+        for ending in ["\n", "\r\n", "\r"] {
+            for suffix in ["", ending] {
+                let source = format!("    {}{suffix}", COMMENT.replace('\n', ending));
+                client.open(uri, language, &source, 1);
+                let retained = client.request_hover(uri, range["end"].clone());
+                assert!(
+                    client
+                        .hover(uri, json!({"line": 0, "character": 1}))
+                        .is_null()
+                );
+                assert_preview(
+                    &client.receive(retained, TIMEOUT).unwrap(),
+                    COMMENT,
+                    COMMENT_JA,
+                    &range,
+                );
+                client.close(uri);
+            }
+        }
+    }
+    client.finish(true);
+}
+
+#[test]
+fn cached_comment_end_does_not_cover_an_unclosed_block_and_raw_selection_end_is_kept() {
+    let mut client = Client::new(&[]);
+    let left = "/* Retry only if the remote service\nreports a temporary failure. */";
+    for (uri, language) in [
+        ("file:///boundary.rs", "rust"),
+        ("file:///boundary.js", "javascript"),
+    ] {
+        for explicit in [false, true] {
+            let source = format!("{left}/* unfinished");
+            let range = range_for(&source, left);
+            client.open(uri, language, &source, 1);
+            assert!(client.hover(uri, range["end"].clone()).is_null());
+            if explicit {
+                let action = client.action(uri, range.clone());
+                let execution = client.execute(action);
+                client.receive(execution, TIMEOUT).unwrap();
+            }
+            assert_preview(
+                &client.hover(uri, range["start"].clone()),
+                left,
+                COMMENT_JA,
+                &range,
+            );
+            assert!(client.hover(uri, range["end"].clone()).is_null());
+            assert_preview(
+                &client.hover(uri, range["start"].clone()),
+                left,
+                COMMENT_JA,
+                &range,
+            );
+            client.close(uri);
+        }
+        let literal = if language == "rust" {
+            format!("let text = r#\"{COMMENT}/* unfinished\"#;")
+        } else {
+            format!("const text = `{COMMENT}/* unfinished`;")
+        };
+        let range = range_for(&literal, COMMENT);
+        client.open(uri, language, &literal, 1);
+        let action = client.action(uri, range.clone());
+        let execution = client.execute(action);
+        client.receive(execution, TIMEOUT).unwrap();
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
+fn oxc_fatal_tail_keeps_selection_preview_available() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///unfinished.ts";
+    let source = format!("const s = 'unclosed\n{COMMENT}");
+    let range = range_for(&source, COMMENT);
+    client.open(uri, "typescript", &source, 1);
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    let action = client.action(uri, range.clone());
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    let execution = client.execute(action);
+    client.receive(execution, TIMEOUT).unwrap();
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    client.finish(true);
+}
+
+#[test]
+fn coalesced_hovers_complete_once_and_one_cancellation_keeps_the_other_requests() {
+    let mut client = Client::new(&["--mock-delay-ms", "300"]);
+    let uri = "file:///coalesced.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let started = Instant::now();
+    let canceled = client.request_hover(uri, range["start"].clone());
+    let remaining = client.request_hover(uri, range["end"].clone());
+    let action = client.action(uri, range.clone());
+    let command = client.execute(action.clone());
+    let second_command = client.execute(action);
+    client.notify(
+        "$/cancelRequest",
+        json!({"id": serde_json::to_value(canceled.clone()).unwrap()}),
+    );
+    assert_error(client.receive(canceled, TIMEOUT), -32800);
+    assert!(client.notifications.is_empty());
+    assert!(!client.replies.contains_key(&remaining));
+    assert_preview(
+        &client.receive(remaining, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+    assert!(client.receive(second_command, TIMEOUT).unwrap().is_null());
+    assert_eq!(
+        client.notifications,
+        vec![json!({"type":3,"message":READY})]
+    );
+    assert!(started.elapsed() >= Duration::from_millis(290));
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "Shared work ran multiple translations"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn coalesced_command_failures_and_deadlines_notify_once_without_partial_hover() {
+    for args in [
+        vec!["--mock-delay-ms", "400", "--mock-fail"],
+        vec!["--mock-delay-ms", "400", "--mock-timeout-ms", "100"],
+    ] {
+        let mut client = Client::new(&args);
+        let uri = "file:///shared-failure.rs";
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        let range = range_for(COMMENT_DOCUMENT, COMMENT);
+        let action = client.action(uri, range.clone());
+        let hover = client.request_hover(uri, range["start"].clone());
+        let first = client.execute(action.clone());
+        let second = client.execute(action);
+        let error = client.receive(first, TIMEOUT).unwrap_err();
+        assert_eq!(error.code, -32803);
+        assert_eq!(
+            client.receive(second, TIMEOUT).unwrap_err().message,
+            error.message
+        );
+        assert_eq!(
+            client.receive(hover, TIMEOUT).unwrap_err().message,
+            error.message
+        );
+        assert_eq!(
+            client.notifications,
+            vec![json!({"type":1,"message":error.message})]
+        );
+        assert!(!client.notifications[0].to_string().contains(COMMENT));
+        client.change(uri, 2, json!([{"text":"fn main() {}"}]));
+        assert!(client.hover(uri, range["start"].clone()).is_null());
+        client.finish(true);
+    }
+}
+
+#[test]
+fn canceled_hover_id_can_be_reused_without_receiving_the_old_work() {
+    let mut client = Client::new(&["--mock-delay-ms", "200"]);
+    let uri = "file:///reuse.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let id = RequestId::from("hover-reuse".to_owned());
+    let params = json!({"textDocument":{"uri":uri}, "position":range["start"]});
+    client.request_with_id(id.clone(), "textDocument/hover", params.clone());
+    assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+    client.notify("$/cancelRequest", json!({"id":"hover-reuse"}));
+    assert_error(client.receive(id.clone(), TIMEOUT), -32800);
+    let restarted = Instant::now();
+    client.request_with_id(id.clone(), "textDocument/hover", params);
+    assert_preview(
+        &client.receive(id, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert!(restarted.elapsed() >= Duration::from_millis(190));
+    client.finish(true);
+}
+
+#[test]
+fn pending_hovers_are_invalidated_by_edit_close_reopen_and_broken_sync() {
+    for operation in ["edit", "reopen", "broken-sync"] {
+        let mut client = Client::new(&["--mock-delay-ms", "100"]);
+        let uri = "file:///invalidate.rs";
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        let range = range_for(COMMENT_DOCUMENT, COMMENT);
+        let first = client.request_hover(uri, range["start"].clone());
+        let second = client.request_hover(uri, range["end"].clone());
+        assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+        match operation {
+            "edit" => client.change(uri, 2, json!([{"text": "// changed"}])),
+            "reopen" => {
+                client.close(uri);
+                client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+            }
+            _ => client.change(
+                uri,
+                2,
+                json!([{
+                    "range":{"start":{"line":99,"character":0},"end":{"line":99,"character":1}},
+                    "text":"bad"
+                }]),
+            ),
+        }
+        assert_error(client.receive(first, TIMEOUT), -32801);
+        assert_error(client.receive(second, TIMEOUT), -32801);
+        if operation != "reopen" {
+            assert!(client.hover(uri, range["start"].clone()).is_null());
+            client.change(uri, 3, json!([{"text":COMMENT_DOCUMENT}]));
+        }
+        let restarted = Instant::now();
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        assert!(
+            restarted.elapsed() >= Duration::from_millis(90),
+            "Old work populated the reopened/edited cache"
+        );
+        client.finish(operation != "broken-sync");
+    }
+}
+
+#[test]
+fn automatic_hover_failure_and_deadline_do_not_cache_or_block_other_requests() {
+    for args in [
+        vec!["--mock-fail", "--mock-delay-ms", "100"],
+        vec!["--mock-delay-ms", "5000", "--mock-timeout-ms", "100"],
+    ] {
+        let mut client = Client::new(&args);
+        let uri = "file:///failure.rs";
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        let range = range_for(COMMENT_DOCUMENT, COMMENT);
+        let first = client.request_hover(uri, range["start"].clone());
+        let second = client.request_hover(uri, range["end"].clone());
+        let outside = Instant::now();
+        assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+        assert!(outside.elapsed() < Duration::from_millis(500));
+        for id in [first, second] {
+            let error = client.receive(id, Duration::from_secs(1)).unwrap_err();
+            assert_eq!(error.code, -32803);
+            assert!(error.message.contains(if args.contains(&"--mock-fail") {
+                "failure"
+            } else {
+                "timed out"
+            }));
+        }
+        let retry = Instant::now();
+        let id = client.request_hover(uri, range["start"].clone());
+        assert_error(client.receive(id, Duration::from_secs(1)), -32803);
+        assert!(retry.elapsed() >= Duration::from_millis(90));
+        assert!(
+            client.notifications.is_empty(),
+            "Automatic Hover failures should be silent"
+        );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn queued_hover_deadline_includes_time_waiting_for_the_worker() {
+    let mut client = Client::new(&["--mock-delay-ms", "150", "--mock-timeout-ms", "220"]);
+    let first_uri = "file:///deadline-first.rs";
+    let queued_uri = "file:///deadline-queued.rs";
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    client.open(first_uri, "rust", COMMENT_DOCUMENT, 1);
+    client.open(queued_uri, "rust", COMMENT_DOCUMENT, 1);
+    let started = Instant::now();
+    let first = client.request_hover(first_uri, range["start"].clone());
+    let queued = client.request_hover(queued_uri, range["end"].clone());
+    assert_preview(
+        &client.receive(first, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    let error = client.receive(queued, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32803);
+    assert!(error.message.contains("timed out"));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    client.finish(true);
+}
+
+#[test]
+fn coalesced_hover_waiters_are_bounded_and_shutdown_cancels_them() {
+    let mut client = Client::new(&["--mock-delay-ms", "5000"]);
+    let uri = "file:///bounded.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let mut pending = Vec::new();
+    for _ in 0..16 {
+        pending.push(client.request_hover(uri, range["start"].clone()));
+    }
+    let rejected = client.request_hover(uri, range["end"].clone());
+    assert_error(client.receive(rejected, TIMEOUT), -32803);
+    let shutdown = client.request("shutdown", Value::Null);
+    assert!(client.receive(shutdown, TIMEOUT).unwrap().is_null());
+    for id in pending {
+        assert_error(client.receive(id, TIMEOUT), -32800);
+    }
+    client.notify("exit", Value::Null);
+    let started = Instant::now();
+    while client.child.try_wait().unwrap().is_none() {
+        assert!(started.elapsed() < Duration::from_secs(2));
+        thread::sleep(Duration::from_millis(5));
+    }
+    client.reader.take().unwrap().join().unwrap();
+    assert!(client.messages.try_iter().next().is_none());
+    assert!(client.replies.is_empty());
+    assert!(client.stderr.take().unwrap().join().unwrap().is_empty());
+}
+
+#[test]
+fn duplicate_live_hover_id_is_retired_once_and_can_later_be_reused() {
+    let mut client = Client::new(&["--mock-delay-ms", "100"]);
+    let uri = "file:///duplicate-id.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let id = RequestId::from("duplicate-live".to_owned());
+    let params = json!({"textDocument":{"uri":uri},"position":range["start"]});
+    client.request_with_id(id.clone(), "textDocument/hover", params.clone());
+    client.request_with_id(id.clone(), "textDocument/hover", params.clone());
+    assert_error(client.receive(id.clone(), TIMEOUT), -32600);
+    let restarted = Instant::now();
+    client.request_with_id(id.clone(), "textDocument/hover", params);
+    assert_preview(
+        &client.receive(id, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert!(restarted.elapsed() >= Duration::from_millis(90));
+    client.finish(true);
+}

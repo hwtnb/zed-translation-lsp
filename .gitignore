@@ -1,0 +1,21 @@
+# Rust build output and cargo-fmt backups.
+/target/
+/crates/*/target/
+**/*.rs.bk
+
+# Generated development extension.
+/crates/zed-extension/extension.wasm
+
+# Local environment files; sanitized examples may be tracked.
+.env
+.env.*
+!.env.example
+mise.local.toml
+.mise.local.toml
+
+# OS metadata and editor temporary files.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
