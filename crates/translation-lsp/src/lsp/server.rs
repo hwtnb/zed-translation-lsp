@@ -45,7 +45,6 @@ type RequestResult<T> = Result<T, ResponseError>;
 
 const COMMAND: &str = "zed-code-translation.preview";
 const SETTINGS_COMMAND: &str = "zed-code-translation.settings";
-const SELECTION_STABILITY: Duration = Duration::from_millis(450);
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
 const ADMIN_COMMANDS: [(&str, &str); 5] = [
@@ -62,22 +61,11 @@ const MAX_JOBS: usize = 4;
 const MAX_PENDING: usize = 16;
 const MAX_SELECTION_BYTES: usize = 16 * 1024;
 
+#[derive(Default)]
 pub(crate) struct MockOptions {
     delay: Duration,
-    hover_timeout: Duration,
-    selection_timeout: Duration,
+    timeout_ms: Option<u64>,
     fail: bool,
-}
-
-impl Default for MockOptions {
-    fn default() -> Self {
-        Self {
-            delay: Duration::ZERO,
-            hover_timeout: Duration::from_secs(10),
-            selection_timeout: Duration::from_secs(30),
-            fail: false,
-        }
-    }
 }
 
 impl MockOptions {
@@ -101,8 +89,7 @@ impl MockOptions {
                         return Err("Mock timeout must be between 1 and 30000 milliseconds".into());
                     }
                     // This fixture-only override caps both kinds of mock request.
-                    options.hover_timeout = Duration::from_millis(milliseconds);
-                    options.selection_timeout = options.hover_timeout;
+                    options.timeout_ms = Some(milliseconds);
                 }
                 _ => return Err(format!("Unknown argument: {argument}").into()),
             }
@@ -203,8 +190,6 @@ struct Server<P: TranslationProvider> {
     pending: HashMap<RequestId, Pending>,
     translations: HashMap<u64, Translation>,
     selection: Option<Selection>,
-    hover_timeout: Duration,
-    selection_timeout: Duration,
     next_session: u64,
     next_ticket: u64,
     jobs: Option<mpsc::Sender<Job>>,
@@ -217,9 +202,10 @@ pub fn run_stdio() -> ServerResult<()> {
     let (connection, io_threads) = Connection::stdio();
     let result = serve(&connection, options);
     drop(connection);
+    // Flush initialize errors too; the reader stops at the client's exit or EOF.
+    let io_result = io_threads.join();
     result?;
-    // The SDK reader stops at exit; the writer flushes protocol output before joining.
-    io_threads.join()?;
+    io_result?;
     Ok(())
 }
 
@@ -407,13 +393,17 @@ impl<P: TranslationProvider> Server<P> {
         options: MockOptions,
         finished: Sender<WorkerEvent>,
         provider: P,
-        settings: Settings,
+        mut settings: Settings,
         ui: Ui,
     ) -> ServerResult<Self> {
         let (sender, jobs) = mpsc::channel::<Job>(MAX_JOBS - 1);
         let (admin_sender, admin_jobs) = mpsc::channel::<Job>(1);
-        let hover_timeout = options.hover_timeout;
-        let selection_timeout = options.selection_timeout;
+        if !provider.is_chatgpt()
+            && let Some(milliseconds) = options.timeout_ms
+        {
+            settings.hover_timeout_ms = milliseconds;
+            settings.selection_timeout_ms = milliseconds;
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -435,8 +425,6 @@ impl<P: TranslationProvider> Server<P> {
             pending: HashMap::new(),
             translations: HashMap::new(),
             selection: None,
-            hover_timeout,
-            selection_timeout,
             next_session: 0,
             next_ticket: 0,
             jobs: Some(sender),
@@ -679,7 +667,8 @@ impl<P: TranslationProvider> Server<P> {
             .documents
             .get_mut(&params.text_document.uri)
             .and_then(|document| {
-                if !self.provider.is_chatgpt()
+                if !self.settings.markdown_auto_translate
+                    || !self.provider.is_chatgpt()
                     || state != AuthUiState::Ready
                     || !document.language_id.eq_ignore_ascii_case("markdown")
                 {
@@ -716,7 +705,7 @@ impl<P: TranslationProvider> Server<P> {
         self.retire_selection();
         let start = context
             .is_some()
-            .then(|| Instant::now() + SELECTION_STABILITY);
+            .then(|| Instant::now() + Duration::from_millis(self.settings.selection_debounce_ms));
         self.selection = Some(Selection {
             target,
             context,
@@ -939,10 +928,10 @@ impl<P: TranslationProvider> Server<P> {
     ) -> RequestResult<Option<Value>> {
         // No client reply means an independent background owner.
         let timeout = match &client {
-            Some((_, PendingReply::Hover(_))) => self.hover_timeout,
-            _ => self.selection_timeout,
+            Some((_, PendingReply::Hover(_))) => self.settings.hover_timeout_ms,
+            _ => self.settings.selection_timeout_ms,
         };
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + Duration::from_millis(timeout);
         let context = self.check_cache();
         let document = self
             .documents
@@ -1924,6 +1913,170 @@ mod chatgpt_tests {
     use serde_json::json;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
+        for automatic in [false, true] {
+            let fixture = Fixture::new().await;
+            fixture.state.lock().unwrap().translation_segments =
+                Some(vec![json!({"id":0,"text":"Translated sentence."})]);
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let settings = Settings::from_options(Some(json!({
+                "target_language":"en", "markdown_auto_translate":automatic,
+                "hover_timeout_ms":1000, "selection_timeout_ms":1500, "selection_debounce_ms":100,
+                "provider":{"name":"chatgpt","model":"synthetic-model"}
+            })))
+            .unwrap();
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions {
+                    timeout_ms: Some(1),
+                    ..Default::default()
+                },
+                finished,
+                provider,
+                settings,
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uri: Uri = "file:///configured-en.md".parse().unwrap();
+            let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+            );
+            let actions = markdown_actions(&mut server, &uri, range);
+            assert_eq!(actions[0].title, "Translate selection to en");
+            assert_eq!(actions[1].title, "Connection and settings…");
+            let command = actions[0].command.clone().unwrap();
+            assert_eq!(
+                command.arguments.as_ref().unwrap()[0]["targetLanguage"],
+                "en"
+            );
+            if automatic {
+                let due = server.selection.as_ref().unwrap().start.unwrap();
+                assert!(due <= Instant::now() + Duration::from_millis(100));
+                markdown_actions(&mut server, &uri, range);
+                assert_eq!(server.selection.as_ref().unwrap().start, Some(due));
+                server.expire(&connection).unwrap();
+                assert!(server.translations.is_empty());
+                assert!(fixture.state.lock().unwrap().records.is_empty());
+                tokio::time::sleep(Duration::from_millis(110)).await;
+                server.expire(&connection).unwrap();
+                server
+                    .finish(&connection, next(&completions).await)
+                    .unwrap();
+                assert!(
+                    client.receiver.is_empty(),
+                    "Background completion remains silent"
+                );
+                markdown_actions(&mut server, &uri, range);
+                server.expire(&connection).unwrap();
+                assert!(
+                    server.translations.is_empty(),
+                    "Same selection cannot duplicate completed work"
+                );
+            } else {
+                assert!(server.selection.is_none());
+                tokio::time::sleep(Duration::from_millis(110)).await;
+                markdown_actions(&mut server, &uri, range);
+                server.expire(&connection).unwrap();
+                assert!(
+                    fixture.state.lock().unwrap().records.is_empty(),
+                    "Disabled automatic translation sends nothing"
+                );
+            }
+            server
+                .request(
+                    &connection,
+                    Request::new(
+                        1.into(),
+                        ExecuteCommand::METHOD.into(),
+                        json!({
+                            "command":command.command,"arguments":command.arguments.unwrap()
+                        }),
+                    ),
+                )
+                .unwrap();
+            if !automatic {
+                server
+                    .finish(&connection, next(&completions).await)
+                    .unwrap();
+            }
+            assert!(command_notice(&client, 1, 3).unwrap().is_null());
+            let markdown = server
+                .hover(
+                    2.into(),
+                    parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                        .unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(
+                markdown["contents"]["value"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("```text\nTranslated sentence.\n```")
+            );
+            assert_eq!(
+                server.documents[&uri].text.as_deref(),
+                Some("First sentence.")
+            );
+            let comment_uri: Uri = "file:///configured-en.rs".parse().unwrap();
+            server.documents.insert(
+                comment_uri.clone(),
+                Document::new(1, 2, "rust".into(), "// First sentence.".into()),
+            );
+            server
+                .request(
+                    &connection,
+                    Request::new(
+                        3.into(),
+                        HoverRequest::METHOD.into(),
+                        json!({
+                            "textDocument":{"uri":comment_uri},"position":{"line":0,"character":4}
+                        }),
+                    ),
+                )
+                .unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            let Message::Response(comment) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected comment Hover");
+            };
+            assert!(
+                comment.response_result.unwrap()["contents"]["value"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Translated sentence.")
+            );
+            assert_eq!(
+                server.documents[&comment_uri].text.as_deref(),
+                Some("// First sentence.")
+            );
+            let records = fixture.state.lock().unwrap().records.clone();
+            let responses: Vec<_> = records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .collect();
+            assert_eq!(responses.len(), 2);
+            for response in responses {
+                let body: Value = serde_json::from_str(&response.body).unwrap();
+                assert!(body["instructions"].as_str().unwrap().starts_with(
+                    "Translate the unprotected text segments into en. Source language: auto."
+                ));
+            }
+            assert!(client.receiver.is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn activity_problem_survives_busy_store_and_clears_confirmed_external_invalidation() {
         for plan_disabled in [false, true] {
             let fixture = Fixture::new().await;
@@ -2315,9 +2468,9 @@ mod chatgpt_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn request_deadlines_keep_one_http_operation_and_start_at_each_admission() {
-        let defaults = MockOptions::default();
-        assert_eq!(defaults.hover_timeout, Duration::from_secs(10));
-        assert_eq!(defaults.selection_timeout, Duration::from_secs(30));
+        let defaults = Settings::default();
+        assert_eq!(defaults.hover_timeout_ms, 10_000);
+        assert_eq!(defaults.selection_timeout_ms, 30_000);
         for mode in [
             "manual",
             "hover",
@@ -2344,13 +2497,16 @@ mod chatgpt_tests {
             let (finished, completions) = bounded(MAX_JOBS);
             let mut server = Server::configured(
                 MockOptions {
-                    hover_timeout: Duration::from_millis(200),
-                    selection_timeout: Duration::from_millis(600),
+                    timeout_ms: Some(1),
                     ..Default::default()
                 },
                 finished,
                 provider,
-                Settings::default(),
+                Settings {
+                    hover_timeout_ms: 200,
+                    selection_timeout_ms: 600,
+                    ..Default::default()
+                },
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
@@ -2942,13 +3098,13 @@ mod chatgpt_tests {
             let (connection, client) = Connection::memory();
             let (finished, completions) = bounded(MAX_JOBS);
             let mut server = Server::configured(
-                MockOptions {
-                    hover_timeout: Duration::from_millis(250),
-                    ..Default::default()
-                },
+                MockOptions::default(),
                 finished,
                 provider,
-                Settings::default(),
+                Settings {
+                    hover_timeout_ms: 250,
+                    ..Default::default()
+                },
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
@@ -3065,7 +3221,12 @@ mod chatgpt_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn background_owners_share_one_http_and_keep_waiter_deadlines_independent() {
-        for mode in ["deselect", "cancel-clients", "background-expiry"] {
+        for mode in [
+            "deselect",
+            "auto-disabled",
+            "cancel-clients",
+            "background-expiry",
+        ] {
             let fixture = Fixture::new().await;
             fixture.state.lock().unwrap().stream_tail_delay =
                 Duration::from_millis(if mode == "background-expiry" {
@@ -3083,14 +3244,14 @@ mod chatgpt_tests {
             let (connection, client) = Connection::memory();
             let (finished, completions) = bounded(MAX_JOBS);
             let mut server = Server::configured(
-                MockOptions {
-                    hover_timeout: Duration::from_millis(400),
-                    selection_timeout: Duration::from_millis(800),
-                    ..Default::default()
-                },
+                MockOptions::default(),
                 finished,
                 provider,
-                Settings::default(),
+                Settings {
+                    hover_timeout_ms: 400,
+                    selection_timeout_ms: 800,
+                    ..Default::default()
+                },
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
@@ -3141,8 +3302,14 @@ mod chatgpt_tests {
                     .queue(2.into(), target, PendingReply::Command)
                     .unwrap();
                 assert_eq!(server.pending[&2.into()].ticket, ticket);
-                if mode == "deselect" {
-                    markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
+                if matches!(mode, "deselect" | "auto-disabled") {
+                    if mode == "auto-disabled" {
+                        // Exercise retirement with an existing owner; public settings apply on restart.
+                        server.settings.markdown_auto_translate = false;
+                        markdown_actions(&mut server, &uri, range);
+                    } else {
+                        markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
+                    }
                     assert!(server.selection.is_none());
                     assert!(server.translations[&ticket].background_deadline.is_none());
                     tokio::time::sleep(Duration::from_millis(420)).await;
@@ -3181,7 +3348,7 @@ mod chatgpt_tests {
             );
             server.finish(&connection, completion).unwrap();
             assert!(server.documents[&uri].preview.is_some(), "{mode}");
-            if mode == "deselect" {
+            if matches!(mode, "deselect" | "auto-disabled") {
                 command_notice(&client, 2, 3).unwrap();
             } else if mode == "background-expiry" {
                 let Message::Response(response) = client.receiver.try_recv().unwrap() else {
@@ -3687,7 +3854,7 @@ mod chatgpt_tests {
             serve_initialized(
                 &connection,
                 MockOptions::default(),
-                Settings::default(),
+                Settings::from_options(Some(json!({"selection_debounce_ms":700}))).unwrap(),
                 ui,
                 provider,
             )
@@ -3746,7 +3913,7 @@ mod chatgpt_tests {
         })
         .await
         .unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(440));
+        assert!(started.elapsed() >= Duration::from_millis(690));
         let picker = Instant::now();
         client
             .sender

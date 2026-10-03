@@ -46,6 +46,10 @@ impl Client {
     }
 
     fn with_activity(args: &[&str], progress: bool, status: bool) -> Self {
+        Self::configured(args, progress, status, Value::Null)
+    }
+
+    fn spawn(args: &[&str], progress: bool, status: bool) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_zed-code-translation-lsp"))
             .args(args)
             .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
@@ -79,7 +83,7 @@ impl Client {
             stderr.read_to_string(&mut text).unwrap();
             text
         });
-        let mut client = Self {
+        Self {
             child,
             stdin,
             messages,
@@ -92,11 +96,16 @@ impl Client {
             creates: Vec::new(),
             progress: Vec::new(),
             statuses: Vec::new(),
-        };
+        }
+    }
+
+    fn configured(args: &[&str], progress: bool, status: bool, options: Value) -> Self {
+        let mut client = Self::spawn(args, progress, status);
         let initialized = client
             .call(
                 "initialize",
                 json!({
+                    "initializationOptions": options,
                     "processId": null,
                     "rootUri": null,
                     "capabilities": {
@@ -372,6 +381,111 @@ fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Valu
 
 fn assert_error(reply: Reply, code: i32) {
     assert_eq!(reply.unwrap_err().code, code);
+}
+
+#[test]
+fn initialization_rejects_invalid_public_settings_before_mock_override() {
+    for options in [
+        json!({"hover_timeout_ms":999}),
+        json!({"selection_timeout_ms":120001}),
+        json!({"selection_debounce_ms":99}),
+        json!({"markdown_auto_translate":"false"}),
+        json!({"hover_timeout_ms":1.5}),
+        json!({"unknown_setting":true}),
+    ] {
+        let mut client = Client::spawn(&["--mock-timeout-ms", "80"], false, false);
+        let error = client
+            .call(
+                "initialize",
+                json!({
+                    "capabilities":{}, "initializationOptions":options
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert!(error.message.is_ascii());
+        client.notify("exit", Value::Null);
+        assert!(!client.child.wait().unwrap().success());
+        client.reader.take().unwrap().join().unwrap();
+        assert!(client.messages.try_iter().next().is_none());
+        assert!(
+            client
+                .stderr
+                .take()
+                .unwrap()
+                .join()
+                .unwrap()
+                .contains("translation")
+        );
+    }
+}
+
+#[test]
+fn public_deadlines_reach_waiters_and_explicit_mock_override_remains_separate() {
+    for hover_first in [true, false] {
+        let (hover_timeout, selection_timeout) = if hover_first {
+            (1000, 1800)
+        } else {
+            (1800, 1000)
+        };
+        let mut client = Client::configured(
+            &["--mock-delay-ms", "1400"],
+            false,
+            false,
+            json!({
+                "hover_timeout_ms":hover_timeout, "selection_timeout_ms":selection_timeout,
+                "markdown_auto_translate":false
+            }),
+        );
+        let uri = "file:///configured-deadline.rs";
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        let range = range_for(COMMENT_DOCUMENT, COMMENT);
+        let action = client.action(uri, range.clone());
+        let (first, second) = if hover_first {
+            let first = client.request_hover(uri, range["start"].clone());
+            (first, client.execute(action))
+        } else {
+            let first = client.execute(action);
+            (first, client.request_hover(uri, range["start"].clone()))
+        };
+        assert_error(client.receive(first, TIMEOUT), -32803);
+        let result = client.receive(second, TIMEOUT).unwrap();
+        if hover_first {
+            assert!(result.is_null());
+            assert_eq!(
+                client.notifications,
+                vec![json!({"type":3,"message":READY})]
+            );
+        } else {
+            assert_preview(&result, COMMENT, COMMENT_JA, &range);
+            assert_eq!(client.notifications.len(), 1);
+            assert_eq!(client.notifications[0]["type"], 1);
+        }
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        client.finish(true);
+    }
+    let mut client = Client::configured(
+        &["--mock-delay-ms", "400", "--mock-timeout-ms", "80"],
+        false,
+        false,
+        json!({"hover_timeout_ms":1000,"selection_timeout_ms":1800}),
+    );
+    let uri = "file:///override.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let action = client.action(uri, range.clone());
+    let hover = client.request_hover(uri, range["start"].clone());
+    let command = client.execute(action);
+    assert_error(client.receive(hover, TIMEOUT), -32803);
+    assert_error(client.receive(command, TIMEOUT), -32803);
+    assert_eq!(client.notifications.len(), 1);
+    assert_eq!(client.notifications[0]["type"], 1);
+    client.finish(true);
 }
 
 #[test]

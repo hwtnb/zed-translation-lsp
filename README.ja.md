@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-ZedでRust、JavaScript／JSX、TypeScript／TSXのコメントや、選択したMarkdownなどの文章を翻訳し、Hoverに訳文を表示します。原文はエディタに残ります。コードのコメントは初回からHoverで翻訳します。ChatGPTが利用可能な状態では、Markdownの文章を選択して約0.7秒保つと背景で翻訳し、その範囲へのHoverで読めます。
+ZedでRust、JavaScript／JSX、TypeScript／TSXのコメントや、選択したMarkdownなどの文章を翻訳し、Hoverに訳文を表示します。原文はエディタに残ります。コードのコメントは初回からHoverで翻訳します。ChatGPTが利用可能な状態では、Markdownの文章を選択して安定させると背景で翻訳し、その範囲へのHoverで読めます。
 
 ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。設定なしでは、同梱サンプルだけを日本語に訳す模擬モードで動作し、文章を外部へ送りません。
 
@@ -33,6 +33,10 @@ Zedの拡張画面で `Install Dev Extension` を選び、checkout内の **`crat
       "initialization_options": {
         "target_language": "ja",
         "source_language": "auto",
+        "hover_timeout_ms": 10000,
+        "selection_timeout_ms": 30000,
+        "markdown_auto_translate": true,
+        "selection_debounce_ms": 450,
         "provider": {
           "name": "chatgpt",
           "model": "gpt-6.1-sol",
@@ -44,7 +48,18 @@ Zedの拡張画面で `Install Dev Extension` を選び、checkout内の **`crat
 }
 ```
 
-UIの表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。`provider.model` はChatGPTを使う場合に必須です。`reasoning_effort` は省略でき、指定する場合は `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。モデルや推論強度がアカウントで使えない場合はエラーを返します。設定を変更したら言語サーバーを再起動してください。モデルや推論強度の変更は、実行中のサーバーには反映されません。[Zedの言語サーバー設定](https://zed.dev/docs/configuring-languages#configuring-language-servers)に従います。
+UIの表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。`provider.model` はChatGPTを使う場合に必須です。`reasoning_effort` は省略でき、指定する場合は `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。モデルや推論強度がアカウントで使えない場合はエラーを返します。設定を変更したら言語サーバーを再起動してください。設定変更は、実行中のサーバーには反映されません。[Zedの言語サーバー設定](https://zed.dev/docs/configuring-languages#configuring-language-servers)に従います。
+
+翻訳のタイミング設定は省略できます。
+
+| 設定 | 既定値 | 指定できる値 | 動作 |
+| --- | --- | --- | --- |
+| `hover_timeout_ms` | `10000` | 整数 `1000`〜`120000`、両端を含む | コメントや翻訳待ちの選択範囲へのHover要求ごとの期限。 |
+| `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 手動選択要求とMarkdown背景翻訳それぞれの期限。 |
+| `markdown_auto_translate` | `true` | 真偽値 | 安定したMarkdownの文章選択から背景翻訳を始める。`false` でも手動選択翻訳とコメントHoverを使える。 |
+| `selection_debounce_ms` | `450` | 整数 `100`〜`2000`、両端を含む | nativeサーバーが新しい選択を観測してから待つ時間。Zed側の観測待ちは別に加わる。 |
+
+未知の項目、型の違う値、範囲外の数値は、英語の設定エラーを返して言語サーバーの起動を止めます。項目を省略すると既定値を使います。
 
 `binary.path` を省略すると、作業ツリーのPATHにある `zed-code-translation-lsp` を探します。対応言語の `language_servers` を明示している場合は、既存の配列へ `"zed-code-translation"` を追加してください。Zedでは `.jsx` も `JavaScript`、`.tsx` は `TSX` の設定を使います。
 
@@ -67,7 +82,7 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 スピナーは取消や時間切れを含め、作業が終わると消えます。結果は原文へのHoverで確認してください。状態表示に対応するクライアントでは、翻訳失敗・時間切れの警告が残り、再試行・編集・文書の閉鎖で消えます。これらの表示に対応しない場合も、Hoverと明示操作の通知を使えます。
 
-ChatGPTが利用可能な状態では、Markdownの文章を選択して約0.7秒保つと背景で翻訳します。その範囲でHoverを開いて訳文を読みます。背景翻訳の完了通知は表示しません。コードやリンク先だけ・空白だけの選択では開始しません。コードの囲みなどを途中で切り、選択部分だけでは構文の解釈が変わる範囲も自動対象外です。囲みを含めて選び直すか、手動翻訳を使ってください。選択した文章はコピー目的の場合も送信され得ます。
+ChatGPTが利用可能で `markdown_auto_translate` が `true` の場合、Markdownの文章を選択して安定させると背景で翻訳します。既定ではZedから選択が届いた後に450ms待ち、Zed側の観測待ちも別に加わります。その範囲でHoverを開いて訳文を読みます。背景翻訳の完了通知は表示しません。コードやリンク先だけ・空白だけの選択では開始しません。コードの囲みなどを途中で切り、選択部分だけでは構文の解釈が変わる範囲も自動対象外です。囲みを含めて選び直すか、手動翻訳を使ってください。選択した文章はコピー目的の場合も送信され得ます。
 
 すぐに実行したい場合や背景翻訳が失敗した場合は、Code Actions（macOSでは `⌘.`）の `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。未接続またはプラン利用が無効の場合は、`Connection and settings…` から接続・利用許可を実行してください。選択が無いと翻訳項目は表示されません。
 
@@ -88,7 +103,7 @@ ChatGPTへ送る文章は、保護部分を含む抽出したコメント本文�
 - 自動HoverはRust、JavaScript／JSX、TypeScript／TSXのコメントが対象です。Markdownは文章の選択後に背景翻訳し、段落へのHoverだけでは開始しません。Pythonのコメントには対応していません。
 - 選択変更・解除はZedから新しい範囲要求が届いた時点で観測します。それまでは背景要求を即時取消できません。一つの言語サーバーでは最後に観測した選択を扱うため、複数のエディタの選択を独立には扱えません。背景翻訳の失敗を自動で再試行しません。
 - 未閉鎖のブロックコメントは、閉じるまで自動翻訳を待ちます。JS／TSの解析が致命的な構文エラーで停止した場合、その後のコメントは自動で取得できません。範囲選択による翻訳を使うか、構文を修正してください。
-- 原文範囲は16 KiBまで、翻訳結果は64 KiBまでです。範囲選択と背景翻訳は受付から最大30秒、Hoverの要求は最大10秒で期限切れになります。待機時間も含み、同じ範囲への要求が合流した場合も、それぞれの受付から数えます。混雑時は完了後に再実行してください。
+- 原文範囲は16 KiBまで、翻訳結果は64 KiBまでです。既定では範囲選択と背景翻訳は翻訳受付から最大30秒、Hover要求はそれぞれ最大10秒で期限切れになります。workerの待ち時間、API呼出し、認証更新、streamingを含みます。選択の安定待ちや、受付前の空き枠・管理操作の待ち時間は含みません。同じ範囲への要求が合流しても、それぞれの期限を保持します。OAuth、接続、管理操作には別の内部制限もあります。混雑時は完了後に再実行してください。
 - 利用枠の上限やアカウントの利用制限では新しい翻訳を停止し、エラーを表示します。使用量はChatGPTの設定で確認してください。通信障害では認証情報を保持し、少し待ってから再実行できます。
 - Hoverの位置と幅はZedが決めます。上側への固定や、本文を完全に隠さない配置は保証しません。
 
