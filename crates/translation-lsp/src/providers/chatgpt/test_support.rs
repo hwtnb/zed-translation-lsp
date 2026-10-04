@@ -23,6 +23,7 @@ use rand_core::OsRng;
 use serde_json::{Value, json};
 use tokio::{
     net::TcpListener,
+    sync::Notify,
     task::{JoinHandle, JoinSet},
 };
 use uuid::Uuid;
@@ -42,6 +43,12 @@ pub(crate) struct Record {
     pub body: String,
 }
 
+#[derive(Default)]
+pub(crate) struct StreamTailGate {
+    pub reached: Notify,
+    pub release: Notify,
+}
+
 pub(crate) struct FixtureState {
     pub records: Vec<Record>,
     pub authorization: HashMap<String, String>,
@@ -53,6 +60,7 @@ pub(crate) struct FixtureState {
     pub direct: bool,
     pub delay: Duration,
     pub stream_tail_delay: Duration,
+    pub stream_tail_gate: Option<Arc<StreamTailGate>>,
     pub refreshes: usize,
     pub revocations: usize,
     pub refresh_failure: Option<(u16, Value)>,
@@ -86,6 +94,7 @@ impl Fixture {
             direct: true,
             delay: Duration::ZERO,
             stream_tail_delay: Duration::ZERO,
+            stream_tail_gate: None,
             refreshes: 0,
             revocations: 0,
             refresh_failure: None,
@@ -743,11 +752,16 @@ async fn endpoint(
         response = response.header("location", format!("{base}/v1/responses"));
     }
     let tail_delay = state.stream_tail_delay;
-    let body = if path == "/v1/responses" && !tail_delay.is_zero() {
+    let tail_gate = state.stream_tail_gate.clone();
+    let body = if path == "/v1/responses" && (!tail_delay.is_zero() || tail_gate.is_some()) {
         let frames = futures_util::stream::once(async move {
             Ok::<_, Infallible>(Frame::data(Bytes::from(result)))
         })
         .chain(futures_util::stream::once(async move {
+            if let Some(gate) = tail_gate {
+                gate.reached.notify_one();
+                gate.release.notified().await;
+            }
             tokio::time::sleep(tail_delay).await;
             Ok::<_, Infallible>(Frame::data(Bytes::new()))
         }));

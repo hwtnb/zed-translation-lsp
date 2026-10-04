@@ -1905,7 +1905,7 @@ mod tests {
 #[cfg(test)]
 mod chatgpt_tests {
     use super::*;
-    use crate::providers::chatgpt::test_support::Fixture;
+    use crate::providers::chatgpt::test_support::{Fixture, StreamTailGate};
     use serde_json::json;
 
     #[tokio::test(flavor = "current_thread")]
@@ -2476,11 +2476,11 @@ mod chatgpt_tests {
             "late-manual",
         ] {
             let fixture = Fixture::new().await;
+            let tail = std::sync::Arc::new(StreamTailGate::default());
             {
                 let mut state = fixture.state.lock().unwrap();
                 state.response_mode = "delta_compact".into();
-                state.stream_tail_delay =
-                    Duration::from_millis(if mode == "late-manual" { 700 } else { 320 });
+                state.stream_tail_gate = Some(tail.clone());
             }
             let auth = fixture.auth();
             fixture.connected(&auth, 3600).await;
@@ -2526,6 +2526,7 @@ mod chatgpt_tests {
                 target_language: "ja".into(),
             };
             let first_hover = mode == "hover" || mode == "hover-first";
+            let first_before = Instant::now();
             server
                 .queue(
                     1.into(),
@@ -2537,37 +2538,13 @@ mod chatgpt_tests {
                     },
                 )
                 .unwrap();
+            let first_after = Instant::now();
             let first_deadline = server.pending[&1.into()].deadline;
-            // Wait until the HTTP request has actually started, before extending it.
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if fixture
-                        .state
-                        .lock()
-                        .unwrap()
-                        .records
-                        .iter()
-                        .any(|r| r.path == "/v1/responses")
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .unwrap();
-            if matches!(
-                mode,
-                "hover-first" | "manual-first" | "late-hover" | "late-manual"
-            ) {
-                tokio::time::sleep(Duration::from_millis(
-                    if mode == "late-hover" || mode == "late-manual" {
-                        180
-                    } else {
-                        70
-                    },
-                ))
-                .await;
+            let first_window = Duration::from_millis(if first_hover { 200 } else { 600 });
+            assert!(first_deadline >= first_before + first_window);
+            assert!(first_deadline <= first_after + first_window);
+            let admit_second = |server: &mut Server<ChatGptProvider>| {
+                let before = Instant::now();
                 server
                     .queue(
                         2.into(),
@@ -2579,14 +2556,30 @@ mod chatgpt_tests {
                         },
                     )
                     .unwrap();
+                let after = Instant::now();
                 let second = &server.pending[&2.into()];
+                let window = Duration::from_millis(if first_hover || mode == "late-manual" {
+                    600
+                } else {
+                    200
+                });
+                assert!(second.deadline >= before + window);
+                assert!(second.deadline <= after + window);
                 assert_eq!(second.ticket, server.pending[&1.into()].ticket);
                 assert_eq!(server.translations.len(), 1);
-                if first_hover || mode == "late-manual" {
-                    assert!(second.deadline > first_deadline);
-                } else {
-                    assert!(second.deadline > first_deadline - Duration::from_millis(400));
-                }
+                assert_eq!(
+                    *server.translations[&second.ticket].deadline.borrow(),
+                    Some(first_deadline.max(second.deadline))
+                );
+            };
+            if matches!(mode, "hover-first" | "manual-first") {
+                admit_second(&mut server);
+            }
+            tokio::time::timeout(Duration::from_secs(1), tail.reached.notified())
+                .await
+                .expect("HTTP body must reach the held EOF");
+            if matches!(mode, "late-hover" | "late-manual") {
+                admit_second(&mut server);
             }
             let expired_hover = if first_hover {
                 Some(RequestId::from(1))
@@ -2614,15 +2607,22 @@ mod chatgpt_tests {
                 assert!(server.documents[&uri].preview.is_none());
             }
             if mode == "late-manual" {
-                // A later command gets its own full window, beyond the first command's.
-                tokio::time::sleep_until((first_deadline + Duration::from_millis(20)).into()).await;
+                // Make only the older waiter due; keep the later admission's full window.
+                let pending = server.pending.get_mut(&1.into()).unwrap();
+                pending.deadline = pending.deadline.min(Instant::now());
                 server.expire(&connection).unwrap();
                 let error = command_notice(&client, 1, 1).unwrap_err();
                 assert_eq!(error.code, ErrorCode::RequestFailed as i32);
                 assert!(server.documents[&uri].preview.is_none());
                 assert_eq!(server.pending.len(), 1);
                 assert!(server.pending.contains_key(&2.into()));
+                let remaining = &server.pending[&2.into()];
+                assert_eq!(
+                    *server.translations[&remaining.ticket].deadline.borrow(),
+                    Some(remaining.deadline)
+                );
             }
+            tail.release.notify_one();
             if mode == "hover" {
                 assert!(server.translations.is_empty());
                 assert!(server.pending.is_empty());
