@@ -2465,7 +2465,7 @@ mod chatgpt_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn request_deadlines_keep_one_http_operation_and_start_at_each_admission() {
         let defaults = Settings::default();
-        assert_eq!(defaults.hover_timeout_ms, 10_000);
+        assert_eq!(defaults.hover_timeout_ms, 20_000);
         assert_eq!(defaults.selection_timeout_ms, 30_000);
         for mode in [
             "manual",

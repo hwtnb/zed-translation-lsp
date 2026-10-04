@@ -33,7 +33,7 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
       "initialization_options": {
         "target_language": "ja",
         "source_language": "auto",
-        "hover_timeout_ms": 10000,
+        "hover_timeout_ms": 20000,
         "selection_timeout_ms": 30000,
         "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
@@ -54,7 +54,7 @@ Translation timing options are optional:
 
 | Setting | Default | Allowed values | Effect |
 | --- | --- | --- | --- |
-| `hover_timeout_ms` | `10000` | Integer `1000`–`120000`, inclusive | Deadline for each comment or pending selection Hover request. |
+| `hover_timeout_ms` | `20000` | Integer `1000`–`120000`, inclusive | Deadline for each comment or pending selection Hover request. |
 | `selection_timeout_ms` | `30000` | Integer `1000`–`120000`, inclusive | Deadline for each manual selection request and Markdown background translation. |
 | `markdown_auto_translate` | `true` | Boolean | Start Markdown prose translation after a stable selection. Set `false` to keep manual selection translation and comment Hover. |
 | `selection_debounce_ms` | `450` | Integer `100`–`2000`, inclusive | Native server's wait after observing a new selection. Zed's own observation delay is additional. |
@@ -117,7 +117,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 - Automatic comment Hover supports Rust, JavaScript/JSX, and TypeScript/TSX. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it. Python comments are not supported.
 - Selection changes and deselection are observed when Zed sends a new range request. Until then, a background request cannot be canceled immediately. A language server tracks only its most recently observed selection, so separate editors' selections are not tracked independently. Background failures are not automatically retried.
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
-- Source text is limited to 16 KiB and translated text to 64 KiB. By default, manual selection and background translation have a 30-second deadline from translation admission; each Hover request has its own 10-second deadline. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
+- Source text is limited to 16 KiB and translated text to 64 KiB. By default, manual selection and background translation have a 30-second deadline from translation admission; each Hover request has its own 20-second deadline. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
 - Rate limits and account restrictions pause new translations and return an error. Check usage in ChatGPT settings. Temporary network failures retain credentials; wait before retrying.
 - Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.
 

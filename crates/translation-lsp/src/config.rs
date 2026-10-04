@@ -47,7 +47,7 @@ impl Default for Settings {
             target_language: "ja".into(),
             source_language: "auto".into(),
             provider: ProviderSettings::Mock {},
-            hover_timeout_ms: 10_000,
+            hover_timeout_ms: 20_000,
             selection_timeout_ms: 30_000,
             markdown_auto_translate: true,
             selection_debounce_ms: 450,
@@ -112,7 +112,7 @@ mod tests {
         assert!(matches!(settings.provider, ProviderSettings::Mock {}));
         for options in [None, Some(Value::Null), Some(json!({}))] {
             let settings = Settings::from_options(options).unwrap();
-            assert_eq!(settings.hover_timeout_ms, 10_000);
+            assert_eq!(settings.hover_timeout_ms, 20_000);
             assert_eq!(settings.selection_timeout_ms, 30_000);
             assert!(settings.markdown_auto_translate);
             assert_eq!(settings.selection_debounce_ms, 450);
