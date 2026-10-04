@@ -329,6 +329,34 @@ impl Auth {
     }
 
     pub async fn access(&self, expected: &AccountKey) -> Result<Access, Error> {
+        // Unchanged credentials are a read. Refresh rechecks under the writer lock.
+        match self.store.snapshot() {
+            Ok(Some(snapshot)) => {
+                if snapshot.revision != expected.revision
+                    || snapshot.state.active_registration != Some(expected.registration)
+                {
+                    return Err(account_changed());
+                }
+                let credentials = snapshot
+                    .state
+                    .registrations
+                    .get(&expected.registration)
+                    .and_then(|registration| registration.credentials.as_ref())
+                    .ok_or_else(account_changed)?;
+                if !credentials.plan_enabled() {
+                    return Err(account_changed());
+                }
+                if !credentials.needs_refresh() {
+                    return Ok(Access {
+                        key: expected.clone(),
+                        credentials: credentials.clone(),
+                    });
+                }
+            }
+            Ok(None) => return Err(account_changed()),
+            Err(StoreError::Busy) => (),
+            Err(error) => return Err(store_error(error)),
+        }
         let mut locked = self
             .store
             .lock(false)

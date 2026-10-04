@@ -47,6 +47,29 @@ pub(crate) struct Record {
 pub(crate) struct StreamTailGate {
     pub reached: Notify,
     pub release: Notify,
+    pub held: std::sync::atomic::AtomicUsize,
+    pub peak: std::sync::atomic::AtomicUsize,
+}
+
+struct HeldTail(Arc<StreamTailGate>);
+
+impl HeldTail {
+    fn new(gate: Arc<StreamTailGate>) -> Self {
+        use std::sync::atomic::Ordering;
+        let held = gate.held.fetch_add(1, Ordering::SeqCst) + 1;
+        gate.peak.fetch_max(held, Ordering::SeqCst);
+        gate.reached.notify_one();
+        Self(gate)
+    }
+}
+
+impl Drop for HeldTail {
+    fn drop(&mut self) {
+        self.0
+            .held
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.reached.notify_one();
+    }
 }
 
 pub(crate) struct FixtureState {
@@ -759,7 +782,7 @@ async fn endpoint(
         })
         .chain(futures_util::stream::once(async move {
             if let Some(gate) = tail_gate {
-                gate.reached.notify_one();
+                let _held = HeldTail::new(gate.clone());
                 gate.release.notified().await;
             }
             tokio::time::sleep(tail_delay).await;

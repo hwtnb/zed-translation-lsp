@@ -599,10 +599,14 @@ fn progress_cancel_retires_running_and_queued_jobs_and_shutdown_flushes_end() {
             .is_null()
     );
     client.send(Response::new_ok(create.id, Value::Null).into());
-    assert_eq!(
-        client.progress_kind("begin")["value"]["message"],
-        "Translating: 1, queued: 2"
-    );
+    let mut progress = client.progress_kind("begin");
+    while progress["value"]["message"] != "Translating: 2, queued: 1" {
+        assert!(matches!(
+            progress["value"]["message"].as_str(),
+            Some("Queued: 3" | "Translating: 1, queued: 2")
+        ));
+        progress = client.progress_kind("report");
+    }
     client.notify(
         "window/workDoneProgress/cancel",
         json!({"token":create.params["token"]}),
@@ -1739,15 +1743,24 @@ fn automatic_hover_failure_and_deadline_do_not_cache_or_block_other_requests() {
 fn queued_hover_deadline_includes_time_waiting_for_the_worker() {
     let mut client = Client::new(&["--mock-delay-ms", "150", "--mock-timeout-ms", "220"]);
     let first_uri = "file:///deadline-first.rs";
+    let second_uri = "file:///deadline-second.rs";
     let queued_uri = "file:///deadline-queued.rs";
     let range = range_for(COMMENT_DOCUMENT, COMMENT);
     client.open(first_uri, "rust", COMMENT_DOCUMENT, 1);
+    client.open(second_uri, "rust", COMMENT_DOCUMENT, 1);
     client.open(queued_uri, "rust", COMMENT_DOCUMENT, 1);
     let started = Instant::now();
     let first = client.request_hover(first_uri, range["start"].clone());
+    let second = client.request_hover(second_uri, range["start"].clone());
     let queued = client.request_hover(queued_uri, range["end"].clone());
     assert_preview(
         &client.receive(first, TIMEOUT).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert_preview(
+        &client.receive(second, TIMEOUT).unwrap(),
         COMMENT,
         COMMENT_JA,
         &range,

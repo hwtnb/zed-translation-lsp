@@ -6,6 +6,7 @@ use std::{
 };
 
 use crossbeam_channel::{Sender, after, bounded, never, select};
+use futures_util::{StreamExt, stream};
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CancelParams, CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams,
@@ -1496,98 +1497,108 @@ async fn worker<P: TranslationProvider>(
             administrations,
             finished.clone(),
             MockOptions::default(),
-            provider.clone()
+            provider.clone(),
+            1,
         ),
-        run_jobs(jobs, finished, options, provider),
+        run_jobs(jobs, finished, options, provider, 2),
     );
 }
 
 async fn run_jobs<P: TranslationProvider>(
-    mut jobs: mpsc::Receiver<Job>,
+    jobs: mpsc::Receiver<Job>,
     finished: Sender<WorkerEvent>,
     options: MockOptions,
     provider: P,
+    concurrency: usize,
 ) {
-    'jobs: while let Some(mut job) = jobs.recv().await {
-        let Some(deadline) = *job.deadline.borrow_and_update() else {
-            continue;
-        };
-        if deadline <= Instant::now() {
-            continue;
-        }
-        if matches!(job.task, Task::Translation { .. })
-            && finished.send(WorkerEvent::Started(job.ticket)).is_err()
-        {
-            break;
-        }
-        let operation = async {
-            match &job.task {
-                Task::AccountMenu { ui } => {
-                    let commands = management_commands(provider.auth_ui_state());
-                    let titles: Vec<_> = commands
-                        .iter()
-                        .map(|command| command.title.clone())
-                        .collect();
-                    ui.choose("", &titles).await.map(|choice| {
-                        Outcome::AccountChoice(choice.and_then(|title| {
-                            commands
-                                .into_iter()
-                                .find(|command| command.title == title)
-                                .map(|command| command.command)
-                        }))
-                    })
-                }
-                Task::Administration { command, ui } => provider
-                    .administer(command, ui)
-                    .await
-                    .map(Outcome::Administration),
-                Task::Translation {
-                    text,
-                    target_language,
-                    context,
-                } => {
-                    tokio::time::sleep(options.delay).await;
-                    if options.fail {
-                        Err(ProviderError::failed("Simulated mock translation failure"))
-                    } else {
-                        provider
-                            .translate(text, target_language, context.clone())
-                            .await
-                            .map(Outcome::Translation)
-                    }
-                }
-            }
-        };
-        // Keep the same operation alive when a waiter extends or shortens its deadline.
-        tokio::pin!(operation);
-        let timer = tokio::time::sleep_until(deadline.into());
-        tokio::pin!(timer);
-        let result = loop {
-            tokio::select! {
-                biased;
-                changed = job.deadline.changed() => {
-                    if changed.is_err() {
-                        continue 'jobs;
-                    }
-                    let Some(deadline) = *job.deadline.borrow_and_update() else {
-                        continue 'jobs;
-                    };
-                    timer.as_mut().reset(deadline.into());
-                }
-                _ = &mut timer => break Err(ProviderError::failed("Translation timed out")),
-                result = &mut operation => break result,
-            }
-        };
-        if finished
-            .send(WorkerEvent::Finished(Finished {
-                ticket: job.ticket,
-                result,
-            }))
-            .is_err()
-        {
-            break;
-        }
+    stream::unfold(jobs, |mut jobs| async move {
+        jobs.recv().await.map(|job| (job, jobs))
+    })
+    .for_each_concurrent(concurrency, |job| {
+        run_job(job, &finished, &options, &provider)
+    })
+    .await;
+}
+
+async fn run_job<P: TranslationProvider>(
+    mut job: Job,
+    finished: &Sender<WorkerEvent>,
+    options: &MockOptions,
+    provider: &P,
+) {
+    let Some(deadline) = *job.deadline.borrow_and_update() else {
+        return;
+    };
+    if deadline <= Instant::now() {
+        return;
     }
+    if matches!(job.task, Task::Translation { .. })
+        && finished.send(WorkerEvent::Started(job.ticket)).is_err()
+    {
+        return;
+    }
+    let operation = async {
+        match &job.task {
+            Task::AccountMenu { ui } => {
+                let commands = management_commands(provider.auth_ui_state());
+                let titles: Vec<_> = commands
+                    .iter()
+                    .map(|command| command.title.clone())
+                    .collect();
+                ui.choose("", &titles).await.map(|choice| {
+                    Outcome::AccountChoice(choice.and_then(|title| {
+                        commands
+                            .into_iter()
+                            .find(|command| command.title == title)
+                            .map(|command| command.command)
+                    }))
+                })
+            }
+            Task::Administration { command, ui } => provider
+                .administer(command, ui)
+                .await
+                .map(Outcome::Administration),
+            Task::Translation {
+                text,
+                target_language,
+                context,
+            } => {
+                tokio::time::sleep(options.delay).await;
+                if options.fail {
+                    Err(ProviderError::failed("Simulated mock translation failure"))
+                } else {
+                    provider
+                        .translate(text, target_language, context.clone())
+                        .await
+                        .map(Outcome::Translation)
+                }
+            }
+        }
+    };
+    // Keep the same operation alive when a waiter extends or shortens its deadline.
+    tokio::pin!(operation);
+    let timer = tokio::time::sleep_until(deadline.into());
+    tokio::pin!(timer);
+    let result = loop {
+        tokio::select! {
+            biased;
+            changed = job.deadline.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                let Some(deadline) = *job.deadline.borrow_and_update() else {
+                    return;
+                };
+                timer.as_mut().reset(deadline.into());
+            }
+            _ = &mut timer => break Err(ProviderError::failed("Translation timed out")),
+            result = &mut operation => break result,
+        }
+    };
+    let _ = finished.send(WorkerEvent::Finished(Finished {
+        ticket: job.ticket,
+        result,
+    }));
 }
 
 impl<P: TranslationProvider> Drop for Server<P> {
@@ -1712,6 +1723,125 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
+        #[derive(Clone)]
+        struct GatedProvider {
+            started: tokio::sync::mpsc::UnboundedSender<&'static str>,
+            admin: std::sync::Arc<tokio::sync::Semaphore>,
+            translation: std::sync::Arc<tokio::sync::Semaphore>,
+        }
+        impl TranslationProvider for GatedProvider {
+            async fn translate(
+                &self,
+                text: &str,
+                _: &str,
+                context: Context,
+            ) -> Result<Translated, ProviderError> {
+                let text = std::rc::Rc::new(text.to_owned());
+                self.started.send("translation").unwrap();
+                self.translation.acquire().await.unwrap().forget();
+                Ok(Translated {
+                    text: (*text).clone(),
+                    context,
+                })
+            }
+            async fn administer(&self, _: &str, _: &Ui) -> Result<String, ProviderError> {
+                let text = std::rc::Rc::new("admin".to_owned());
+                self.started.send("admin").unwrap();
+                self.admin.acquire().await.unwrap().forget();
+                Ok((*text).clone())
+            }
+        }
+        let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let admin = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let translation = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let provider = GatedProvider {
+            started,
+            admin: admin.clone(),
+            translation,
+        };
+        let (jobs, received_jobs) = mpsc::channel(4);
+        let (administrations, received_admin) = mpsc::channel(2);
+        let (finished, completions) = bounded(MAX_JOBS);
+        let (connection, _client) = Connection::memory();
+        let ui = Ui::new(connection.sender.clone(), UiCapabilities::default());
+        let mut stops = Vec::new();
+        for ticket in 0..6 {
+            let (stop, deadline) = watch::channel(Some(Instant::now() + Duration::from_secs(5)));
+            stops.push(stop);
+            let task = if ticket < 4 {
+                Task::Translation {
+                    text: format!("source {ticket}"),
+                    target_language: "ja".into(),
+                    context: Context::Mock,
+                }
+            } else {
+                Task::Administration {
+                    command: "synthetic-admin".into(),
+                    ui: ui.clone(),
+                }
+            };
+            let sender = if ticket < 4 { &jobs } else { &administrations };
+            sender
+                .send(Job {
+                    ticket,
+                    deadline,
+                    task,
+                })
+                .await
+                .unwrap();
+        }
+        let exercise = async move {
+            let mut messages = Vec::new();
+            for _ in 0..3 {
+                messages.push(observed.recv().await.unwrap());
+            }
+            assert_eq!(messages.iter().filter(|&&m| m == "translation").count(), 2);
+            assert_eq!(messages.iter().filter(|&&m| m == "admin").count(), 1);
+            assert!(observed.try_recv().is_err());
+            admin.add_permits(1);
+            assert_eq!(observed.recv().await.unwrap(), "admin");
+            assert!(observed.try_recv().is_err());
+            for stop in stops {
+                stop.send_replace(None);
+            }
+            drop(jobs);
+            drop(administrations);
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                worker(
+                    received_jobs,
+                    received_admin,
+                    finished,
+                    MockOptions::default(),
+                    provider
+                ),
+                exercise
+            );
+        })
+        .await
+        .unwrap();
+        let events: Vec<_> = completions.try_iter().collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, WorkerEvent::Started(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(
+                    |e| matches!(e, WorkerEvent::Finished(f) if f.ticket == 4 && f.result.is_ok())
+                )
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() {
@@ -2436,6 +2566,652 @@ mod chatgpt_tests {
         })
         .await
         .unwrap()
+    }
+
+    async fn wait_held(tail: &StreamTailGate, count: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while tail.held.load(std::sync::atomic::Ordering::SeqCst) != count {
+                tail.reached.notified().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Expected {count} held HTTP responses; observed {}",
+                tail.held.load(std::sync::atomic::Ordering::SeqCst)
+            )
+        });
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_http_translations_run_while_other_documents_stay_queued() {
+        let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(tail.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions::default(),
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let mut uris = Vec::new();
+        for index in 0..4 {
+            let uri: Uri = format!("file:///parallel-{index}.rs").parse().unwrap();
+            server
+                .notification(
+                    &connection,
+                    lsp_server::Notification::new(
+                        DidOpenTextDocument::METHOD.into(),
+                        json!({"textDocument":{"uri":uri,"languageId":"rust","version":1,
+                    "text":format!("// Source {index}.\n\n// Other source.")}}),
+                    ),
+                )
+                .unwrap();
+            uris.push(uri);
+        }
+        let request = |uri: &Uri, line| {
+            parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":4}}))
+                .unwrap()
+        };
+        assert!(
+            server
+                .hover(1.into(), request(&uris[0], 0))
+                .unwrap()
+                .is_none()
+        );
+        wait_held(&tail, 1).await;
+        assert!(
+            server
+                .hover(2.into(), request(&uris[1], 0))
+                .unwrap()
+                .is_none()
+        );
+        wait_held(&tail, 2).await;
+        assert!(server.hover(6.into(), request(&uris[0], 2)).is_err());
+        assert!(
+            server
+                .hover(3.into(), request(&uris[2], 0))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            server
+                .hover(4.into(), request(&uris[3], 0))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            server
+                .hover(5.into(), request(&uris[0], 0))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            server.pending[&1.into()].ticket,
+            server.pending[&5.into()].ticket
+        );
+        assert_eq!(server.translations.len(), 4);
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .count(),
+            2
+        );
+        assert!(
+            server
+                .documents
+                .values()
+                .all(|document| document.preview.is_none())
+        );
+        for _ in 0..4 {
+            tail.release.notify_one();
+            let completion = next(&completions).await;
+            assert!(completion.result.is_ok());
+            server.finish(&connection, completion).unwrap();
+            if server.translations.len() >= 2 {
+                wait_held(&tail, 2).await;
+            }
+        }
+        assert!(server.translations.is_empty() && server.pending.is_empty());
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .count(),
+            4
+        );
+        assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let replies: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(replies.len(), 5);
+        assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())));
+        drop(completions);
+        drop(server);
+        wait_held(&tail, 0).await;
+    }
+
+    fn response_calls(fixture: &Fixture) -> usize {
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count()
+    }
+
+    fn open_parallel(server: &mut Server<ChatGptProvider>, connection: &Connection) -> Vec<Uri> {
+        (0..4)
+            .map(|index| {
+                let uri: Uri = format!("file:///parallel-{index}.rs").parse().unwrap();
+                server
+                    .notification(
+                        connection,
+                        lsp_server::Notification::new(
+                            DidOpenTextDocument::METHOD.into(),
+                            json!({"textDocument":{"uri":uri,"languageId":"rust","version":1,
+                    "text":format!("// Source {index}.\n\n// Other source.")}}),
+                        ),
+                    )
+                    .unwrap();
+                uri
+            })
+            .collect()
+    }
+
+    fn parallel_hover(server: &mut Server<ChatGptProvider>, id: i32, uri: &Uri) {
+        assert!(
+            server
+                .hover(
+                    id.into(),
+                    parse(json!({
+                        "textDocument":{"uri":uri}, "position":{"line":0,"character":4}
+                    }))
+                    .unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parallel_retirement_refills_slots_without_caching_retired_work() {
+        for operation in [
+            "cancel-active",
+            "cancel-queued",
+            "timeout-active",
+            "timeout-queued",
+            "edit",
+            "reopen",
+        ] {
+            let fixture = Fixture::new().await;
+            let tail = std::sync::Arc::new(StreamTailGate::default());
+            {
+                let mut state = fixture.state.lock().unwrap();
+                state.response_mode = "delta_compact".into();
+                state.stream_tail_gate = Some(tail.clone());
+            }
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                Settings::default(),
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uris = open_parallel(&mut server, &connection);
+            parallel_hover(&mut server, 1, &uris[0]);
+            wait_held(&tail, 1).await;
+            parallel_hover(&mut server, 2, &uris[1]);
+            wait_held(&tail, 2).await;
+            parallel_hover(&mut server, 3, &uris[2]);
+            assert_eq!(response_calls(&fixture), 2);
+            // Later HTTP requests finish independently of the held initial streams.
+            let following = std::sync::Arc::new(StreamTailGate::default());
+            fixture.state.lock().unwrap().stream_tail_gate = Some(following.clone());
+            let queued = operation.ends_with("queued");
+            let id = RequestId::from(if queued { 3 } else { 1 });
+            let ticket = server.pending[&id].ticket;
+            let expected = match operation {
+                "timeout-active" => {
+                    server.translations[&ticket]
+                        .deadline
+                        .send_replace(Some(Instant::now()));
+                    let completion = next(&completions).await;
+                    assert_eq!(completion.ticket, ticket);
+                    assert!(
+                        completion
+                            .result
+                            .as_ref()
+                            .is_err_and(|error| error.message.contains("timed out"))
+                    );
+                    server.finish(&connection, completion).unwrap();
+                    ErrorCode::RequestFailed
+                }
+                "timeout-queued" => {
+                    server.pending.get_mut(&id).unwrap().deadline = Instant::now();
+                    server.expire(&connection).unwrap();
+                    ErrorCode::RequestFailed
+                }
+                "edit" => {
+                    server
+                        .notification(
+                            &connection,
+                            lsp_server::Notification::new(
+                                DidChangeTextDocument::METHOD.into(),
+                                json!({"textDocument":{"uri":uris[0],"version":2},
+                            "contentChanges":[{"text":"// Changed source."}]}),
+                            ),
+                        )
+                        .unwrap();
+                    ErrorCode::ContentModified
+                }
+                "reopen" => {
+                    let session = server.documents[&uris[0]].session;
+                    server
+                        .notification(
+                            &connection,
+                            lsp_server::Notification::new(
+                                DidCloseTextDocument::METHOD.into(),
+                                json!({"textDocument":{"uri":uris[0]}}),
+                            ),
+                        )
+                        .unwrap();
+                    server
+                        .notification(
+                            &connection,
+                            lsp_server::Notification::new(
+                                DidOpenTextDocument::METHOD.into(),
+                                json!({"textDocument":{"uri":uris[0],"version":1,
+                            "languageId":"rust","text":"// Reopened source."}}),
+                            ),
+                        )
+                        .unwrap();
+                    assert_ne!(server.documents[&uris[0]].session, session);
+                    ErrorCode::ContentModified
+                }
+                _ => {
+                    server
+                        .cancel(&connection, &id, ErrorCode::RequestCanceled)
+                        .unwrap();
+                    ErrorCode::RequestCanceled
+                }
+            };
+            let Message::Response(retired) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected retired response");
+            };
+            assert_eq!(retired.id, id);
+            assert_eq!(retired.response_result.unwrap_err().code, expected as i32);
+            assert!(
+                server.documents[&uris[if queued { 2 } else { 0 }]]
+                    .preview
+                    .is_none()
+            );
+            if !queued {
+                // The queued HTTP starts while the other initial HTTP is still held.
+                wait_held(&following, 1).await;
+                assert_eq!(response_calls(&fixture), 3);
+            }
+            tail.release.notify_waiters();
+            following.release.notify_waiters();
+            while !server.translations.is_empty() {
+                let completion = next(&completions).await;
+                assert!(
+                    completion.result.is_ok(),
+                    "{operation}: {}",
+                    completion
+                        .result
+                        .as_ref()
+                        .err()
+                        .map(|e| e.message.as_str())
+                        .unwrap_or("")
+                );
+                server.finish(&connection, completion).unwrap();
+            }
+            assert!(server.pending.is_empty());
+            assert_eq!(response_calls(&fixture), if queued { 2 } else { 3 });
+            let successful: Vec<_> = client.receiver.try_iter().collect();
+            assert_eq!(successful.len(), 2);
+            assert!(successful.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{operation}: {successful:?}");
+            assert!(
+                server.documents[&uris[if queued { 2 } else { 0 }]]
+                    .preview
+                    .is_none()
+            );
+            if matches!(operation, "edit" | "reopen") {
+                fixture.state.lock().unwrap().stream_tail_gate = None;
+                parallel_hover(&mut server, 5, &uris[0]);
+                let completion = next(&completions).await;
+                assert!(completion.result.is_ok());
+                server.finish(&connection, completion).unwrap();
+                assert!(
+                    server.documents[&uris[0]]
+                        .preview
+                        .as_ref()
+                        .unwrap()
+                        .translation
+                        .contains(if operation == "edit" {
+                            "Changed source."
+                        } else {
+                            "Reopened source."
+                        })
+                );
+                assert_eq!(response_calls(&fixture), 4);
+            }
+            drop(completions);
+            drop(server);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parallel_account_change_and_shutdown_retire_all_jobs() {
+        for operation in ["account-change", "shutdown"] {
+            let fixture = Fixture::new().await;
+            let tail = std::sync::Arc::new(StreamTailGate::default());
+            {
+                let mut state = fixture.state.lock().unwrap();
+                state.response_mode = "delta_compact".into();
+                state.stream_tail_gate = Some(tail.clone());
+            }
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                Settings::default(),
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uris = open_parallel(&mut server, &connection);
+            parallel_hover(&mut server, 1, &uris[0]);
+            wait_held(&tail, 1).await;
+            parallel_hover(&mut server, 2, &uris[1]);
+            wait_held(&tail, 2).await;
+            parallel_hover(&mut server, 3, &uris[2]);
+            parallel_hover(&mut server, 4, &uris[3]);
+            if operation == "account-change" {
+                fixture.connected(&auth, 3600).await;
+                for _ in 0..4 {
+                    let completion = next(&completions).await;
+                    assert!(completion.result.is_err());
+                    server.finish(&connection, completion).unwrap();
+                }
+            } else {
+                server.cancel_all(&connection).unwrap();
+            }
+            assert!(server.pending.is_empty() && server.translations.is_empty());
+            assert!(
+                server
+                    .documents
+                    .values()
+                    .all(|document| document.preview.is_none())
+            );
+            assert_eq!(response_calls(&fixture), 2);
+            let replies: Vec<_> = client.receiver.try_iter().collect();
+            assert_eq!(replies.len(), 4);
+            assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if
+                response.response_result.as_ref().is_err_and(|error| error.code == if operation == "shutdown" {
+                    ErrorCode::RequestCanceled as i32
+                } else {ErrorCode::ContentModified as i32}))));
+            if operation == "account-change" {
+                fixture.state.lock().unwrap().stream_tail_gate = None;
+                parallel_hover(&mut server, 5, &uris[0]);
+                let completion = next(&completions).await;
+                assert!(
+                    completion.result.is_ok(),
+                    "{operation}: {}",
+                    completion
+                        .result
+                        .as_ref()
+                        .err()
+                        .map(|e| e.message.as_str())
+                        .unwrap_or("")
+                );
+                server.finish(&connection, completion).unwrap();
+                assert!(server.documents[&uris[0]].preview.is_some());
+                assert_eq!(response_calls(&fixture), 3);
+            }
+            let started = Instant::now();
+            drop(completions);
+            drop(server);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            // These are synthetic server-side response bodies, not occupied client slots.
+            tail.release.notify_waiters();
+            wait_held(&tail, 0).await;
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_refresh_preserves_revision_guard_and_allows_manual_retry() {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+        let auth = fixture.auth();
+        fixture.connected(&auth, 0).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let context = provider.context().unwrap();
+        let (first, second) = tokio::join!(
+            provider.translate("First source.", "ja", context.clone()),
+            provider.translate("Second source.", "ja", context),
+        );
+        let mut successes = 0;
+        for result in [first, second] {
+            match result {
+                Ok(translated) => {
+                    successes += 1;
+                    assert_eq!(translated.context, provider.context().unwrap());
+                }
+                Err(error) => assert_eq!(error.kind, ErrorKind::Modified),
+            }
+        }
+        assert_eq!(successes, 1);
+        assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+        assert_eq!(response_calls(&fixture), 1);
+        let retry = provider
+            .translate("Retry source.", "ja", provider.context().unwrap())
+            .await
+            .unwrap();
+        assert!(retry.text.contains("Retry source."));
+        assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+        assert_eq!(response_calls(&fixture), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failures() {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        for round in 0..10 {
+            let tail = std::sync::Arc::new(StreamTailGate::default());
+            fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider.clone(),
+                Settings::default(),
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uris = open_parallel(&mut server, &connection);
+            parallel_hover(&mut server, 1, &uris[0]);
+            wait_held(&tail, 1).await;
+            parallel_hover(&mut server, 2, &uris[1]);
+            parallel_hover(&mut server, 3, &uris[2]);
+            parallel_hover(&mut server, 4, &uris[3]);
+            fixture.state.lock().unwrap().stream_tail_gate = None;
+            tail.release.notify_waiters();
+            // Finish and admit while the worker starts and completes following HTTPs.
+            let completion = next(&completions).await;
+            assert!(completion.result.is_ok());
+            server.finish(&connection, completion).unwrap();
+            let uri: Uri = "file:///new-admission.rs".parse().unwrap();
+            server
+                .notification(
+                    &connection,
+                    lsp_server::Notification::new(
+                        DidOpenTextDocument::METHOD.into(),
+                        json!({"textDocument":{"uri":uri,"version":1,
+                    "languageId":"rust","text":"// New source."}}),
+                    ),
+                )
+                .unwrap();
+            parallel_hover(&mut server, 5, &uri);
+            while !server.translations.is_empty() {
+                let completion = next(&completions).await;
+                assert!(completion.result.is_ok());
+                server.finish(&connection, completion).unwrap();
+            }
+            assert_eq!(response_calls(&fixture), (round + 1) * 5);
+            assert!(server.pending.is_empty());
+            assert_eq!(
+                server
+                    .documents
+                    .values()
+                    .filter(|d| d.preview.is_some())
+                    .count(),
+                5
+            );
+            let replies: Vec<_> = client.receiver.try_iter().collect();
+            assert_eq!(replies.len(), 5);
+            assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{replies:?}");
+            drop(completions);
+            drop(server);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
+        let fixture = Fixture::new().await;
+        let invalid = std::sync::Arc::new(StreamTailGate::default());
+        let following = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "compact_missing".into();
+            state.stream_tail_gate = Some(invalid.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions::default(),
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uris = open_parallel(&mut server, &connection);
+        parallel_hover(&mut server, 1, &uris[0]);
+        wait_held(&invalid, 1).await;
+        parallel_hover(&mut server, 2, &uris[1]);
+        wait_held(&invalid, 2).await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(following.clone());
+        }
+        parallel_hover(&mut server, 3, &uris[2]);
+        parallel_hover(&mut server, 4, &uris[3]);
+        assert_eq!(response_calls(&fixture), 2);
+        assert!(server.documents.values().all(|d| d.preview.is_none()));
+        invalid.release.notify_waiters();
+        for _ in 0..2 {
+            let completion = next(&completions).await;
+            assert!(
+                completion
+                    .result
+                    .as_ref()
+                    .is_err_and(|e| e.message.contains("incomplete"))
+            );
+            server.finish(&connection, completion).unwrap();
+        }
+        wait_held(&following, 2).await;
+        assert_eq!(response_calls(&fixture), 4);
+        following.release.notify_waiters();
+        for _ in 0..2 {
+            let completion = next(&completions).await;
+            assert!(completion.result.is_ok());
+            server.finish(&connection, completion).unwrap();
+        }
+        assert!(server.pending.is_empty() && server.translations.is_empty());
+        for (index, uri) in uris.iter().enumerate() {
+            assert_eq!(server.documents[uri].preview.is_some(), index >= 2);
+        }
+        let replies: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(replies.len(), 4);
+        for message in replies {
+            let Message::Response(response) = message else {
+                panic!("Expected Hover reply");
+            };
+            if response.id == RequestId::from(1) || response.id == RequestId::from(2) {
+                assert_eq!(
+                    response.response_result.unwrap_err().code,
+                    ErrorCode::RequestFailed as i32
+                );
+            } else {
+                assert!(response.response_result.is_ok());
+            }
+        }
+        drop(completions);
+        drop(server);
     }
 
     fn command_notice(client: &Connection, id: i32, level: u64) -> RequestResult<Value> {

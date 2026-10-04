@@ -152,7 +152,7 @@ impl AuthStore {
         let Some(lock) = self.open_lock(false)? else {
             return Ok(None);
         };
-        match lock.try_lock() {
+        match lock.try_lock_shared() {
             Ok(()) => self.read(),
             Err(TryLockError::WouldBlock) => Err(StoreError::Busy),
             Err(_) => Err(StoreError::Io),
@@ -326,6 +326,87 @@ pub(crate) fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_only_snapshots_coexist_and_exclude_credential_writers() {
+        let directory = std::env::temp_dir().join(format!("zed-auth-readers-{}", Uuid::new_v4()));
+        let store = AuthStore::synthetic(directory.clone());
+        let locked = store.lock(true).await.unwrap().unwrap();
+        let revision = locked.save().unwrap();
+        drop(locked);
+        let reader = store.open_lock(false).unwrap().unwrap();
+        reader.try_lock_shared().unwrap();
+        assert_eq!(store.snapshot().unwrap().unwrap().revision, revision);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(60), store.lock(false))
+                .await
+                .is_err()
+        );
+        drop(reader);
+        let writer = store.lock(false).await.unwrap().unwrap();
+        assert!(matches!(store.snapshot(), Err(StoreError::Busy)));
+        drop(writer);
+        assert_eq!(store.snapshot().unwrap().unwrap().revision, revision);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_only_access_translates_under_shared_lock_and_rejects_changed_revision() {
+        use super::super::{ChatGptProvider, auth::Auth, http::Http, test_support::Fixture};
+        use crate::providers::{TranslationProvider, error::ErrorKind};
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+        let directory =
+            std::env::temp_dir().join(format!("zed-auth-access-readers-{}", Uuid::new_v4()));
+        let store = AuthStore::synthetic(directory.clone());
+        let auth = Auth::synthetic(
+            store.clone(),
+            Http::synthetic_revocation(&fixture.base),
+            fixture.base.clone(),
+        );
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let context = provider.context().unwrap();
+        let reader = store.open_lock(false).unwrap().unwrap();
+        reader.try_lock_shared().unwrap();
+        let translated = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.translate("Shared source.", "ja", context.clone()),
+        )
+        .await
+        .expect("A valid read must not need an exclusive credential lock")
+        .unwrap();
+        assert_eq!(translated.context, context);
+        assert!(translated.text.contains("Shared source."));
+        assert_eq!(fixture.state.lock().unwrap().refreshes, 0);
+        drop(reader);
+        let writer = store.lock(false).await.unwrap().unwrap();
+        assert!(provider.context().is_err());
+        writer.save().unwrap();
+        drop(writer);
+        let stale = provider
+            .translate("Stale source.", "ja", context)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(stale.kind, ErrorKind::Modified);
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|r| r.path == "/v1/responses")
+                .count(),
+            1
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[tokio::test]
     async fn store_is_lazy_atomic_and_lock_wait_is_cancellable() {
