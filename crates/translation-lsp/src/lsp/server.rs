@@ -1528,7 +1528,7 @@ async fn run_jobs<P: TranslationProvider>(
                         .iter()
                         .map(|command| command.title.clone())
                         .collect();
-                    ui.choose("ChatGPT account…", &titles).await.map(|choice| {
+                    ui.choose("", &titles).await.map(|choice| {
                         Outcome::AccountChoice(choice.and_then(|title| {
                             commands
                                 .into_iter()
@@ -3938,7 +3938,7 @@ mod chatgpt_tests {
                 {"title": "ChatGPT Usage"}
             ])
         );
-        assert_eq!(request.params["message"], "ChatGPT account…");
+        assert_eq!(request.params["message"], "");
         client
             .sender
             .send(
@@ -4171,7 +4171,7 @@ mod chatgpt_tests {
         let Message::Request(request) = protocol_message(&client).await else {
             panic!("Expected picker");
         };
-        assert_eq!(request.params["message"], "ChatGPT account…");
+        assert_eq!(request.params["message"], "");
         assert_eq!(
             request.params["actions"],
             json!([
