@@ -65,22 +65,26 @@ Restart the language server after changing these settings. Settings changes do n
 
 If `binary.path` is omitted, the extension looks for `zed-code-translation-lsp` on the worktree's PATH. If you explicitly configure a language's `language_servers`, add `"zed-code-translation"` to the existing array. Zed uses the `JavaScript` settings for `.jsx` and `TSX` for `.tsx`.
 
+## Changing the translation model
+
+1. Open Zed's Command Palette and run `zed: open settings file`.
+2. Edit `lsp.zed-code-translation.initialization_options.provider.model` with the model slug you want to use.
+3. Set `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` if needed. Omit it to use the API default, or specify one of the values listed above. An explicit `none` differs from omitting the setting.
+4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
+
+The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
+
 ## Connecting to ChatGPT
 
-Open Code Actions in a supported document (`⌘.` on macOS), choose `Connection and settings…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, displaying candidates, and Hover do not start an OAuth sign-in flow.
+Open Code Actions in a supported document (`⌘.` on macOS), choose `ChatGPT account…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, opening the account menu, and Hover do not start an OAuth sign-in flow.
 
-When the account is ready, the connection item becomes `Change ChatGPT account` and the plan permission item is hidden. The models item appears only when plan use is enabled, and sign-out appears only while signed in. While a management operation is running, duplicate management candidates are hidden. If the connection state cannot be read, use `Check ChatGPT connection…` and follow its message.
+When the account is ready, the connection item becomes `Change ChatGPT account` and the plan permission item is hidden. Sign-out appears only while signed in. While a management operation is running, duplicate management candidates are hidden. If the connection state cannot be read, use `Check ChatGPT connection…` and follow its message.
 
-The connection/settings menu includes:
+The account menu includes:
 
 - `Enable ChatGPT plan use`: grant plan permission when signed in without it.
-- `ChatGPT models`: review the selected account's catalog alongside the running model and reasoning effort. Entries keep the catalog's order, and `[current]` marks the running model when listed. An omitted effort appears as `API default (not specified)`; an explicit `none` remains `none`. A model absent from the display list appears as `Not listed in this catalog`. An empty list reports that the catalog returned no models marked for display. Neither case establishes that a model is unsupported. The catalog is not exhaustive; the translation API determines availability for listed and unlisted slugs.
 - `ChatGPT Usage`: open [ChatGPT's usage settings](https://chatgpt.com/settings/usage), where your limits and credits apply.
 - `Sign out of ChatGPT`: attempt to end the current registration's session and clear its local credentials. Other registrations remain. If the remote session cannot be confirmed as ended, follow the message to disconnect the app in ChatGPT settings.
-
-Choosing a catalog entry shows its slug and settings instructions. Opening, choosing, or dismissing the catalog leaves the model and reasoning effort unchanged. To use another model, run `zed: open settings file` and edit `lsp.zed-code-translation.initialization_options.provider.model`. Set `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` if needed, or omit it to use the API default. Save the settings, then restart the language server.
-
-Zed may automatically dismiss this notification, so use `Copy Description` while it is visible to keep the instructions.
 
 Credentials are stored locally for this extension, at `~/Library/Application Support/zed-code-translation/` on macOS. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
@@ -94,9 +98,9 @@ The spinner disappears when work ends, including cancellation and timeout. Hover
 
 With ChatGPT connected, plan use enabled, and `markdown_auto_translate` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification. Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action. Selecting prose just to copy it can also send it for translation.
 
-To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `Connection and settings…` first. The translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The translation action is hidden when there is no selection.
 
-Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `Connection and settings…` → `Continue with ChatGPT / Choose account` to reconnect.
+Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `ChatGPT account…` → `Continue with ChatGPT / Choose account` to reconnect.
 
 Only the extracted comment body or selected text is submitted, including its protected segments. The extension does not submit the entire document or conversation history. Code, link destinations, Markdown syntax, and line endings recognized in the submitted input are preserved in the translation.
 

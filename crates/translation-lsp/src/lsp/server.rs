@@ -47,14 +47,13 @@ const COMMAND: &str = "zed-code-translation.preview";
 const SETTINGS_COMMAND: &str = "zed-code-translation.settings";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
-const ADMIN_COMMANDS: [(&str, &str); 5] = [
+const ADMIN_COMMANDS: [(&str, &str); 4] = [
     (
         "zed-code-translation.connect",
         "Continue with ChatGPT / Choose account",
     ),
     ("zed-code-translation.enable", "Enable ChatGPT plan use"),
     ("zed-code-translation.sign-out", "Sign out of ChatGPT"),
-    ("zed-code-translation.models", "ChatGPT models"),
     ("zed-code-translation.usage", "ChatGPT Usage"),
 ];
 const MAX_JOBS: usize = 4;
@@ -121,7 +120,7 @@ struct Job {
 }
 
 enum Task {
-    Settings {
+    AccountMenu {
         ui: Ui,
     },
     Translation {
@@ -146,7 +145,7 @@ enum WorkerEvent {
 }
 
 enum Outcome {
-    SettingsChoice(Option<String>),
+    AccountChoice(Option<String>),
     Translation(Translated),
     Administration(String),
 }
@@ -613,10 +612,10 @@ impl<P: TranslationProvider> Server<P> {
         }
         let actions = if self.provider.is_chatgpt() {
             vec![CodeAction {
-                title: "Connection and settings…".into(),
+                title: "ChatGPT account…".into(),
                 kind: Some(CodeActionKind::new(ACTION_KIND)),
                 command: Some(Command {
-                    title: "Connection and settings…".into(),
+                    title: "ChatGPT account…".into(),
                     command: SETTINGS_COMMAND.into(),
                     arguments: None,
                 }),
@@ -866,7 +865,7 @@ impl<P: TranslationProvider> Server<P> {
                     ticket,
                     deadline: receiver,
                     task: if params.command == SETTINGS_COMMAND {
-                        Task::Settings {
+                        Task::AccountMenu {
                             ui: self.ui.clone(),
                         }
                     } else {
@@ -1082,7 +1081,7 @@ impl<P: TranslationProvider> Server<P> {
             }
             if operation.command == SETTINGS_COMMAND
                 && operation.deadline > Instant::now()
-                && let Ok(Outcome::SettingsChoice(choice)) = &completion.result
+                && let Ok(Outcome::AccountChoice(choice)) = &completion.result
             {
                 let result = match choice {
                     None => Ok(Some(Value::Null)),
@@ -1523,22 +1522,20 @@ async fn run_jobs<P: TranslationProvider>(
         }
         let operation = async {
             match &job.task {
-                Task::Settings { ui } => {
+                Task::AccountMenu { ui } => {
                     let commands = management_commands(provider.auth_ui_state());
                     let titles: Vec<_> = commands
                         .iter()
                         .map(|command| command.title.clone())
                         .collect();
-                    ui.choose("Connection and settings…", &titles)
-                        .await
-                        .map(|choice| {
-                            Outcome::SettingsChoice(choice.and_then(|title| {
-                                commands
-                                    .into_iter()
-                                    .find(|command| command.title == title)
-                                    .map(|command| command.command)
-                            }))
-                        })
+                    ui.choose("ChatGPT account…", &titles).await.map(|choice| {
+                        Outcome::AccountChoice(choice.and_then(|title| {
+                            commands
+                                .into_iter()
+                                .find(|command| command.title == title)
+                                .map(|command| command.command)
+                        }))
+                    })
                 }
                 Task::Administration { command, ui } => provider
                     .administer(command, ui)
@@ -1620,7 +1617,6 @@ fn management_commands(state: AuthUiState) -> Vec<Command> {
                 "zed-code-translation.sign-out" => {
                     matches!(state, AuthUiState::Ready | AuthUiState::PlanDisabled)
                 }
-                "zed-code-translation.models" => state == AuthUiState::Ready,
                 _ => false,
             };
             if !visible {
@@ -1952,7 +1948,7 @@ mod chatgpt_tests {
             );
             let actions = markdown_actions(&mut server, &uri, range);
             assert_eq!(actions[0].title, "Translate selection to en");
-            assert_eq!(actions[1].title, "Connection and settings…");
+            assert_eq!(actions[1].title, "ChatGPT account…");
             let command = actions[0].command.clone().unwrap();
             assert_eq!(
                 command.arguments.as_ref().unwrap()[0]["targetLanguage"],
@@ -2334,7 +2330,7 @@ mod chatgpt_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn activity_cancellation_leaves_settings_picker_and_its_deadline_alive() {
+    async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         let fixture = Fixture::new().await;
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
@@ -3934,8 +3930,15 @@ mod chatgpt_tests {
             picker.elapsed() < Duration::from_millis(400),
             "Picker must not wait for translation EOF"
         );
-        assert_eq!(request.params["actions"].as_array().unwrap().len(), 4);
-        assert_eq!(request.params["message"], "Connection and settings…");
+        assert_eq!(
+            request.params["actions"],
+            json!([
+                {"title": "Change ChatGPT account"},
+                {"title": "Sign out of ChatGPT"},
+                {"title": "ChatGPT Usage"}
+            ])
+        );
+        assert_eq!(request.params["message"], "ChatGPT account…");
         client
             .sender
             .send(
@@ -4011,7 +4014,7 @@ mod chatgpt_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_picker_filters_states_and_closing_it_has_no_effects() {
+    async fn account_picker_filters_states_and_closing_it_has_no_effects() {
         for mode in ["signed-out", "disabled", "ready", "unavailable"] {
             let fixture = Fixture::new().await;
             let auth = fixture.auth();
@@ -4123,7 +4126,7 @@ mod chatgpt_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settings_picker_dispatches_only_the_selected_legacy_command() {
+    async fn account_picker_dispatches_only_the_selected_command() {
         let fixture = Fixture::new().await;
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
@@ -4168,6 +4171,15 @@ mod chatgpt_tests {
         let Message::Request(request) = protocol_message(&client).await else {
             panic!("Expected picker");
         };
+        assert_eq!(request.params["message"], "ChatGPT account…");
+        assert_eq!(
+            request.params["actions"],
+            json!([
+                {"title": "Change ChatGPT account"},
+                {"title": "Sign out of ChatGPT"},
+                {"title": "ChatGPT Usage"}
+            ])
+        );
         server.ui.response(Response {
             id: request.id,
             response_result: Ok(json!({"title":"ChatGPT Usage"})),
@@ -4272,10 +4284,6 @@ mod chatgpt_tests {
             (
                 "zed-code-translation.sign-out".into(),
                 "Sign out of ChatGPT".into(),
-            ),
-            (
-                "zed-code-translation.models".into(),
-                "ChatGPT models".into(),
             ),
             usage.clone(),
         ];
@@ -4462,6 +4470,11 @@ mod chatgpt_tests {
         );
         let actions = server.code_actions(parse(json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"context":{"diagnostics":[]}})).unwrap()).unwrap();
         assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "ChatGPT account…");
+        assert_eq!(
+            actions[0].command.as_ref().unwrap().command,
+            SETTINGS_COMMAND
+        );
         assert!(fixture.state.lock().unwrap().records.is_empty());
         assert!(auth.store.snapshot().unwrap().is_none());
         server
@@ -4489,34 +4502,30 @@ mod chatgpt_tests {
         assert!(auth.store.snapshot().unwrap().is_none());
         command_notice(&client, 1, 3).unwrap();
         fixture.connected(&auth, 3600).await;
-        server
+        let before = auth.store.snapshot().unwrap().unwrap().revision;
+        let commands = capabilities(true)
+            .capabilities
+            .execute_command_provider
+            .unwrap()
+            .commands;
+        assert!(commands.iter().any(|command| command == SETTINGS_COMMAND));
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command == "zed-code-translation.models")
+        );
+        let error = server
             .execute_command(
                 &connection,
                 RequestId::from(2),
                 parse(json!({"command":"zed-code-translation.models"})).unwrap(),
             )
-            .unwrap();
-        let receiver = client.receiver.clone();
-        let Message::Request(request) = tokio::task::spawn_blocking(move || {
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap()
-        })
-        .await
-        .unwrap() else {
-            panic!("Expected model list");
-        };
-        assert_eq!(request.method, "window/showMessageRequest");
-        assert_eq!(
-            request.params["actions"],
-            json!([{"title":"Synthetic model (synthetic-model) [current]"},{"title":"Second (second)"}])
-        );
-        server.ui.response(Response::new_ok(
-            request.id,
-            json!({"title":"Synthetic model (synthetic-model) [current]"}),
-        ));
-        server
-            .finish(&connection, next(&completions).await)
-            .unwrap();
-        command_notice(&client, 2, 3).unwrap();
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams as i32);
+        assert!(client.receiver.try_recv().is_err());
+        assert!(server.administrations.is_empty());
+        assert!(fixture.state.lock().unwrap().records.is_empty());
+        assert_eq!(auth.store.snapshot().unwrap().unwrap().revision, before);
         server
             .execute_command(
                 &connection,

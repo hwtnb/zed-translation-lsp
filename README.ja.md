@@ -63,18 +63,22 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 `binary.path` を省略すると、作業ツリーのPATHにある `zed-code-translation-lsp` を探します。対応言語の `language_servers` を明示している場合は、既存の配列へ `"zed-code-translation"` を追加してください。Zedでは `.jsx` も `JavaScript`、`.tsx` は `TSX` の設定を使います。
 
+## 翻訳モデルを変更する
+
+1. Zedのコマンドパレットで `zed: open settings file` を実行します。
+2. `lsp.zed-code-translation.initialization_options.provider.model` を、使いたいモデルのslugに変更します。
+3. 必要に応じて `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` を指定します。APIの既定値を使う場合は省略し、指定する場合は上記の値から選んでください。明示した `none` は省略とは異なります。
+4. 設定を保存します。この拡張を使う文書で、コマンドパレットから `editor: restart language server` を実行します。
+
+拡張は設定したモデルのslugをそのまま翻訳APIへ送り、別のモデルへ自動で切り替えません。そのモデルと推論強度をアカウントで使えるかどうかは、APIが判断します。
+
 ## ChatGPTへ接続する
 
-対応する文書でCode Actions（macOSでは `⌘.`）を開き、`Connection and settings…` から `Continue with ChatGPT / Choose account` を実行します。アカウントの選択肢から新規追加または保存済みの登録を選び、ブラウザで認証と利用許可を完了してください。設定の読込、候補一覧の表示、Hoverだけでは認証を開始しません。利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。モデル一覧は利用可能なとき、サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
+対応する文書でCode Actions（macOSでは `⌘.`）を開き、`ChatGPT account…` から `Continue with ChatGPT / Choose account` を実行します。アカウントの選択肢から新規追加または保存済みの登録を選び、ブラウザで認証と利用許可を完了してください。設定の読込、アカウント管理メニューを開く操作、Hoverだけでは認証を開始しません。利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
 
 - `Enable ChatGPT plan use` は、サインイン済みでプラン利用が許可されていない場合に使います。
-- `ChatGPT models` は、選択したアカウントの一覧と、実行中のモデル・推論強度を表示します。候補は取得した順に並び、実行中のモデルが一覧にある場合は `[current]` が付きます。推論強度の省略は `API default (not specified)`、明示した `none` は `none` と表示します。表示対象の一覧に無いモデルには `Not listed in this catalog` と表示し、候補が空なら表示対象のモデルが返されなかったことを案内します。どちらも非対応という意味ではありません。一覧は網羅的ではなく、記載の有無にかかわらず利用可否は翻訳APIが判断します。
 - `ChatGPT Usage` は、[ChatGPTの使用量設定](https://chatgpt.com/settings/usage)を開きます。利用枠やcreditsの許可はこの設定に従います。
 - `Sign out of ChatGPT` は、現在の登録のセッション終了を試み、その登録の認証情報を削除します。別の登録は残ります。通信のため終了を確認できなかった場合は案内に従ってChatGPT設定からアプリを切断できます。
-
-一覧の候補を押すと、設定用のslugと編集手順を表示します。一覧を開く・候補を押す・閉じる操作では、モデルと推論強度は変わりません。変更するには `zed: open settings file` を実行し、`lsp.zed-code-translation.initialization_options.provider.model` を編集します。必要に応じて `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` も指定し、APIの既定値を使う場合は省略してください。設定を保存してから、言語サーバーを再起動します。
-
-通知を自動で閉じるかどうかはZedの設定に従うため、案内を残すには表示中に `Copy Description` を使ってください。
 
 認証情報は拡張専用のローカル保存先に保持します。macOSでは `~/Library/Application Support/zed-code-translation/` です。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
 
@@ -88,9 +92,9 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 ChatGPTが利用可能で `markdown_auto_translate` が `true` の場合、Markdownの文章を選択して安定させると背景で翻訳します。既定ではZedから選択が届いた後に450ms待ち、Zed側の観測待ちも別に加わります。その範囲でHoverを開いて訳文を読みます。背景翻訳の完了通知は表示しません。コードやリンク先だけ・空白だけの選択では開始しません。コードの囲みなどを途中で切り、選択部分だけでは構文の解釈が変わる範囲も自動対象外です。囲みを含めて選び直すか、手動翻訳を使ってください。選択した文章はコピー目的の場合も送信され得ます。
 
-すぐに実行したい場合や背景翻訳が失敗した場合は、Code Actions（macOSでは `⌘.`）の `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。未接続またはプラン利用が無効の場合は、`Connection and settings…` から接続・利用許可を実行してください。選択が無いと翻訳項目は表示されません。
+すぐに実行したい場合や背景翻訳が失敗した場合は、Code Actions（macOSでは `⌘.`）の `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。選択が無いと翻訳項目は表示されません。
 
-明示した翻訳や管理操作が失敗した場合は、エラー通知を確認してください。認証更新で `invalid_grant` などが返された場合は、`Connection and settings…` → `Continue with ChatGPT / Choose account` から保存済みの登録を選び、再接続します。
+明示した翻訳や管理操作が失敗した場合は、エラー通知を確認してください。認証更新で `invalid_grant` などが返された場合は、`ChatGPT account…` → `Continue with ChatGPT / Choose account` から保存済みの登録を選び、再接続します。
 
 ChatGPTへ送る文章は、保護部分を含む抽出したコメント本文または選択範囲だけです。文書全体や会話履歴は送りません。送信する入力の中で認識されたコード、リンク先、Markdownの構文と改行は、訳文でも元のまま残します。
 

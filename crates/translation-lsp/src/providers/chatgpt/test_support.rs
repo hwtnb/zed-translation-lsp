@@ -47,7 +47,6 @@ pub(crate) struct FixtureState {
     pub authorization: HashMap<String, String>,
     pub mode: String,
     pub response_mode: String,
-    pub models: Vec<Value>,
     pub stream_error: Option<Value>,
     pub translation_segments: Option<Vec<Value>>,
     pub failure: Option<(u16, Value)>,
@@ -81,11 +80,6 @@ impl Fixture {
             authorization: HashMap::new(),
             mode: String::new(),
             response_mode: String::new(),
-            models: vec![
-                json!({"slug":"hidden","display_name":"Hidden","visibility":"hidden"}),
-                json!({"slug":"synthetic-model","display_name":"Synthetic model","visibility":"list"}),
-                json!({"slug":"second","display_name":"Second","visibility":"list"}),
-            ],
             stream_error: None,
             translation_segments: None,
             failure: None,
@@ -704,7 +698,6 @@ async fn endpoint(
             }
         }
         "/revoke" => { state.revocations += 1; if state.revoke_failure { (503,"application/json",json!({"detail":"synthetic revoke outage"}).to_string()) } else { (200,"text/plain",String::new()) } }
-        "/v1/models" => (200,"application/json",json!({"models":state.models}).to_string()),
         "/v1/responses" => {
             if let Some((status, body)) = &state.failure { (*status,"application/json",body.as_str().map_or_else(|| body.to_string(),str::to_owned)) }
             else {
