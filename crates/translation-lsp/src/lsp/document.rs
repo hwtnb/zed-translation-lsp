@@ -6,6 +6,10 @@ use crate::text::{comments::Comments, protected_text::ProtectedText};
 
 use super::preview::Preview;
 
+mod indexed_text;
+
+use indexed_text::IndexedText;
+
 pub(crate) struct TranslationInput {
     pub text: String,
     pub is_comment: bool,
@@ -16,7 +20,7 @@ pub(crate) struct Document {
     // Versions can repeat after didClose/didOpen. This identifies an open lifetime.
     pub session: u64,
     pub language_id: String,
-    pub text: Option<String>,
+    text: Option<IndexedText>,
     pub preview: Option<Preview>,
     comments: Option<Comments>,
     markdown_prose: Option<Vec<ByteRange<usize>>>,
@@ -28,7 +32,7 @@ impl Document {
             version,
             session,
             language_id,
-            text: Some(text),
+            text: Some(IndexedText::new(text)),
             preview: None,
             comments: None,
             markdown_prose: None,
@@ -52,19 +56,30 @@ impl Document {
         for change in changes {
             if let Some(range) = change.range {
                 let current = text.as_mut().ok_or("A full document update is required")?;
-                let bytes = byte_range(current, range)?;
-                current.replace_range(bytes, &change.text);
+                current.replace(range, &change.text)?;
             } else {
-                text = Some(change.text);
+                text = Some(IndexedText::new(change.text));
             }
         }
         self.text = text;
         Ok(())
     }
 
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_ref().map(IndexedText::as_str)
+    }
+
+    pub fn offset(&self, position: Position) -> Result<usize, &'static str> {
+        self.text
+            .as_ref()
+            .ok_or("Document is not synchronized")?
+            .offset(position)
+    }
+
     pub fn selection(&self, range: Range) -> Result<&str, &'static str> {
-        let text = self.text.as_deref().ok_or("Document is not synchronized")?;
-        let selected = &text[byte_range(text, range)?];
+        let indexed = self.text.as_ref().ok_or("Document is not synchronized")?;
+        let text = indexed.as_str();
+        let selected = &text[indexed.range(range)?];
         if selected.trim().is_empty() {
             return Err("Select a nonempty range of text");
         }
@@ -75,8 +90,9 @@ impl Document {
         &mut self,
         range: Range,
     ) -> Result<bool, &'static str> {
-        let text = self.text.as_deref().ok_or("Document is not synchronized")?;
-        let selected = byte_range(text, range)?;
+        let indexed = self.text.as_ref().ok_or("Document is not synchronized")?;
+        let text = indexed.as_str();
+        let selected = indexed.range(range)?;
         if self.markdown_prose.is_none() {
             self.markdown_prose = Some(markdown_prose_ranges(text)?);
         }
@@ -103,14 +119,15 @@ impl Document {
     }
 
     pub fn comment_range(&mut self, uri: &Uri, offset: usize) -> Option<Range> {
-        let text = self.text.as_deref()?;
+        let indexed = self.text.as_ref()?;
+        let text = indexed.as_str();
         let comments = self
             .comments
             .get_or_insert_with(|| Comments::parse(&self.language_id, uri, text));
         let bytes = comments.range(comments.at(text, offset)?);
         Some(Range::new(
-            byte_position(text, bytes.start).ok()?,
-            byte_position(text, bytes.end).ok()?,
+            indexed.position(bytes.start).ok()?,
+            indexed.position(bytes.end).ok()?,
         ))
     }
 
@@ -119,8 +136,9 @@ impl Document {
         uri: &Uri,
         range: Range,
     ) -> Result<TranslationInput, &'static str> {
-        let text = self.text.as_deref().ok_or("Document is not synchronized")?;
-        let bytes = byte_range(text, range)?;
+        let indexed = self.text.as_ref().ok_or("Document is not synchronized")?;
+        let text = indexed.as_str();
+        let bytes = indexed.range(range)?;
         let comments = self
             .comments
             .get_or_insert_with(|| Comments::parse(&self.language_id, uri, text));
@@ -156,77 +174,6 @@ fn markdown_prose_ranges(text: &str) -> Result<Vec<ByteRange<usize>>, &'static s
     Ok(prose)
 }
 
-pub(crate) fn byte_range(text: &str, range: Range) -> Result<ByteRange<usize>, &'static str> {
-    if range.start > range.end {
-        return Err("Range start must not follow its end");
-    }
-    Ok(utf16_offset(text, range.start)?..utf16_offset(text, range.end)?)
-}
-
-pub(crate) fn utf16_offset(text: &str, position: Position) -> Result<usize, &'static str> {
-    let bytes = text.as_bytes();
-    let mut line = 0;
-    let mut start = 0;
-    let mut end = 0;
-    while end < bytes.len() {
-        if matches!(bytes[end], b'\n' | b'\r') {
-            if line == position.line {
-                break;
-            }
-            let crlf = bytes[end] == b'\r' && bytes.get(end + 1) == Some(&b'\n');
-            end += if crlf { 2 } else { 1 };
-            start = end;
-            line += 1;
-        } else {
-            end += 1;
-        }
-    }
-    if line != position.line {
-        return Err("Position line is outside the document");
-    }
-
-    let mut units = 0;
-    for (offset, character) in text[start..end].char_indices() {
-        if units == position.character {
-            return Ok(start + offset);
-        }
-        units += character.len_utf16() as u32;
-        if units > position.character {
-            return Err("Position splits a UTF-16 surrogate pair");
-        }
-    }
-    if units == position.character {
-        Ok(end)
-    } else {
-        Err("Position character is outside the line")
-    }
-}
-
-fn byte_position(text: &str, offset: usize) -> Result<Position, &'static str> {
-    if !text.is_char_boundary(offset)
-        || (offset > 0
-            && text.as_bytes().get(offset - 1) == Some(&b'\r')
-            && text.as_bytes().get(offset) == Some(&b'\n'))
-    {
-        return Err("Offset is not an LSP position boundary");
-    }
-    let mut position = Position::new(0, 0);
-    let mut characters = text[..offset].chars().peekable();
-    while let Some(character) = characters.next() {
-        match character {
-            '\r' | '\n' => {
-                if character == '\r' && characters.peek() == Some(&'\n') {
-                    characters.next();
-                }
-                position.line += 1;
-                position.character = 0;
-            }
-            _ => position.character += character.len_utf16() as u32,
-        }
-    }
-    Ok(position)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,7 +192,7 @@ mod tests {
             document.translation_input(&uri, group).unwrap().text,
             "first\r\nsecond"
         );
-        assert_eq!(document.text.as_deref(), Some(original));
+        assert_eq!(document.text(), Some(original));
         assert!(document.comments.is_some());
         let block = document
             .comment_range(&uri, original.find("/*").unwrap())
@@ -257,11 +204,21 @@ mod tests {
         );
         for character in 0..=8 {
             let point = Position::new(0, character);
-            if let Ok(offset) = utf16_offset(original, point) {
-                assert_eq!(byte_position(original, offset).unwrap(), point);
+            if let Ok(offset) = document.offset(point) {
+                assert_eq!(
+                    document.text.as_ref().unwrap().position(offset).unwrap(),
+                    point
+                );
             }
         }
-        assert!(byte_position(original, original.find('\n').unwrap()).is_err());
+        assert!(
+            document
+                .text
+                .as_ref()
+                .unwrap()
+                .position(original.find('\n').unwrap())
+                .is_err()
+        );
         document
             .change(
                 2,
@@ -275,10 +232,7 @@ mod tests {
         assert!(document.comments.is_none());
         assert!(document.comment_range(&uri, 9).is_none());
         let new_range = document
-            .comment_range(
-                &uri,
-                document.text.as_deref().unwrap().find("// new").unwrap(),
-            )
+            .comment_range(&uri, document.text().unwrap().find("// new").unwrap())
             .unwrap();
         assert_eq!(
             document.translation_input(&uri, new_range).unwrap().text,
@@ -356,7 +310,7 @@ mod tests {
             };
             assert_eq!(range.start, start);
             assert_eq!(
-                &text[byte_range(&text, range).unwrap()],
+                &text[document.text.as_ref().unwrap().range(range).unwrap()],
                 format!("// `id`{ending}  // keep 🚀")
             );
             assert_eq!(
@@ -372,7 +326,7 @@ mod tests {
         assert!(text.len() > 1024 * 1024);
         let uri = "file:///dense.rs".parse().unwrap();
         let mut document = Document::new(1, 1, "rust".into(), text);
-        let end = document.text.as_ref().unwrap().len();
+        let end = document.text().unwrap().len();
         let range = document
             .comment_range(&uri, end - "/// doc\n".len())
             .unwrap();
@@ -386,32 +340,40 @@ mod tests {
     #[test]
     fn utf16_crlf_and_multiline_selection_preserve_bytes() {
         let text = "前🚀x\r\n\tsecond `name`\r\nlast";
+        let indexed = IndexedText::new(text.into());
         let range = Range::new(Position::new(0, 1), Position::new(1, 14));
         assert_eq!(
-            &text[byte_range(text, range).unwrap()],
+            &text[indexed.range(range).unwrap()],
             "🚀x\r\n\tsecond `name`"
         );
-        assert_eq!(utf16_offset(text, Position::new(0, 4)).unwrap(), 8);
-        assert!(utf16_offset(text, Position::new(0, 2)).is_err());
-        assert!(utf16_offset(text, Position::new(0, 5)).is_err());
-        assert!(utf16_offset(text, Position::new(3, 0)).is_err());
+        assert_eq!(indexed.offset(Position::new(0, 4)).unwrap(), 8);
+        assert!(indexed.offset(Position::new(0, 2)).is_err());
+        assert!(indexed.offset(Position::new(0, 5)).is_err());
+        assert!(indexed.offset(Position::new(3, 0)).is_err());
     }
 
     #[test]
     fn line_endings_and_eof_are_valid_positions() {
         for ending in ["\n", "\r\n", "\r"] {
             let text = format!("a{ending}🚀{ending}");
+            let indexed = IndexedText::new(text.clone());
             assert_eq!(
-                utf16_offset(&text, Position::new(1, 2)).unwrap(),
+                indexed.offset(Position::new(1, 2)).unwrap(),
                 1 + ending.len() + 4
             );
-            assert_eq!(
-                utf16_offset(&text, Position::new(2, 0)).unwrap(),
-                text.len()
-            );
+            assert_eq!(indexed.offset(Position::new(2, 0)).unwrap(), text.len());
         }
-        assert_eq!(utf16_offset("", Position::new(0, 0)).unwrap(), 0);
-        assert!(byte_range("abc", Range::new(Position::new(0, 2), Position::new(0, 1))).is_err());
+        assert_eq!(
+            IndexedText::new(String::new())
+                .offset(Position::new(0, 0))
+                .unwrap(),
+            0
+        );
+        assert!(
+            IndexedText::new("abc".into())
+                .range(Range::new(Position::new(0, 2), Position::new(0, 1)))
+                .is_err()
+        );
     }
 
     #[test]
@@ -434,8 +396,56 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert_eq!(document.text.as_deref(), Some("前🚀\r\nnew!"));
+        assert_eq!(document.text(), Some("前🚀\r\nnew!"));
         assert_eq!(document.version, 2);
+    }
+
+    #[test]
+    fn invalid_change_discards_partial_edits_and_full_update_recovers_positions() {
+        let mut document = Document::new(1, 1, "markdown".into(), "前🚀\r\nold".into());
+        let changed = |range, text: &str| TextDocumentContentChangeEvent {
+            range,
+            range_length: None,
+            text: text.into(),
+        };
+        assert!(
+            document
+                .change(
+                    2,
+                    vec![
+                        changed(
+                            Some(Range::new(Position::new(1, 0), Position::new(1, 3))),
+                            "new"
+                        ),
+                        changed(
+                            Some(Range::new(Position::new(0, 2), Position::new(0, 3))),
+                            "bad"
+                        ),
+                    ],
+                )
+                .is_err()
+        );
+        assert!(document.text().is_none());
+        assert!(document.offset(Position::new(0, 0)).is_err());
+        assert!(
+            document
+                .change(3, vec![changed(Some(Range::default()), "bad")])
+                .is_err()
+        );
+        document.change(4, vec![changed(None, "a\rX\nb")]).unwrap();
+        document
+            .change(
+                5,
+                vec![changed(
+                    Some(Range::new(Position::new(1, 0), Position::new(1, 1))),
+                    "",
+                )],
+            )
+            .unwrap();
+        assert_eq!(document.text(), Some("a\r\nb"));
+        assert_eq!(document.offset(Position::new(1, 0)).unwrap(), 3);
+        assert!(document.change(5, Vec::new()).is_err());
+        assert!(document.text().is_none());
     }
 
     #[test]

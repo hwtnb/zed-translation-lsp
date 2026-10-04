@@ -35,7 +35,7 @@ use crate::{
 
 use super::{
     activity::{Activity, Phase, Problem, Work},
-    document::{Document, utf16_offset},
+    document::Document,
     preview::Preview,
     ui::{Ui, UiCapabilities},
 };
@@ -441,7 +441,7 @@ impl<P: TranslationProvider> Server<P> {
         self.documents.get(&target.uri).is_some_and(|document| {
             document.version == target.version
                 && document.session == target.session
-                && document.text.is_some()
+                && document.text().is_some()
         })
     }
 
@@ -759,10 +759,10 @@ impl<P: TranslationProvider> Server<P> {
         let Some(document) = self.documents.get_mut(&position.text_document.uri) else {
             return Ok(Some(Value::Null));
         };
-        let Some(text) = document.text.as_deref() else {
+        let Some(text) = document.text() else {
             return Ok(Some(Value::Null));
         };
-        let Ok(offset) = utf16_offset(text, position.position) else {
+        let Ok(offset) = document.offset(position.position) else {
             return Ok(Some(Value::Null));
         };
         let end_is_clear = text[offset..]
@@ -1139,7 +1139,7 @@ impl<P: TranslationProvider> Server<P> {
                 .ok_or_else(|| failure(ErrorCode::ContentModified, "Document was closed"))?;
             if document.version != target.version
                 || document.session != target.session
-                || document.text.is_none()
+                || document.text().is_none()
             {
                 return Err(failure(
                     ErrorCode::ContentModified,
@@ -1812,7 +1812,7 @@ mod tests {
                 .is_none()
         );
         finish(&mut server, "\u{a0}right ");
-        assert_eq!(server.documents[&uri].text.as_deref(), Some(source));
+        assert_eq!(server.documents[&uri].text(), Some(source));
         assert!(server.pending.is_empty());
         assert!(server.translations.is_empty());
     }
@@ -2019,10 +2019,7 @@ mod chatgpt_tests {
                     .unwrap()
                     .ends_with("```text\nTranslated sentence.\n```")
             );
-            assert_eq!(
-                server.documents[&uri].text.as_deref(),
-                Some("First sentence.")
-            );
+            assert_eq!(server.documents[&uri].text(), Some("First sentence."));
             let comment_uri: Uri = "file:///configured-en.rs".parse().unwrap();
             server.documents.insert(
                 comment_uri.clone(),
@@ -2053,7 +2050,7 @@ mod chatgpt_tests {
                     .contains("Translated sentence.")
             );
             assert_eq!(
-                server.documents[&comment_uri].text.as_deref(),
+                server.documents[&comment_uri].text(),
                 Some("// First sentence.")
             );
             let records = fixture.state.lock().unwrap().records.clone();
@@ -2665,7 +2662,7 @@ mod chatgpt_tests {
                 1,
                 "{mode}: HTTP must not restart on deadline update"
             );
-            assert_eq!(server.documents[&uri].text.as_deref(), Some(source));
+            assert_eq!(server.documents[&uri].text(), Some(source));
             drop(completions);
             let before = Instant::now();
             drop(server);
@@ -2745,7 +2742,7 @@ mod chatgpt_tests {
             assert!(!error.message.contains(source));
             assert!(!error.message.contains("synthetic-access-0"));
             assert!(server.documents[&uri].preview.is_none());
-            assert_eq!(server.documents[&uri].text.as_deref(), Some(source));
+            assert_eq!(server.documents[&uri].text(), Some(source));
             if mode == "refresh" {
                 assert!(error.message.contains("code=invalid_grant"));
                 assert!(error.message.contains("request_id=req-synthetic"));
@@ -2972,7 +2969,7 @@ mod chatgpt_tests {
             0
         );
         assert_eq!(
-            server.documents[&uri].text.as_deref(),
+            server.documents[&uri].text(),
             Some("// Translate this.\nlet value = 1;\n")
         );
     }
@@ -3068,10 +3065,7 @@ mod chatgpt_tests {
                     2
                 );
             }
-            assert_eq!(
-                server.documents[&uri].text.as_deref(),
-                Some("// Translate this.\n")
-            );
+            assert_eq!(server.documents[&uri].text(), Some("// Translate this.\n"));
         }
     }
 
@@ -3367,10 +3361,7 @@ mod chatgpt_tests {
                     .count(),
                 1
             );
-            assert_eq!(
-                server.documents[&uri].text.as_deref(),
-                Some("First sentence.")
-            );
+            assert_eq!(server.documents[&uri].text(), Some("First sentence."));
             drop(completions);
             drop(server);
         }
@@ -3812,7 +3803,7 @@ mod chatgpt_tests {
                 assert!(server.translations.is_empty());
                 assert_eq!(fixture.state.lock().unwrap().records.len(), before);
             }
-            assert_eq!(server.documents[&uri].text.as_deref(), Some(text));
+            assert_eq!(server.documents[&uri].text(), Some(text));
             assert!(client.receiver.try_recv().is_err());
         }
         drop(completions);

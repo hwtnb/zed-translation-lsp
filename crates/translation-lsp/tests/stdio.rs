@@ -1169,6 +1169,80 @@ fn queue_and_same_document_concurrency_are_bounded_and_shutdown_cancels_work() {
 }
 
 #[test]
+fn newline_join_split_and_sequential_edits_keep_current_translation_ranges() {
+    let mut client = Client::new(&[]);
+    for language in ["rust", "markdown"] {
+        let (sample, translation, start_character) = if language == "rust" {
+            (format!("    {COMMENT}"), COMMENT_JA, 4)
+        } else {
+            (PARAGRAPH.into(), PARAGRAPH_JA, 0)
+        };
+        let uri = if language == "rust" {
+            "file:///joined.rs"
+        } else {
+            "file:///joined.md"
+        };
+        let end_character = sample.lines().last().unwrap().encode_utf16().count();
+        let range = |line| {
+            json!({
+                "start": {"line":line,"character":start_character},
+                "end": {"line":line + 1,"character":end_character}
+            })
+        };
+        let mut version = 1;
+        client.open(uri, language, &format!("前🚀\rX\n{sample}"), version);
+        let show = |client: &mut Client, line| {
+            let range = range(line);
+            let action = client.action(uri, range.clone());
+            let request = client.execute(action);
+            client.receive(request, TIMEOUT).unwrap();
+            assert_preview(
+                &client.hover(uri, range["start"].clone()),
+                &sample,
+                translation,
+                &range,
+            );
+        };
+        show(&mut client, 2);
+        version += 1;
+        client.change(
+            uri,
+            version,
+            json!([{
+                "range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},
+                "text":""
+            }]),
+        );
+        show(&mut client, 1);
+        version += 1;
+        client.change(
+            uri,
+            version,
+            json!([{
+                "range":{"start":{"line":0,"character":3},"end":{"line":1,"character":0}},
+                "text":"\rX\n"
+            }, {
+                "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                "text":"🚀前"
+            }]),
+        );
+        show(&mut client, 2);
+        version += 1;
+        client.change(
+            uri,
+            version,
+            json!([{
+                "range":{"start":{"line":0,"character":3},"end":{"line":2,"character":0}},
+                "text":"\n"
+            }]),
+        );
+        show(&mut client, 1);
+        client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
 fn invalid_incremental_sync_discards_cache_and_recovers_with_full_text() {
     let mut client = Client::new(&[]);
     let uri = "file:///bad-update.md";
