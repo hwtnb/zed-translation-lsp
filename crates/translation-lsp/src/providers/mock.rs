@@ -5,6 +5,7 @@ pub(crate) struct MockProvider;
 
 const COMMENT: &str = "// Retry only if the remote service\n    // reports a temporary failure.";
 const COMMENT_BODY: &str = "Retry only if the remote service\nreports a temporary failure.";
+const DOCSTRING_BODY: &str = "Retry only if the remote service\n    reports a temporary failure.";
 const DOXYGEN_BODY: &str = "@brief Retry only if the remote service\nreports a temporary failure.";
 const XML_COMMENT_BODY: &str =
     "<summary>\nRetry only if the remote service\nreports a temporary failure.\n</summary>";
@@ -23,7 +24,7 @@ impl TranslationProvider for MockProvider {
             return Err(Error::failed("The mock preview only targets Japanese"));
         }
         let translation = match text.replace("\r\n", "\n").replace('\r', "\n").trim() {
-            COMMENT | COMMENT_BODY => {
+            COMMENT | COMMENT_BODY | DOCSTRING_BODY => {
                 "リモートサービスが一時的な障害を報告した場合に限り、再試行する。"
             }
             DOXYGEN_BODY => {

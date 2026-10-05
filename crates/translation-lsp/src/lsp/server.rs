@@ -3461,64 +3461,76 @@ mod chatgpt_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn csharp_xml_comment_reaches_http_and_returns_translated_hover() {
-        let body = "<summary>Retry safely.</summary>";
-        let translated = "<summary>安全に再試行します。</summary>";
-        let source = format!("/// {body}\nclass Example {{}}");
-        let fixture = Fixture::new().await;
-        fixture.state.lock().unwrap().translation = Some(translated.into());
-        let auth = fixture.auth();
-        fixture.connected(&auth, 3600).await;
-        let provider = ChatGptProvider::synthetic(
-            auth,
-            format!("{}/v1", fixture.base),
-            "synthetic-model".into(),
-        );
-        let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
-        let mut server =
-            Server::new_with_provider(MockOptions::default(), finished, provider).unwrap();
-        let uri: Uri = "file:///Example.cs".parse().unwrap();
-        server.documents.insert(
-            uri.clone(),
-            Document::new(1, 1, "csharp".into(), source.clone()),
-        );
-        assert!(
-            server
-                .hover(
-                    1.into(),
-                    parse(json!({
-                        "textDocument":{"uri":uri}, "position":{"line":0,"character":15}
-                    }))
+    async fn documentation_comments_reach_http_and_return_translated_hover() {
+        for (language, source, body, translated) in [
+            (
+                "csharp",
+                "/// <summary>Retry safely.</summary>\nclass Example {}",
+                "<summary>Retry safely.</summary>",
+                "<summary>安全に再試行します。</summary>",
+            ),
+            (
+                "python",
+                "\"\"\"Retry safely.\"\"\"",
+                "Retry safely.",
+                "安全に再試行します。",
+            ),
+        ] {
+            let fixture = Fixture::new().await;
+            fixture.state.lock().unwrap().translation = Some(translated.into());
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server =
+                Server::new_with_provider(MockOptions::default(), finished, provider).unwrap();
+            let uri: Uri = "file:///Example.cs".parse().unwrap();
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, language.into(), source.into()),
+            );
+            assert!(
+                server
+                    .hover(
+                        1.into(),
+                        parse(json!({
+                            "textDocument":{"uri":uri}, "position":{"line":0,"character":15}
+                        }))
+                        .unwrap()
+                    )
                     .unwrap()
-                )
-                .unwrap()
-                .is_none()
-        );
-        server
-            .finish(&connection, next(&completions).await)
-            .unwrap();
-        let state = fixture.state.lock().unwrap();
-        let requests: Vec<_> = state
-            .records
-            .iter()
-            .filter(|record| record.path == "/v1/responses")
-            .collect();
-        assert_eq!(requests.len(), 1);
-        let request: Value = serde_json::from_str(&requests[0].body).unwrap();
-        assert_eq!(request["input"][0]["content"], body);
-        let Message::Response(reply) = client.receiver.try_recv().unwrap() else {
-            panic!("Expected Hover response");
-        };
-        let hover = reply.response_result.unwrap();
-        assert!(
-            hover["contents"]["value"]
-                .as_str()
-                .unwrap()
-                .contains(translated)
-        );
-        assert_eq!(server.documents[&uri].text(), Some(source.as_str()));
-        assert!(client.receiver.try_recv().is_err());
+                    .is_none()
+            );
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            let state = fixture.state.lock().unwrap();
+            let requests: Vec<_> = state
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .collect();
+            assert_eq!(requests.len(), 1);
+            let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+            assert_eq!(request["input"][0]["content"], body);
+            let Message::Response(reply) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected Hover response");
+            };
+            let hover = reply.response_result.unwrap();
+            assert!(
+                hover["contents"]["value"]
+                    .as_str()
+                    .unwrap()
+                    .contains(translated)
+            );
+            assert_eq!(server.documents[&uri].text(), Some(source));
+            assert!(client.receiver.try_recv().is_err());
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

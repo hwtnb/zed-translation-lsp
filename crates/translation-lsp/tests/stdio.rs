@@ -2225,3 +2225,78 @@ fn c_family_doxygen_hover_and_selection_share_the_comment_body() {
     }
     client.finish(true);
 }
+
+#[test]
+fn python_docstring_and_comment_hover_use_canonical_bodies() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///retry.py";
+    for ending in ["\n", "\r\n", "\r"] {
+        let source = include_str!("../../../samples/comment.py").replace('\n', ending);
+        let original =
+            "\"\"\"Retry only if the remote service\n    reports a temporary failure.\n    \"\"\""
+                .replace('\n', ending);
+        let range = json!({"start":{"line":1,"character":4},"end":{"line":3,"character":7}});
+        client.open(uri, "python", &source, 1);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            &original,
+            COMMENT_JA,
+            &range,
+        );
+        let action = client.action(uri, range.clone());
+        let id = client.execute(action);
+        assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            &original,
+            COMMENT_JA,
+            &range,
+        );
+        let original = "# Retry only if the remote service\n    # reports a temporary failure."
+            .replace('\n', ending);
+        let range = json!({"start":{"line":4,"character":4},"end":{"line":5,"character":34}});
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            &original,
+            COMMENT_JA,
+            &range,
+        );
+        client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
+fn python_pending_docstring_obeys_cancel_edit_and_close() {
+    for mode in ["cancel", "edit", "close"] {
+        let mut client = Client::new(&["--mock-delay-ms", "150"]);
+        let uri = "file:///Pending.py";
+        client.open(
+            uri,
+            "python",
+            include_str!("../../../samples/comment.py"),
+            1,
+        );
+        let id = client.request_hover(uri, json!({"line":1,"character":10}));
+        match mode {
+            "cancel" => client.notify("$/cancelRequest", json!({"id":id})),
+            "edit" => client.change(uri, 2, json!([{"text":"pass"}])),
+            "close" => client.close(uri),
+            _ => unreachable!(),
+        }
+        assert_error(
+            client.receive(id, TIMEOUT),
+            if mode == "cancel" { -32800 } else { -32801 },
+        );
+        client.close(uri);
+        client.open(uri, "python", "value = '''Not a docstring.'''", 1);
+        thread::sleep(Duration::from_millis(180));
+        assert!(
+            client
+                .hover(uri, json!({"line":0,"character":15}))
+                .is_null()
+        );
+        assert!(client.notifications.is_empty());
+        client.finish(true);
+    }
+}

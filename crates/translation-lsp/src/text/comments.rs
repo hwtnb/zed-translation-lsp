@@ -8,6 +8,7 @@ use rust_lexer::{DocStyle, FrontmatterAllowed, TokenKind};
 
 mod c_family;
 mod csharp;
+mod python;
 mod syntax;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -16,12 +17,13 @@ enum LineKind {
     JavaScript(u8),
     CSharp(u8),
     CFamily(&'static str),
+    Python,
 }
 
-#[derive(Clone, Copy)]
 enum Kind {
     Line(LineKind),
     Block { opening: u8, closed: bool },
+    Docstring(Vec<Range<usize>>),
 }
 
 struct Comment {
@@ -35,6 +37,9 @@ pub(crate) struct Comments(Vec<Comment>);
 
 impl Comments {
     pub fn parse(language_id: &str, uri: &Uri, text: &str) -> Self {
+        if language_id == "python" {
+            return Self(python::parse(text));
+        }
         if matches!(language_id, "c" | "cpp") {
             return Self(c_family::parse(language_id, text));
         }
@@ -152,6 +157,13 @@ impl Comments {
                         2
                     }
                 }
+                Kind::Docstring(ref contents) => {
+                    for range in contents {
+                        body.push_str(&text[range.clone()]);
+                    }
+                    continue;
+                }
+                Kind::Line(LineKind::Python) => 1,
                 Kind::Line(LineKind::CFamily(prefix)) => prefix.len() as u8,
                 Kind::Line(LineKind::JavaScript(opening) | LineKind::CSharp(opening))
                 | Kind::Block { opening, .. } => opening,
@@ -170,7 +182,7 @@ impl Comments {
 
     fn adjacent(&self, text: &str, left: usize, right: usize) -> bool {
         let (Kind::Line(left_kind), Kind::Line(right_kind)) =
-            (self.0[left].kind, self.0[right].kind)
+            (&self.0[left].kind, &self.0[right].kind)
         else {
             return false;
         };
@@ -180,7 +192,7 @@ impl Comments {
         let indent = |comment: &Comment| {
             let prefix = &text[..comment.range.start];
             let line_start = prefix
-                .rfind(|character| line_break(character, left_kind))
+                .rfind(|character| line_break(character, *left_kind))
                 .map_or(0, |offset| {
                     offset + text[offset..].chars().next().unwrap().len_utf8()
                 });
@@ -246,6 +258,92 @@ mod tests {
             text[comments.range(group.clone())].into(),
             comments.body(text, group),
         )
+    }
+
+    #[test]
+    fn python_comments_and_docstrings_are_distinct_from_other_strings() {
+        let source = concat!(
+            "# Module comment.\n",
+            "\"\"\"Module doc.\"\"\"\n",
+            "class Example:\n",
+            "    # Class comment.\n",
+            "    (\"Class \" \"doc.\")\n",
+            "    @decorator\n",
+            "    async def read(self):\n",
+            "        r\"\"\"Function doc.\"\"\"\n",
+            "        value = \"# Not a comment.\"\n",
+            "        \"Not a docstring.\"\n",
+            "    def other(self):\n",
+            "        f\"Not a docstring either.\"\n",
+        );
+        let uri = "untitled:Example".parse().unwrap();
+        let comments = Comments::parse("python", &uri, source);
+        let bodies: Vec<_> = (0..comments.0.len())
+            .map(|index| comments.body(source, index..index + 1))
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                "Module comment.",
+                "Module doc.",
+                "Class comment.",
+                "Class doc.",
+                "Function doc."
+            ]
+        );
+        for marker in ["Not a comment", "Not a docstring", "Not a docstring either"] {
+            assert!(comments.at(source, source.find(marker).unwrap()).is_none());
+        }
+    }
+
+    #[test]
+    fn python_docstring_delimiters_newlines_and_non_docstring_contexts() {
+        let uri = "file:///sample.py".parse().unwrap();
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = format!(
+                "# First.{ending}# Second.{ending}def f():{ending}    \"\"\"Read.{ending}    Carefully.{ending}    \"\"\"{ending}    pass{ending}"
+            );
+            assert_eq!(
+                body_at("python", &source, "First.").1,
+                format!("First.{ending}Second.")
+            );
+            assert_eq!(
+                body_at("python", &source, "Read.").1,
+                format!("Read.{ending}    Carefully.{ending}    ")
+            );
+        }
+        for literal in [
+            "'Doc.'",
+            "u'Doc.'",
+            "U\"Doc.\"",
+            "r'''Doc.'''",
+            "R\"\"\"Doc.\"\"\"",
+            "((\"Doc.\"))",
+            "('Doc' # explanation\n'.')",
+        ] {
+            let comments = Comments::parse("python", &uri, literal);
+            assert_eq!(comments.0.len(), 1, "{literal}");
+            assert_eq!(comments.body(literal, 0..1), "Doc.");
+            assert!(comments.at(literal, literal.len()).is_none());
+        }
+        for source in [
+            "b'Not a docstring.'",
+            "f'Not a docstring.'",
+            "('Not ' + 'a docstring.')",
+            "('Not a docstring.',)",
+            "value = '''Not a docstring.'''",
+            "if True:\n    '''Not a docstring.'''",
+            "def f():\n    pass\n    '''Not a docstring.'''",
+        ] {
+            assert!(
+                Comments::parse("python", &uri, source).0.is_empty(),
+                "{source}"
+            );
+        }
+        let source = "#!/usr/bin/env python\n# Real.\n'''Unclosed\n# Hidden.";
+        let comments = Comments::parse("python", &uri, source);
+        assert_eq!(comments.0.len(), 1);
+        assert_eq!(comments.body(source, 0..1), "Real.");
     }
 
     #[test]

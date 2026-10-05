@@ -31,8 +31,7 @@ pub(super) fn parse(
         } else {
             if let Some(comment) = classify(node) {
                 comments.push(comment);
-            }
-            if cursor.goto_first_child() {
+            } else if cursor.goto_first_child() {
                 continue;
             }
         }
