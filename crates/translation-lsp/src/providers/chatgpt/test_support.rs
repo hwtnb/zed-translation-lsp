@@ -9,6 +9,7 @@ use std::{
 
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 use futures_util::StreamExt;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
     body::{Bytes, Frame},
@@ -19,7 +20,6 @@ use openidconnect::{
     Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, Nonce, PkceCodeChallenge,
     PkceCodeVerifier, PrivateSigningKey, StandardClaims, SubjectIdentifier, core::*,
 };
-use rand_core::OsRng;
 use serde_json::{Value, json};
 use tokio::{
     net::TcpListener,
@@ -102,7 +102,7 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub async fn new() -> Self {
         let signing_key = {
-            let key = SigningKey::generate(&mut OsRng);
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let pem = key.to_pkcs8_pem(Default::default()).unwrap();
             Arc::new(CoreEdDsaPrivateSigningKey::from_ed25519_pem(&pem, None).unwrap())
         };
