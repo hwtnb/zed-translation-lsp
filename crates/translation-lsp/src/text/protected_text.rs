@@ -4,6 +4,7 @@ use std::ops::Range;
 
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 /// Source slices partition the entire input; only plain prose may be replaced.
 pub(crate) struct ProtectedText<'a> {
@@ -13,7 +14,6 @@ pub(crate) struct ProtectedText<'a> {
 
 #[derive(Serialize)]
 pub(crate) struct Segment<'a> {
-    pub(crate) id: u32,
     pub(crate) text: &'a str,
     pub(crate) protected: bool,
 }
@@ -21,8 +21,9 @@ pub(crate) struct Segment<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProtectionError {
     InvalidSourceRange,
-    TooManySegments,
     InvalidResponse,
+    WrongTranslationCount,
+    IntroducedLineBreaks,
     InvalidTranslation,
 }
 
@@ -30,9 +31,10 @@ impl fmt::Display for ProtectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidSourceRange => "Invalid Markdown source range",
-            Self::TooManySegments => "Too many translation segments",
-            Self::InvalidResponse => "Invalid translation segment response",
-            Self::InvalidTranslation => "Translation changes protected Markdown structure",
+            Self::InvalidResponse => "invalid translation response format",
+            Self::WrongTranslationCount => "wrong number of translations",
+            Self::IntroducedLineBreaks => "inserted line breaks in translated prose",
+            Self::InvalidTranslation => "changed protected Markdown structure",
         })
     }
 }
@@ -42,14 +44,7 @@ impl std::error::Error for ProtectionError {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Response {
-    segments: Vec<TranslatedSegment>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TranslatedSegment {
-    id: u32,
-    text: String,
+    translations: Vec<String>,
 }
 
 impl<'a> ProtectedText<'a> {
@@ -95,14 +90,14 @@ impl<'a> ProtectedText<'a> {
                     range.start += raw.len() - raw.trim_start_matches(char::is_whitespace).len();
                     range.end = range.start + trimmed.len();
 
-                    push_segment(&mut segments, &source[cursor..range.start], true)?;
-                    push_segment(&mut segments, &source[range.clone()], false)?;
+                    push_segment(&mut segments, &source[cursor..range.start], true);
+                    push_segment(&mut segments, &source[range.clone()], false);
                     cursor = range.end;
                 }
                 _ => {}
             }
         }
-        push_segment(&mut segments, &source[cursor..], true)?;
+        push_segment(&mut segments, &source[cursor..], true);
         Ok(Self { source, segments })
     }
 
@@ -110,10 +105,31 @@ impl<'a> ProtectedText<'a> {
         &self.segments
     }
 
+    pub(crate) fn response_schema(&self) -> Value {
+        let count = self
+            .segments
+            .iter()
+            .filter(|segment| !segment.protected)
+            .count();
+        json!({
+            "type": "object",
+            "properties": {
+                "translations": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^[^\\r\\n]*$"},
+                    "minItems": count,
+                    "maxItems": count
+                }
+            },
+            "required": ["translations"],
+            "additionalProperties": false
+        })
+    }
+
     pub(crate) fn restore(&self, response_json: &str) -> Result<String, ProtectionError> {
         let response: Response =
             serde_json::from_str(response_json).map_err(|_| ProtectionError::InvalidResponse)?;
-        let mut translations = response.segments.into_iter();
+        let mut translations = response.translations.into_iter();
         let mut restored = String::with_capacity(self.source.len());
         let mut protected_ranges = Vec::new();
 
@@ -126,15 +142,14 @@ impl<'a> ProtectedText<'a> {
             }
             let translation = translations
                 .next()
-                .filter(|translation| translation.id == segment.id)
-                .ok_or(ProtectionError::InvalidResponse)?;
-            if translation.text.contains(['\r', '\n']) {
-                return Err(ProtectionError::InvalidTranslation);
+                .ok_or(ProtectionError::WrongTranslationCount)?;
+            if translation.contains(['\r', '\n']) {
+                return Err(ProtectionError::IntroducedLineBreaks);
             }
-            restored.push_str(&translation.text);
+            restored.push_str(&translation);
         }
         if translations.next().is_some() {
-            return Err(ProtectionError::InvalidResponse);
+            return Err(ProtectionError::WrongTranslationCount);
         }
         if !same_structure(self.source, &restored)
             || !protected_spans_remain(&restored, &protected_ranges)?
@@ -145,19 +160,10 @@ impl<'a> ProtectedText<'a> {
     }
 }
 
-fn push_segment<'a>(
-    segments: &mut Vec<Segment<'a>>,
-    text: &'a str,
-    protected: bool,
-) -> Result<(), ProtectionError> {
+fn push_segment<'a>(segments: &mut Vec<Segment<'a>>, text: &'a str, protected: bool) {
     if !text.is_empty() {
-        segments.push(Segment {
-            id: u32::try_from(segments.len()).map_err(|_| ProtectionError::TooManySegments)?,
-            text,
-            protected,
-        });
+        segments.push(Segment { text, protected });
     }
-    Ok(())
 }
 
 fn protected_link(link_type: LinkType) -> bool {
@@ -237,6 +243,21 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn response_contract_restores_ordered_prose_without_returned_ids() {
+        let protected = ProtectedText::new(
+            "Use `retry_count` unchanged.\r\nRead the [guide](https://example.invalid).",
+        )
+        .unwrap();
+        let translated = protected.restore(
+            r#"{"translations":["", "を変更せずに使ってください。", "", "ガイド", "を読んでください。"]}"#,
+        ).unwrap();
+        assert_eq!(
+            translated,
+            " `retry_count` を変更せずに使ってください。\r\n [ガイド](https://example.invalid)を読んでください。"
+        );
+    }
+
     fn response(
         protected: &ProtectedText<'_>,
         mut translate: impl FnMut(&str) -> String,
@@ -245,27 +266,27 @@ mod tests {
             .segments()
             .iter()
             .filter(|segment| !segment.protected)
-            .map(|segment| json!({"id": segment.id, "text": translate(segment.text)}))
+            .map(|segment| json!(translate(segment.text)))
             .collect();
-        json!({"segments": segments}).to_string()
+        json!({"translations": segments}).to_string()
     }
 
     #[test]
-    fn source_order_ids_and_serialization_use_only_source_slices() {
+    fn source_order_and_serialization_use_only_source_slices() {
         let source = "Use `retry_count` unchanged.";
         let protected = ProtectedText::new(source).unwrap();
         let segments = serde_json::to_value(protected.segments()).unwrap();
         assert_eq!(
             segments,
             json!([
-                {"id":0,"text":"Use","protected":false},
-                {"id":1,"text":" `retry_count` ","protected":true},
-                {"id":2,"text":"unchanged.","protected":false}
+                {"text":"Use","protected":false},
+                {"text":" `retry_count` ","protected":true},
+                {"text":"unchanged.","protected":false}
             ])
         );
         assert_eq!(
             protected
-                .restore(r#"{"segments":[{"id":0,"text":""},{"id":2,"text":"の値を維持する。"}]}"#)
+                .restore(r#"{"translations":["","の値を維持する。"]}"#)
                 .unwrap(),
             " `retry_count` の値を維持する。"
         );
@@ -320,7 +341,7 @@ mod tests {
         ] {
             let protected = ProtectedText::new(source).unwrap();
             assert!(protected.segments().iter().all(|segment| segment.protected));
-            assert_eq!(protected.restore(r#"{"segments":[]}"#).unwrap(), source);
+            assert_eq!(protected.restore(r#"{"translations":[]}"#).unwrap(), source);
         }
     }
 
@@ -410,21 +431,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_duplicate_extra_reordered_and_protected_ids_are_rejected() {
+    fn missing_and_extra_translations_are_rejected() {
         let protected = ProtectedText::new("Use `id` unchanged.").unwrap();
-        for segments in [
-            json!([]),
-            json!([{"id":0,"text":"訳"}]),
-            json!([{"id":0,"text":"訳"},{"id":0,"text":"訳"}]),
-            json!([{"id":0,"text":"訳"},{"id":2,"text":"訳"},{"id":3,"text":"訳"}]),
-            json!([{"id":2,"text":"訳"},{"id":0,"text":"訳"}]),
-            json!([{"id":0,"text":"訳"},{"id":1,"text":"`id`"},{"id":2,"text":"訳"}]),
-        ] {
+        for translations in [json!([]), json!(["訳"]), json!(["訳", "訳", "訳"])] {
             assert_eq!(
                 protected
-                    .restore(&json!({"segments":segments}).to_string())
+                    .restore(&json!({"translations":translations}).to_string())
                     .err(),
-                Some(ProtectionError::InvalidResponse)
+                Some(ProtectionError::WrongTranslationCount)
             );
         }
     }
@@ -434,29 +448,25 @@ mod tests {
         let protected = ProtectedText::new("Read this.").unwrap();
         for invalid in [
             "Raw translated text",
-            "{\"segments\":[",
+            "{\"translations\":[",
             "[]",
             "{}",
-            r#"{"segments":null}"#,
-            r#"{"segments":[],"unknown":true}"#,
-            r#"{"segments":[{"id":0,"text":"訳","protected":false}]}"#,
-            r#"{"segments":[{"id":"0","text":"訳"}]}"#,
-            r#"{"segments":[{"id":0.0,"text":"訳"}]}"#,
-            r#"{"segments":[{"id":-1,"text":"訳"}]}"#,
-            r#"{"segments":[{"id":4294967296,"text":"訳"}]}"#,
-            r#"{"segments":[{"id":true,"text":"訳"}]}"#,
-            r#"{"segments":[{"id":0,"text":null}]}"#,
-            r#"{"segments":[{"id":0}]}"#,
-            r#"{"segments":[{"id":0,"id":0,"text":"訳"}]}"#,
-            r#"{"segments":[],"segments":[]}"#,
-            r#"{"segments":[{"id":0,"text":"訳"}]} trailing"#,
+            r#"{"translations":null}"#,
+            r#"{"translations":["訳"],"unknown":true}"#,
+            r#"{"translations":[{"id":0,"text":"訳"}]}"#,
+            r#"{"translations":[0]}"#,
+            r#"{"translations":[true]}"#,
+            r#"{"translations":[null]}"#,
+            r#"{"translations":[["訳"]]}"#,
+            r#"{"translations":[],"translations":[]}"#,
+            r#"{"translations":["訳"]} trailing"#,
         ] {
             assert_eq!(
                 protected.restore(invalid).err(),
                 Some(ProtectionError::InvalidResponse)
             );
         }
-        let valid: Value = json!({"segments":[{"id":0,"text":""}]});
+        let valid: Value = json!({"translations":[""]});
         assert_eq!(protected.restore(&valid.to_string()).unwrap(), "");
     }
 
@@ -481,7 +491,11 @@ mod tests {
                 protected
                     .restore(&response(&protected, |_| invalid.into()))
                     .err(),
-                Some(ProtectionError::InvalidTranslation)
+                Some(if invalid.contains(['\r', '\n']) {
+                    ProtectionError::IntroducedLineBreaks
+                } else {
+                    ProtectionError::InvalidTranslation
+                })
             );
         }
         assert_eq!(
@@ -537,7 +551,7 @@ mod tests {
         let protected = ProtectedText::new("PRIVATE_SOURCE").unwrap();
         let error = protected.restore("PRIVATE_RESPONSE").err().unwrap();
         assert_error_trait(&error);
-        assert_eq!(error.to_string(), "Invalid translation segment response");
+        assert_eq!(error.to_string(), "invalid translation response format");
         assert_eq!(format!("{error:?}"), "InvalidResponse");
     }
 }

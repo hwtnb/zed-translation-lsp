@@ -633,10 +633,10 @@ fn progress_cancel_retires_running_and_queued_jobs_and_shutdown_flushes_end() {
 #[test]
 fn translation_problems_clear_on_edit_and_fallback_channels_remain_independent() {
     for (args, expected) in [
-        (vec!["--mock-fail"], "Failed. Retry manually."),
+        (vec!["--mock-fail"], "Simulated mock translation failure"),
         (
             vec!["--mock-delay-ms", "1000", "--mock-timeout-ms", "80"],
-            "Timed out. Retry manually.",
+            "Translation timed out. Try a shorter selection or adjust the timeout in Zed settings.",
         ),
     ] {
         let mut client = Client::with_activity(&args, false, true);
@@ -696,14 +696,14 @@ fn a_failed_ticket_reports_its_problem_while_another_ticket_remains_busy() {
     assert_eq!(
         client.status(),
         json!({
-            "health":"warning", "quiescent":false, "message":"Timed out. Retry manually."
+            "health":"warning", "quiescent":false, "message":"Translation timed out. Try a shorter selection or adjust the timeout in Zed settings."
         })
     );
     assert_error(client.receive(second, TIMEOUT), -32803);
     assert_eq!(
         client.status(),
         json!({
-            "health":"warning", "quiescent":true, "message":"Timed out. Retry manually."
+            "health":"warning", "quiescent":true, "message":"Translation timed out. Try a shorter selection or adjust the timeout in Zed settings."
         })
     );
     assert!(client.notifications.is_empty());

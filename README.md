@@ -74,6 +74,8 @@ If `binary.path` is omitted, the extension looks for `zed-code-translation-lsp` 
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
 
+The model must support Structured Outputs with string-pattern and array-length constraints. Translation requests specify the response format through the API; unsupported models or schemas return an error without switching models or relaxing Markdown protection.
+
 ## Connecting to ChatGPT
 
 Open Code Actions in a supported document (`⌘.` on macOS), choose `ChatGPT account…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, opening the account menu, and Hover do not start an OAuth sign-in flow.
@@ -103,6 +105,8 @@ With ChatGPT connected, plan use enabled, and `markdown_auto_translate` set to `
 To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The translation action is hidden when there is no selection.
 
 Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `ChatGPT account…` → `Continue with ChatGPT / Choose account` to reconnect.
+
+Translation errors distinguish an invalid response format, the wrong number of translations, inserted line breaks, and changed Markdown structure. Rejected results are not displayed. On clients that support server status, background failures show the same reason. A timeout is separate: try a shorter selection, or adjust the timeout settings and restart the language server. Repeating a request is not guaranteed to resolve an invalid translation response.
 
 Only the extracted comment body or selected text is submitted, including its protected segments. The extension does not submit the entire document or conversation history. Code, link destinations, Markdown syntax, and line endings recognized in the submitted input are preserved in the translation.
 

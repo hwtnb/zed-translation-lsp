@@ -1174,7 +1174,7 @@ impl<P: TranslationProvider> Server<P> {
             && error.code != ErrorCode::ContentModified as i32
             && error.code != ErrorCode::RequestCanceled as i32
         {
-            self.record_problem(&work, Problem::Failed);
+            self.record_problem(&work, Problem::Failed(error.message.clone()));
         } else if self
             .problem_target
             .as_ref()
@@ -2042,8 +2042,7 @@ mod chatgpt_tests {
     async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
         for automatic in [false, true] {
             let fixture = Fixture::new().await;
-            fixture.state.lock().unwrap().translation_segments =
-                Some(vec![json!({"id":0,"text":"Translated sentence."})]);
+            fixture.state.lock().unwrap().translations = Some(vec!["Translated sentence.".into()]);
             let auth = fixture.auth();
             fixture.connected(&auth, 3600).await;
             let provider = ChatGptProvider::synthetic(
@@ -3179,7 +3178,7 @@ mod chatgpt_tests {
                 completion
                     .result
                     .as_ref()
-                    .is_err_and(|e| e.message.contains("incomplete"))
+                    .is_err_and(|e| e.message.contains("wrong number of translations"))
             );
             server.finish(&connection, completion).unwrap();
         }
@@ -3983,6 +3982,106 @@ mod chatgpt_tests {
                 .unwrap(),
             )
             .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn markdown_repeated_selections_report_failure_and_recover_manually() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions::default(),
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    server_status: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///repeated.md".parse().unwrap();
+        let source = "First sentence.\nSecond sentence.";
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "Markdown".into(), source.into()),
+        );
+        let first = Range::new(Position::new(0, 0), Position::new(0, 15));
+        let second = Range::new(Position::new(1, 0), Position::new(1, 16));
+        for (range, mode) in [(first, ""), (second, "compact_missing")] {
+            fixture.state.lock().unwrap().response_mode = mode.into();
+            markdown_actions(&mut server, &uri, range);
+            server.selection.as_mut().unwrap().start = Some(Instant::now());
+            server.expire(&connection).unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            if mode.is_empty() {
+                assert_eq!(
+                    server.documents[&uri].preview.as_ref().unwrap().range,
+                    first
+                );
+            }
+        }
+        assert!(server.documents[&uri].preview.is_none());
+        server.publish_activity();
+        let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected background failure status");
+        };
+        assert_eq!(status.method, "experimental/serverStatus");
+        let message = status.params["message"].as_str().unwrap();
+        assert!(message.contains("wrong number of translations"));
+        let target = server.selection.as_ref().unwrap().target.clone();
+        server
+            .queue(1.into(), target.clone(), PendingReply::Command)
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(command_notice(&client, 1, 1).unwrap_err().message, message);
+        fixture.state.lock().unwrap().response_mode.clear();
+        server
+            .queue(2.into(), target, PendingReply::Command)
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        command_notice(&client, 2, 3).unwrap();
+        assert_eq!(
+            server.documents[&uri].preview.as_ref().unwrap().range,
+            second
+        );
+        for range in [first, second] {
+            markdown_actions(&mut server, &uri, range);
+            server.selection.as_mut().unwrap().start = Some(Instant::now());
+            server.expire(&connection).unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert_eq!(
+                server.documents[&uri].preview.as_ref().unwrap().range,
+                range
+            );
+        }
+        server.publish_activity();
+        let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected cleared failure status");
+        };
+        assert_eq!(status.params["health"], "ok");
+        assert_eq!(server.documents[&uri].text().unwrap(), source);
+        assert!(server.pending.is_empty());
+        assert!(server.translations.is_empty());
+        assert_eq!(response_calls(&fixture), 6);
     }
 
     #[tokio::test(flavor = "current_thread")]

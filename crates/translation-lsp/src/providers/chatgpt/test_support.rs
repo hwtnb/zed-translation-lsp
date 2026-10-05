@@ -78,7 +78,7 @@ pub(crate) struct FixtureState {
     pub mode: String,
     pub response_mode: String,
     pub stream_error: Option<Value>,
-    pub translation_segments: Option<Vec<Value>>,
+    pub translations: Option<Vec<String>>,
     pub failure: Option<(u16, Value)>,
     pub direct: bool,
     pub delay: Duration,
@@ -112,7 +112,7 @@ impl Fixture {
             mode: String::new(),
             response_mode: String::new(),
             stream_error: None,
-            translation_segments: None,
+            translations: None,
             failure: None,
             direct: true,
             delay: Duration::ZERO,
@@ -739,16 +739,17 @@ async fn endpoint(
                 for field in ["temperature","max_output_tokens","previous_response_id","tools","prompt"] { assert!(request.get(field).is_none()); }
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
                 let segments: Value = serde_json::from_str(request["input"][0]["content"].as_str().unwrap()).unwrap();
-                let mut translated: Vec<Value> = segments["segments"].as_array().unwrap().iter().filter(|segment| segment["protected"] == false)
-                    .map(|segment| json!({"id":segment["id"],"text":format!("訳{}",segment["text"].as_str().unwrap())})).collect();
-                if let Some(translations) = &state.translation_segments {
+                let mut translated: Vec<String> = segments["segments"].as_array().unwrap().iter().filter(|segment| segment["protected"] == false)
+                    .map(|segment| format!("訳{}",segment["text"].as_str().unwrap())).collect();
+                if let Some(translations) = &state.translations {
                     translated = translations.clone();
                 }
                 match state.response_mode.as_str() {
                     "missing" | "compact_missing" => { translated.pop(); },
                     "duplicate" | "compact_duplicate" => { translated.push(translated[0].clone()); },
-                    "output_limit" | "compact_output_limit" => { translated[0]["text"] = json!("字".repeat(64*1024)); },
-                    "compact_code_change" => { translated[0]["text"] = json!("`changed prose`"); },
+                    "output_limit" | "compact_output_limit" => { translated[0] = "字".repeat(64*1024); },
+                    "compact_code_change" => { translated[0] = "`changed prose`".into(); },
+                    "compact_line_break" => { translated[0] = "new\nline".into(); },
                     _ => (),
                 }
                 let text = if state.response_mode == "public_compact" {
@@ -757,9 +758,9 @@ async fn endpoint(
                         "gpt-6-luna" => "リモートサービスが一時的な障害を報告した場合に限り、再試行してください。",
                         _ => panic!("Unexpected public trace model"),
                     };
-                    json!({"segments":[{"id":0,"text":text}]}).to_string()
+                    json!({"translations":[text]}).to_string()
                 } else {
-                    json!({"segments":translated}).to_string()
+                    json!({"translations":translated}).to_string()
                 };
                 let stream = match &state.stream_error {
                     Some(error) => format!("data: {error}\n\n"),

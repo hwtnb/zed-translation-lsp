@@ -40,9 +40,9 @@ impl Work {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Problem {
-    Failed,
+    Failed(String),
     TimedOut,
 }
 
@@ -255,14 +255,14 @@ impl Activity {
         if !self.capabilities.server_status {
             return;
         }
-        let params = match self.problem {
-            Some(Problem::Failed) => Some(json!({
+        let params = match &self.problem {
+            Some(Problem::Failed(message)) => Some(json!({
                 "health":"warning", "quiescent":!self.work.busy(),
-                "message":"Failed. Retry manually."
+                "message":message
             })),
             Some(Problem::TimedOut) => Some(json!({
                 "health":"warning", "quiescent":!self.work.busy(),
-                "message":"Timed out. Retry manually."
+                "message":"Translation timed out. Try a shorter selection or adjust the timeout in Zed settings."
             })),
             None => None,
         };
@@ -464,13 +464,13 @@ mod tests {
             let now = Instant::now();
             activity.publish(Work::default(), now);
             assert!(output.is_empty(), "Healthy idle is silent");
-            activity.problem(Problem::Failed);
+            activity.problem(Problem::Failed("Translation response was rejected.".into()));
             activity.publish(Work::default(), now);
             if status {
                 assert_eq!(
                     notification(&output, "experimental/serverStatus"),
                     json!({
-                        "health":"warning", "quiescent":true, "message":"Failed. Retry manually."
+                        "health":"warning", "quiescent":true, "message":"Translation response was rejected."
                     })
                 );
             }
