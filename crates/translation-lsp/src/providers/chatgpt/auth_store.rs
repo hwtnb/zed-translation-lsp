@@ -133,7 +133,7 @@ impl AuthStore {
     pub fn production() -> Result<Self, StoreError> {
         let root = dirs::config_local_dir().ok_or(StoreError::Io)?;
         Ok(Self {
-            directory: root.join("zed-code-translation"),
+            directory: root.join("translation-lsp"),
         })
     }
 

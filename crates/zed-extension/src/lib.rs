@@ -1,7 +1,7 @@
 use zed_extension_api::{self as zed, settings::LspSettings};
 
-const SERVER_ID: &str = "zed-code-translation";
-const BINARY_NAME: &str = "zed-code-translation-lsp";
+const SERVER_ID: &str = "translation-lsp";
+const BINARY_NAME: &str = "translation-lsp";
 
 struct TranslationExtension;
 

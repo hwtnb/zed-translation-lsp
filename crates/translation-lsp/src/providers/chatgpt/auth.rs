@@ -248,7 +248,7 @@ impl Auth {
                 authorize = authorize.add_extra_param("id_token_hint", &credentials.id_token);
             }
         } else {
-            authorize = authorize.add_extra_param("agent_name_hint", "Zed Code Translation");
+            authorize = authorize.add_extra_param("agent_name_hint", "Translation LSP");
         }
         if enable {
             authorize = authorize.add_extra_param("prompt", "consent");

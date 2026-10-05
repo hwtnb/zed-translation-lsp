@@ -51,7 +51,7 @@ impl Client {
     }
 
     fn spawn(args: &[&str], progress: bool, status: bool) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_zed-code-translation-lsp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_translation-lsp"))
             .args(args)
             .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
             .stdin(Stdio::piped())
@@ -139,8 +139,8 @@ impl Client {
         assert_eq!(
             initialized["capabilities"]["executeCommandProvider"]["commands"],
             json!([
-                "zed-code-translation.preview",
-                "zed-code-translation.open-translation"
+                "translation-lsp.preview",
+                "translation-lsp.open-translation"
             ])
         );
         client.notify("initialized", json!({}));
@@ -391,9 +391,9 @@ fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Valu
     assert_eq!(hover["range"], *range);
     assert_eq!(hover["contents"]["kind"], "markdown");
     let text = hover["contents"]["value"].as_str().unwrap();
-    assert!(text.starts_with(
-        "> **Zed Code Translation**\n>\n> Mock translation (fixed sample)\n\n---\n\n"
-    ));
+    assert!(
+        text.starts_with("> **Translation LSP**\n>\n> Mock translation (fixed sample)\n\n---\n\n")
+    );
     assert!(!text.contains("**Original**"));
     assert!(
         !text.contains(original),
@@ -533,7 +533,7 @@ fn progress_registration_does_not_block_hover_or_coalesced_waiter_cancellation()
     assert_eq!(
         begin["value"],
         json!({
-            "kind":"begin", "title":"Code Translation", "cancellable":false,
+            "kind":"begin", "title":"Translation LSP", "cancellable":false,
             "message":"Translating: 1, queued: 0"
         })
     );
@@ -1857,7 +1857,7 @@ fn document_action(client: &mut Client, uri: &str, range: Value) -> Value {
         .as_array()
         .unwrap()
         .iter()
-        .find(|action| action["command"]["command"] == "zed-code-translation.open-translation")
+        .find(|action| action["command"]["command"] == "translation-lsp.open-translation")
         .unwrap()["command"]
         .clone()
 }
@@ -2086,7 +2086,7 @@ fn document_deadline_includes_queue_waiting() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|action| action["command"]["command"] == "zed-code-translation.preview")
+            .find(|action| action["command"]["command"] == "translation-lsp.preview")
             .unwrap()["command"]
             .clone();
         blockers.push(client.execute(command));

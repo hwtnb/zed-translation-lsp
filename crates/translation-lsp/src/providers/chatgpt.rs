@@ -247,10 +247,10 @@ impl TranslationProvider for ChatGptProvider {
 
     async fn administer(&self, command: &str, ui: &Ui) -> Result<String, Error> {
         match command {
-            "zed-code-translation.connect" => self.auth.choose_account(ui, false).await,
-            "zed-code-translation.enable" => self.auth.choose_account(ui, true).await,
-            "zed-code-translation.sign-out" => self.auth.sign_out().await,
-            "zed-code-translation.usage" => {
+            "translation-lsp.connect" => self.auth.choose_account(ui, false).await,
+            "translation-lsp.enable" => self.auth.choose_account(ui, true).await,
+            "translation-lsp.sign-out" => self.auth.sign_out().await,
+            "translation-lsp.usage" => {
                 ui.open("https://chatgpt.com/settings/usage").await?;
                 Ok("ChatGPT Usage opened.".into())
             }

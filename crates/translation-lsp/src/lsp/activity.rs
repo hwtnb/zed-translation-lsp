@@ -240,7 +240,7 @@ impl Activity {
     }
 
     fn begin(&self, token: &ProgressToken, message: Option<&str>) {
-        let mut value = json!({"kind":"begin","title":"Code Translation","cancellable":false});
+        let mut value = json!({"kind":"begin","title":"Translation LSP","cancellable":false});
         if let Some(message) = message {
             value["message"] = json!(message);
         }
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(
             begin["value"],
             json!({
-                "kind":"begin", "title":"Code Translation", "cancellable":false,
+                "kind":"begin", "title":"Translation LSP", "cancellable":false,
                 "message":"Translating: 1, queued: 1"
             })
         );

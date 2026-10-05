@@ -21,7 +21,7 @@ impl PreviewFiles {
     pub fn open(&mut self, ui: &Ui, text: &str, markdown: bool) -> Result<(), ResponseError> {
         let extension = if markdown { "md" } else { "txt" };
         let directory =
-            std::env::temp_dir().join(format!("zed-translation-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("translation-lsp-{}", uuid::Uuid::new_v4()));
         let mut directory_options = fs::DirBuilder::new();
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);

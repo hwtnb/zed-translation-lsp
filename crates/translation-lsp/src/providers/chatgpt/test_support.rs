@@ -238,7 +238,7 @@ impl Fixture {
                 .collect();
             if selected.is_none() {
                 assert_eq!(query["client_id"], "dynamic_agent_client");
-                assert_eq!(query["agent_name_hint"], "Zed Code Translation");
+                assert_eq!(query["agent_name_hint"], "Translation LSP");
             } else {
                 assert_eq!(query["client_id"], "oaiapp_synthetic");
                 assert!(!query.contains_key("agent_name_hint"));

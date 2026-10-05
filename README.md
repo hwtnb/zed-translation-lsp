@@ -1,4 +1,4 @@
-# Zed Code Translation
+# Translation LSP
 
 [日本語](README.ja.md)
 
@@ -11,29 +11,31 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
 You need Rust 1.97 or later and Zed. Build the native language server and the WASM extension from the checkout root:
 
 ```sh
-cargo build -p zed-code-translation-lsp --release --locked
+cargo build -p translation-lsp --release --locked
 rustup target add wasm32-wasip2
-cargo build --target wasm32-wasip2 --release --locked
+cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
 ```
 
 In Zed's Extensions view, choose `Install Dev Extension` and select **`crates/zed-extension`** in the checkout. See [Zed's development extension instructions](https://zed.dev/docs/extensions/developing-extensions).
 
-For C# files, install Zed's [C# language extension](https://github.com/zed-extensions/csharp). Its settings key is `CSharp`. If you configure `languages.CSharp.language_servers` explicitly, add `"zed-code-translation"` alongside your existing C# server. This translation extension does not replace Roslyn or OmniSharp.
+For C# files, install Zed's [C# language extension](https://github.com/zed-extensions/csharp). Its settings key is `CSharp`. If you configure `languages.CSharp.language_servers` explicitly, add `"translation-lsp"` alongside your existing C# server. This translation extension does not replace Roslyn or OmniSharp.
 
-C and C++ are built into Zed. If you list their language servers explicitly, add `"zed-code-translation"` under `languages.C.language_servers` and `languages."C++".language_servers`, alongside clangd.
+C and C++ are built into Zed. If you list their language servers explicitly, add `"translation-lsp"` under `languages.C.language_servers` and `languages."C++".language_servers`, alongside clangd.
 
-Python is built into Zed. If you configure `languages.Python.language_servers`, add `"zed-code-translation"` to that list alongside your existing Python servers.
+Python is built into Zed. If you configure `languages.Python.language_servers`, add `"translation-lsp"` to that list alongside your existing Python servers.
 
 ## Configuration
+
+The extension ID, language server settings key, and native executable name are `translation-lsp`.
 
 Add the following entry to `lsp` in your existing Zed settings. Replace `binary.path` with the absolute path to the executable you built. Choose a model available to the account you will connect; the model and reasoning effort below are examples.
 
 ```json
 {
   "lsp": {
-    "zed-code-translation": {
+    "translation-lsp": {
       "binary": {
-        "path": "/absolute/path/to/checkout/target/release/zed-code-translation-lsp",
+        "path": "/absolute/path/to/checkout/target/release/translation-lsp",
         "arguments": []
       },
       "initialization_options": {
@@ -73,13 +75,13 @@ Unknown fields, wrong value types, and out-of-range values prevent the language 
 
 Restart the language server after changing these settings. Settings changes do not apply to a running server. See [Zed's language server settings](https://zed.dev/docs/configuring-languages#configuring-language-servers).
 
-If `binary.path` is omitted, the extension looks for `zed-code-translation-lsp` on the worktree's PATH. If you explicitly configure a language's `language_servers`, add `"zed-code-translation"` to the existing array. Zed uses the `JavaScript` settings for `.jsx` and `TSX` for `.tsx`.
+If `binary.path` is omitted, the extension looks for `translation-lsp` on the worktree's PATH. If you explicitly configure a language's `language_servers`, add `"translation-lsp"` to the existing array. Zed uses the `JavaScript` settings for `.jsx` and `TSX` for `.tsx`.
 
 ## Changing the translation model
 
 1. Open Zed's Command Palette and run `zed: open settings file`.
-2. Edit `lsp.zed-code-translation.initialization_options.provider.model` with the model slug you want to use.
-3. Set `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` if needed. Omit it to use the API default, or specify one of the values listed above. An explicit `none` differs from omitting the setting.
+2. Edit `lsp.translation-lsp.initialization_options.provider.model` with the model slug you want to use.
+3. Set `lsp.translation-lsp.initialization_options.provider.reasoning_effort` if needed. Omit it to use the API default, or specify one of the values listed above. An explicit `none` differs from omitting the setting.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
@@ -98,7 +100,7 @@ The account menu includes:
 - `ChatGPT Usage`: open [ChatGPT's usage settings](https://chatgpt.com/settings/usage), where your limits and credits apply.
 - `Sign out of ChatGPT`: attempt to end the current registration's session and clear its local credentials. Other registrations remain. If the remote session cannot be confirmed as ended, follow the message to disconnect the app in ChatGPT settings.
 
-Credentials are stored locally for this extension, at `~/Library/Application Support/zed-code-translation/` on macOS. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Credentials are stored locally for this extension, at `~/Library/Application Support/translation-lsp/` on macOS. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
 ## Reading translations
 

@@ -17,9 +17,9 @@ impl Preview {
             return None;
         }
         let header = if matches!(self.context, crate::providers::Context::Mock) {
-            "> **Zed Code Translation**\n>\n> Mock translation (fixed sample)"
+            "> **Translation LSP**\n>\n> Mock translation (fixed sample)"
         } else {
-            "> **Zed Code Translation**"
+            "> **Translation LSP**"
         };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -75,7 +75,7 @@ mod tests {
             else {
                 panic!("Expected Markdown");
             };
-            assert!(content.value.starts_with("> **Zed Code Translation**"));
+            assert!(content.value.starts_with("> **Translation LSP**"));
             assert!(!content.value.contains("ChatGPT 翻訳"));
             assert_eq!(
                 content.value.contains("Mock translation (fixed sample)"),

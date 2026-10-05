@@ -1,4 +1,4 @@
-# Zed Code Translation
+# Translation LSP
 
 [English](README.md)
 
@@ -11,29 +11,31 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 Rust 1.97以降のCargoとZedが必要です。checkoutのルートでネイティブLSPと拡張のWASMをビルドします。
 
 ```sh
-cargo build -p zed-code-translation-lsp --release --locked
+cargo build -p translation-lsp --release --locked
 rustup target add wasm32-wasip2
-cargo build --target wasm32-wasip2 --release --locked
+cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
 ```
 
 Zedの拡張画面で `Install Dev Extension` を選び、checkout内の **`crates/zed-extension`** を指定します。[Zedの開発用拡張の導入手順](https://zed.dev/docs/extensions/developing-extensions)も参照してください。
 
-C#ファイルでは、Zedの[C#言語拡張](https://github.com/zed-extensions/csharp)を導入してください。設定上の言語名は `CSharp` です。`languages.CSharp.language_servers` を明示している場合は、既存のC#サーバーに `"zed-code-translation"` を追加します。RoslynやOmniSharpを置き換える必要はありません。
+C#ファイルでは、Zedの[C#言語拡張](https://github.com/zed-extensions/csharp)を導入してください。設定上の言語名は `CSharp` です。`languages.CSharp.language_servers` を明示している場合は、既存のC#サーバーに `"translation-lsp"` を追加します。RoslynやOmniSharpを置き換える必要はありません。
 
-CとC++はZedに組み込まれています。言語サーバーを明示設定している場合は、`languages.C.language_servers` と `languages."C++".language_servers` の既存clangdに `"zed-code-translation"` を追加します。
+CとC++はZedに組み込まれています。言語サーバーを明示設定している場合は、`languages.C.language_servers` と `languages."C++".language_servers` の既存clangdに `"translation-lsp"` を追加します。
 
-PythonもZedに組み込まれています。`languages.Python.language_servers` を明示設定している場合は、既存のPythonサーバーに `"zed-code-translation"` を追加します。
+PythonもZedに組み込まれています。`languages.Python.language_servers` を明示設定している場合は、既存のPythonサーバーに `"translation-lsp"` を追加します。
 
 ## 設定
+
+拡張ID・言語サーバーの設定キー・ネイティブ実行ファイル名は `translation-lsp` です。
 
 既存のZed設定の `lsp` に次の項目を追加し、`binary.path` をビルドした実行ファイルの絶対パスへ置き換えます。モデルは、接続するアカウントで使えるものを指定してください。下記のモデルと推論強度は設定例です。
 
 ```json
 {
   "lsp": {
-    "zed-code-translation": {
+    "translation-lsp": {
       "binary": {
-        "path": "/absolute/path/to/checkout/target/release/zed-code-translation-lsp",
+        "path": "/absolute/path/to/checkout/target/release/translation-lsp",
         "arguments": []
       },
       "initialization_options": {
@@ -71,13 +73,13 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 未知の項目、型の違う値、範囲外の数値は、英語の設定エラーを返して言語サーバーの起動を止めます。項目を省略すると既定値を使います。
 
-`binary.path` を省略すると、作業ツリーのPATHにある `zed-code-translation-lsp` を探します。対応言語の `language_servers` を明示している場合は、既存の配列へ `"zed-code-translation"` を追加してください。Zedでは `.jsx` も `JavaScript`、`.tsx` は `TSX` の設定を使います。
+`binary.path` を省略すると、作業ツリーのPATHにある `translation-lsp` を探します。対応言語の `language_servers` を明示している場合は、既存の配列へ `"translation-lsp"` を追加してください。Zedでは `.jsx` も `JavaScript`、`.tsx` は `TSX` の設定を使います。
 
 ## 翻訳モデルを変更する
 
 1. Zedのコマンドパレットで `zed: open settings file` を実行します。
-2. `lsp.zed-code-translation.initialization_options.provider.model` を、使いたいモデルのslugに変更します。
-3. 必要に応じて `lsp.zed-code-translation.initialization_options.provider.reasoning_effort` を指定します。APIの既定値を使う場合は省略し、指定する場合は上記の値から選んでください。明示した `none` は省略とは異なります。
+2. `lsp.translation-lsp.initialization_options.provider.model` を、使いたいモデルのslugに変更します。
+3. 必要に応じて `lsp.translation-lsp.initialization_options.provider.reasoning_effort` を指定します。APIの既定値を使う場合は省略し、指定する場合は上記の値から選んでください。明示した `none` は省略とは異なります。
 4. 設定を保存します。この拡張を使う文書で、コマンドパレットから `editor: restart language server` を実行します。
 
 拡張は設定したモデルのslugをそのまま翻訳APIへ送り、別のモデルへ自動で切り替えません。そのモデルと推論強度をアカウントで使えるかどうかは、APIが判断します。
@@ -92,7 +94,7 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 - `ChatGPT Usage` は、[ChatGPTの使用量設定](https://chatgpt.com/settings/usage)を開きます。利用枠やcreditsの許可はこの設定に従います。
 - `Sign out of ChatGPT` は、現在の登録のセッション終了を試み、その登録の認証情報を削除します。別の登録は残ります。通信のため終了を確認できなかった場合は案内に従ってChatGPT設定からアプリを切断できます。
 
-認証情報は拡張専用のローカル保存先に保持します。macOSでは `~/Library/Application Support/zed-code-translation/` です。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
+認証情報は拡張専用のローカル保存先に保持します。macOSでは `~/Library/Application Support/translation-lsp/` です。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
 
 ## 翻訳を表示する
 

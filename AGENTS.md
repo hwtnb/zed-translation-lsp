@@ -70,8 +70,8 @@ plain `cargo test` does not cover the language server.
 Build the affected deliverable; build both after dependency updates:
 
 ```sh
-cargo build -p zed-code-translation-lsp --release --locked
-cargo build -p zed-code-translation --target wasm32-wasip2 --release --locked
+cargo build -p translation-lsp --release --locked
+cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
 ```
 
 The WASM build requires the `wasm32-wasip2` Rust target. For documentation-only

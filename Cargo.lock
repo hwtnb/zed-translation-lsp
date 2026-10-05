@@ -3110,6 +3110,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "translation-lsp"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "dirs",
+ "ed25519-dalek 3.0.0",
+ "eventsource-stream",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "lsp-server",
+ "lsp-types",
+ "openidconnect",
+ "oxc_allocator",
+ "oxc_parser",
+ "oxc_span",
+ "pulldown-cmark",
+ "ra-ap-rustc_lexer",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-python",
+ "unicode-ident",
+ "uuid",
+]
+
+[[package]]
+name = "translation-lsp-extension"
+version = "0.1.0"
+dependencies = [
+ "zed_extension_api",
+]
+
+[[package]]
 name = "tree-sitter"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3706,47 +3747,6 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure",
-]
-
-[[package]]
-name = "zed-code-translation"
-version = "0.1.0"
-dependencies = [
- "zed_extension_api",
-]
-
-[[package]]
-name = "zed-code-translation-lsp"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "dirs",
- "ed25519-dalek 3.0.0",
- "eventsource-stream",
- "futures-util",
- "getrandom 0.4.3",
- "http-body-util",
- "hyper",
- "hyper-util",
- "lsp-server",
- "lsp-types",
- "openidconnect",
- "oxc_allocator",
- "oxc_parser",
- "oxc_span",
- "pulldown-cmark",
- "ra-ap-rustc_lexer",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tree-sitter",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cpp",
- "tree-sitter-python",
- "unicode-ident",
- "uuid",
 ]
 
 [[package]]

@@ -44,19 +44,19 @@ use super::{
 type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 type RequestResult<T> = Result<T, ResponseError>;
 
-const COMMAND: &str = "zed-code-translation.preview";
-const DOCUMENT_COMMAND: &str = "zed-code-translation.open-translation";
-const SETTINGS_COMMAND: &str = "zed-code-translation.settings";
+const COMMAND: &str = "translation-lsp.preview";
+const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
+const SETTINGS_COMMAND: &str = "translation-lsp.settings";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
 const ADMIN_COMMANDS: [(&str, &str); 4] = [
     (
-        "zed-code-translation.connect",
+        "translation-lsp.connect",
         "Continue with ChatGPT / Choose account",
     ),
-    ("zed-code-translation.enable", "Enable ChatGPT plan use"),
-    ("zed-code-translation.sign-out", "Sign out of ChatGPT"),
-    ("zed-code-translation.usage", "ChatGPT Usage"),
+    ("translation-lsp.enable", "Enable ChatGPT plan use"),
+    ("translation-lsp.sign-out", "Sign out of ChatGPT"),
+    ("translation-lsp.usage", "ChatGPT Usage"),
 ];
 const MAX_JOBS: usize = 4;
 const MAX_PENDING: usize = 16;
@@ -297,9 +297,9 @@ pub(crate) fn capabilities(chatgpt: bool) -> InitializeResult {
         },
         server_info: Some(ServerInfo {
             name: if chatgpt {
-                "Translation Preview (ChatGPT)"
+                "Translation LSP (ChatGPT)"
             } else {
-                "Translation Preview (Mock)"
+                "Translation LSP (Mock)"
             }
             .into(),
             version: Some(env!("CARGO_PKG_VERSION").into()),
@@ -1768,9 +1768,9 @@ fn management_commands(state: AuthUiState) -> Vec<Command> {
         .iter()
         .filter_map(|(command, title)| {
             let visible = match *command {
-                "zed-code-translation.connect" | "zed-code-translation.usage" => true,
-                "zed-code-translation.enable" => state == AuthUiState::PlanDisabled,
-                "zed-code-translation.sign-out" => {
+                "translation-lsp.connect" | "translation-lsp.usage" => true,
+                "translation-lsp.enable" => state == AuthUiState::PlanDisabled,
+                "translation-lsp.sign-out" => {
                     matches!(state, AuthUiState::Ready | AuthUiState::PlanDisabled)
                 }
                 _ => false,
@@ -1779,8 +1779,8 @@ fn management_commands(state: AuthUiState) -> Vec<Command> {
                 return None;
             }
             let title = match (*command, state) {
-                ("zed-code-translation.connect", AuthUiState::Ready) => "Change ChatGPT account",
-                ("zed-code-translation.connect", AuthUiState::Unavailable) => {
+                ("translation-lsp.connect", AuthUiState::Ready) => "Change ChatGPT account",
+                ("translation-lsp.connect", AuthUiState::Unavailable) => {
                     "Check ChatGPT connection…"
                 }
                 _ => *title,
@@ -1807,9 +1807,7 @@ fn same_account(previous: &Context, current: &Context) -> bool {
 fn changes_account(command: &str) -> bool {
     matches!(
         command,
-        "zed-code-translation.connect"
-            | "zed-code-translation.enable"
-            | "zed-code-translation.sign-out"
+        "translation-lsp.connect" | "translation-lsp.enable" | "translation-lsp.sign-out"
     )
 }
 
@@ -4011,7 +4009,7 @@ mod chatgpt_tests {
                 Request::new(
                     1.into(),
                     ExecuteCommand::METHOD.into(),
-                    json!({"command":"zed-code-translation.connect","arguments":["unexpected"]}),
+                    json!({"command":"translation-lsp.connect","arguments":["unexpected"]}),
                 ),
             )
             .unwrap();
@@ -4019,7 +4017,7 @@ mod chatgpt_tests {
             command_notice(&client, 1, 1).unwrap_err().code,
             ErrorCode::InvalidParams as i32
         );
-        let usage = json!({"command":"zed-code-translation.usage"});
+        let usage = json!({"command":"translation-lsp.usage"});
         server
             .request(
                 &connection,
@@ -5473,7 +5471,7 @@ mod chatgpt_tests {
             .unwrap();
         assert_eq!(
             server.administrations[&1.into()].command,
-            "zed-code-translation.usage"
+            "translation-lsp.usage"
         );
         let Message::Request(request) = protocol_message(&client).await else {
             panic!("Expected chosen usage UI");
@@ -5542,14 +5540,14 @@ mod chatgpt_tests {
                 .collect()
         };
         let connect = (
-            "zed-code-translation.connect".into(),
+            "translation-lsp.connect".into(),
             "Continue with ChatGPT / Choose account".into(),
         );
-        let usage = ("zed-code-translation.usage".into(), "ChatGPT Usage".into());
+        let usage = ("translation-lsp.usage".into(), "ChatGPT Usage".into());
         let signed_out = vec![connect.clone(), usage.clone()];
         let unknown = vec![
             (
-                "zed-code-translation.connect".into(),
+                "translation-lsp.connect".into(),
                 "Check ChatGPT connection…".into(),
             ),
             usage.clone(),
@@ -5562,11 +5560,11 @@ mod chatgpt_tests {
         let id = fixture.connected(&auth, 3600).await;
         let ready = vec![
             (
-                "zed-code-translation.connect".into(),
+                "translation-lsp.connect".into(),
                 "Change ChatGPT account".into(),
             ),
             (
-                "zed-code-translation.sign-out".into(),
+                "translation-lsp.sign-out".into(),
                 "Sign out of ChatGPT".into(),
             ),
             usage.clone(),
@@ -5608,11 +5606,11 @@ mod chatgpt_tests {
             vec![
                 connect.clone(),
                 (
-                    "zed-code-translation.enable".into(),
+                    "translation-lsp.enable".into(),
                     "Enable ChatGPT plan use".into()
                 ),
                 (
-                    "zed-code-translation.sign-out".into(),
+                    "translation-lsp.sign-out".into(),
                     "Sign out of ChatGPT".into()
                 ),
                 usage.clone()
@@ -5635,7 +5633,7 @@ mod chatgpt_tests {
                     Request::new(
                         9.into(),
                         ExecuteCommand::METHOD.into(),
-                        json!({"command":"zed-code-translation.connect"}),
+                        json!({"command":"translation-lsp.connect"}),
                     ),
                 )
                 .unwrap();
@@ -5688,7 +5686,7 @@ mod chatgpt_tests {
                 Request::new(
                     10.into(),
                     ExecuteCommand::METHOD.into(),
-                    json!({"command":"zed-code-translation.connect"}),
+                    json!({"command":"translation-lsp.connect"}),
                 ),
             )
             .unwrap();
@@ -5765,7 +5763,7 @@ mod chatgpt_tests {
             .execute_command(
                 &connection,
                 RequestId::from(1),
-                parse(json!({"command":"zed-code-translation.connect"})).unwrap(),
+                parse(json!({"command":"translation-lsp.connect"})).unwrap(),
             )
             .unwrap();
         let receiver = client.receiver.clone();
@@ -5796,13 +5794,13 @@ mod chatgpt_tests {
         assert!(
             !commands
                 .iter()
-                .any(|command| command == "zed-code-translation.models")
+                .any(|command| command == "translation-lsp.models")
         );
         let error = server
             .execute_command(
                 &connection,
                 RequestId::from(2),
-                parse(json!({"command":"zed-code-translation.models"})).unwrap(),
+                parse(json!({"command":"translation-lsp.models"})).unwrap(),
             )
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams as i32);
@@ -5814,7 +5812,7 @@ mod chatgpt_tests {
             .execute_command(
                 &connection,
                 RequestId::from(3),
-                parse(json!({"command":"zed-code-translation.usage"})).unwrap(),
+                parse(json!({"command":"translation-lsp.usage"})).unwrap(),
             )
             .unwrap();
         let receiver = client.receiver.clone();
