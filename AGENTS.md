@@ -35,9 +35,11 @@ relative to the repository root.
 
 ## Behavior to preserve
 
-- Translation previews leave the source document unchanged. Preserve protected
-  Markdown bytes, including code, link destinations, syntax, and line endings;
-  use the existing protection and restoration code in `src/text/`.
+- Translation previews leave the source document unchanged. Send the selected
+  text or comment body as prose and display the completed translation directly.
+  Prompt the model to preserve code, identifiers, URLs, and meaning. Do not require
+  JSON translation segments or enforce Markdown structure or byte equality on the
+  generated translation. Markdown parsing only determines input eligibility.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Coalesced requests retain independent cancellation and deadlines, including

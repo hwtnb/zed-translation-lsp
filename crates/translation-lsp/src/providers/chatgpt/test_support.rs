@@ -1,7 +1,7 @@
 // Local-only fixtures. Each fixture generates its own signing key in memory.
 // Tokens are synthetic test values; they cannot authenticate to OpenAI.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
@@ -78,8 +78,10 @@ pub(crate) struct FixtureState {
     pub mode: String,
     pub response_mode: String,
     pub stream_error: Option<Value>,
-    pub translations: Option<Vec<String>>,
+    pub translation: Option<String>,
     pub failure: Option<(u16, Value)>,
+    pub response_failures: VecDeque<(u16, Value)>,
+    pub retry_after: Option<String>,
     pub direct: bool,
     pub delay: Duration,
     pub stream_tail_delay: Duration,
@@ -112,8 +114,10 @@ impl Fixture {
             mode: String::new(),
             response_mode: String::new(),
             stream_error: None,
-            translations: None,
+            translation: None,
             failure: None,
+            response_failures: VecDeque::new(),
+            retry_after: None,
             direct: true,
             delay: Duration::ZERO,
             stream_tail_delay: Duration::ZERO,
@@ -537,12 +541,7 @@ fn response_stream(mode: &str, text: &str, model: &str) -> String {
         }),
     );
     match mode {
-        "delta_compact"
-        | "public_compact"
-        | "compact_missing"
-        | "compact_duplicate"
-        | "compact_code_change"
-        | "compact_output_limit" => format!("{valid}{compact}"),
+        "delta_compact" | "public_compact" | "compact_output_limit" => format!("{valid}{compact}"),
         "done_compact" => format!("{done}{compact}"),
         "text_done_compact" => format!("{text_done}{done}{compact}"),
         "delta_snapshot" => format!("{valid}{completion}"),
@@ -555,8 +554,6 @@ fn response_stream(mode: &str, text: &str, model: &str) -> String {
             "{valid}{}",
             event("response.incomplete", json!({"type":"response.incomplete"}))
         ),
-        "compact_invalid_json" => format!("{delta}{}{compact}", item_done(0, message("partial"))),
-        "compact_partial_json" => format!("{}{compact}", item_done(0, message("{\"segments\":["))),
         "item_role" => format!("{}{compact}", bad_item("role", json!("user"))),
         "item_status" => format!("{}{compact}", bad_item("status", json!("in_progress"))),
         "item_type" => format!("{}{compact}", bad_item("type", json!("function_call"))),
@@ -731,37 +728,31 @@ async fn endpoint(
         }
         "/revoke" => { state.revocations += 1; if state.revoke_failure { (503,"application/json",json!({"detail":"synthetic revoke outage"}).to_string()) } else { (200,"text/plain",String::new()) } }
         "/v1/responses" => {
-            if let Some((status, body)) = &state.failure { (*status,"application/json",body.as_str().map_or_else(|| body.to_string(),str::to_owned)) }
+            let failure = state.response_failures.pop_front().or_else(|| state.failure.clone());
+            if let Some((status, body)) = failure {
+                if status == 200 { (status, "text/event-stream", format!("data: {body}\n\n")) }
+                else { (status, "application/json", body.as_str().map_or_else(|| body.to_string(), str::to_owned)) }
+            }
             else {
                 let request: Value = serde_json::from_str(&body).unwrap();
                 assert_eq!(request["store"], false); assert_eq!(request["stream"], true);
                 assert!(request["input"].is_array());
                 for field in ["temperature","max_output_tokens","previous_response_id","tools","prompt"] { assert!(request.get(field).is_none()); }
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
-                let segments: Value = serde_json::from_str(request["input"][0]["content"].as_str().unwrap()).unwrap();
-                let mut translated: Vec<String> = segments["segments"].as_array().unwrap().iter().filter(|segment| segment["protected"] == false)
-                    .map(|segment| format!("訳{}",segment["text"].as_str().unwrap())).collect();
-                if let Some(translations) = &state.translations {
-                    translated = translations.clone();
-                }
+                assert!(request.get("text").is_none());
+                let mut text = state.translation.clone().unwrap_or_else(|| format!("訳{}", request["input"][0]["content"].as_str().unwrap()));
                 match state.response_mode.as_str() {
-                    "missing" | "compact_missing" => { translated.pop(); },
-                    "duplicate" | "compact_duplicate" => { translated.push(translated[0].clone()); },
-                    "output_limit" | "compact_output_limit" => { translated[0] = "字".repeat(64*1024); },
-                    "compact_code_change" => { translated[0] = "`changed prose`".into(); },
-                    "compact_line_break" => { translated[0] = "new\nline".into(); },
+                    "empty_text" => text.clear(),
+                    "output_limit" | "compact_output_limit" => text = "字".repeat(64*1024),
+                    "public_compact" => {
+                        text = match request["model"].as_str().unwrap() {
+                            "gpt-6.1-sol" => "リモートサービスが一時的な障害を報告した場合にのみ再試行してください。",
+                            "gpt-6-luna" => "リモートサービスが一時的な障害を報告した場合に限り、再試行してください。",
+                            _ => panic!("Unexpected public trace model"),
+                        }.into();
+                    },
                     _ => (),
                 }
-                let text = if state.response_mode == "public_compact" {
-                    let text = match request["model"].as_str().unwrap() {
-                        "gpt-6.1-sol" => "リモートサービスが一時的な障害を報告した場合にのみ再試行してください。",
-                        "gpt-6-luna" => "リモートサービスが一時的な障害を報告した場合に限り、再試行してください。",
-                        _ => panic!("Unexpected public trace model"),
-                    };
-                    json!({"translations":[text]}).to_string()
-                } else {
-                    json!({"translations":translated}).to_string()
-                };
                 let stream = match &state.stream_error {
                     Some(error) => format!("data: {error}\n\n"),
                     None => response_stream(&state.response_mode, &text, request["model"].as_str().unwrap()),
@@ -774,6 +765,11 @@ async fn endpoint(
     let mut response = hyper::Response::builder();
     if (300..400).contains(&status) {
         response = response.header("location", format!("{base}/v1/responses"));
+    }
+    if path == "/v1/responses"
+        && let Some(delay) = &state.retry_after
+    {
+        response = response.header("retry-after", delay);
     }
     let tail_delay = state.stream_tail_delay;
     let tail_gate = state.stream_tail_gate.clone();

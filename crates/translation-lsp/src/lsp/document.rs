@@ -2,7 +2,7 @@ use std::ops::Range as ByteRange;
 
 use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
 
-use crate::text::{comments::Comments, protected_text::ProtectedText};
+use crate::text::{comments::Comments, markdown::prose_ranges};
 
 use super::preview::Preview;
 
@@ -94,7 +94,7 @@ impl Document {
         let text = indexed.as_str();
         let selected = indexed.range(range)?;
         if self.markdown_prose.is_none() {
-            self.markdown_prose = Some(markdown_prose_ranges(text)?);
+            self.markdown_prose = Some(prose_ranges(text)?);
         }
         let prose = self.markdown_prose.as_ref().unwrap();
         let first = prose.partition_point(|span| span.end <= selected.start);
@@ -113,9 +113,9 @@ impl Document {
                 Some(start..start + trimmed.len())
             })
             .collect();
-        // The provider parses only the selection. Reject fragments whose Markdown
-        // interpretation would expose document code/URLs or hide selected prose.
-        Ok(!expected.is_empty() && markdown_prose_ranges(&text[selected])? == expected)
+        // Avoid automatically translating fragments whose Markdown interpretation
+        // differs from the document, such as the inside of an inline code span.
+        Ok(!expected.is_empty() && prose_ranges(&text[selected])? == expected)
     }
 
     pub fn comment_range(&mut self, uri: &Uri, offset: usize) -> Option<Range> {
@@ -157,21 +157,6 @@ impl Document {
             is_comment: false,
         })
     }
-}
-
-fn markdown_prose_ranges(text: &str) -> Result<Vec<ByteRange<usize>>, &'static str> {
-    // Keep one grammar for document eligibility and the provider's selected input.
-    let protected = ProtectedText::new(text).map_err(|_| "Could not parse Markdown protection")?;
-    let mut offset = 0;
-    let mut prose = Vec::new();
-    for segment in protected.segments() {
-        let end = offset + segment.text.len();
-        if !segment.protected {
-            prose.push(offset..end);
-        }
-        offset = end;
-    }
-    Ok(prose)
 }
 
 #[cfg(test)]

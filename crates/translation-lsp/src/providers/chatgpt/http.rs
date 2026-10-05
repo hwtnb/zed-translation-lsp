@@ -38,9 +38,9 @@ pub(super) fn response_error(
     let kind = match code {
         "subscription_sharing_usage_limit_exceeded" => ErrorKind::UsageLimit,
         "subscription_sharing_user_not_eligible" => ErrorKind::NotEligible,
-        "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
-            ErrorKind::Temporary
-        }
+        "subscription_sharing_usage_unavailable"
+        | "subscription_sharing_user_unavailable"
+        | "server_is_overloaded" => ErrorKind::Temporary,
         "subscription_sharing_unsupported_capability"
         | "invalid_client"
         | "model_not_found"
@@ -235,6 +235,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn streaming_overload_is_temporary_even_after_http_success() {
+        let error = response_error(
+            200,
+            &json!({"error": {
+                "code": "server_is_overloaded", "message": "Please try again later."
+            }}),
+            None,
+            &[],
+        );
+        assert_eq!(error.kind, ErrorKind::Temporary);
+    }
 
     #[test]
     fn errors_keep_status_detail_and_request_id_without_tokens() {

@@ -2039,10 +2039,68 @@ mod chatgpt_tests {
     use serde_json::json;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn worker_deadline_and_cancellation_stop_overload_backoff() {
+        for cancel in [false, true] {
+            let fixture = Fixture::new().await;
+            fixture.state.lock().unwrap().response_failures.push_back((
+                200,
+                json!({"type":"error", "code":"server_is_overloaded", "message":"Overloaded"}),
+            ));
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (stop, deadline) = watch::channel(Some(Instant::now() + Duration::from_secs(5)));
+            let (finished, events) = bounded(MAX_JOBS);
+            let job = Job {
+                ticket: 1,
+                deadline,
+                task: Task::Translation {
+                    text: "Read this.".into(),
+                    target_language: "ja".into(),
+                    context: provider.context().unwrap(),
+                },
+            };
+            let options = MockOptions::default();
+            let running = run_job(job, &finished, &options, &provider);
+            tokio::pin!(running);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut running)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(response_calls(&fixture), 1);
+            stop.send_replace(if cancel { None } else { Some(Instant::now()) });
+            tokio::time::timeout(Duration::from_secs(1), &mut running)
+                .await
+                .unwrap();
+            assert!(matches!(
+                events.try_recv().unwrap(),
+                WorkerEvent::Started(1)
+            ));
+            if !cancel {
+                let WorkerEvent::Finished(completion) = events.try_recv().unwrap() else {
+                    panic!("Expected deadline failure");
+                };
+                assert!(
+                    completion
+                        .result
+                        .is_err_and(|error| error.message == "Translation timed out")
+                );
+            }
+            assert!(events.try_recv().is_err());
+            assert_eq!(response_calls(&fixture), 1);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
         for automatic in [false, true] {
             let fixture = Fixture::new().await;
-            fixture.state.lock().unwrap().translations = Some(vec!["Translated sentence.".into()]);
+            fixture.state.lock().unwrap().translation = Some("Translated sentence.".into());
             let auth = fixture.auth();
             fixture.connected(&auth, 3600).await;
             let provider = ChatGptProvider::synthetic(
@@ -2190,9 +2248,12 @@ mod chatgpt_tests {
             assert_eq!(responses.len(), 2);
             for response in responses {
                 let body: Value = serde_json::from_str(&response.body).unwrap();
-                assert!(body["instructions"].as_str().unwrap().starts_with(
-                    "Translate the unprotected text segments into en. Source language: auto."
-                ));
+                assert!(
+                    body["instructions"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Translate the text into en. Source language: auto.")
+                );
             }
             assert!(client.receiver.is_empty());
         }
@@ -3137,7 +3198,7 @@ mod chatgpt_tests {
         let following = std::sync::Arc::new(StreamTailGate::default());
         {
             let mut state = fixture.state.lock().unwrap();
-            state.response_mode = "compact_missing".into();
+            state.response_mode = "item_without_completed".into();
             state.stream_tail_gate = Some(invalid.clone());
         }
         let auth = fixture.auth();
@@ -3174,12 +3235,10 @@ mod chatgpt_tests {
         invalid.release.notify_waiters();
         for _ in 0..2 {
             let completion = next(&completions).await;
-            assert!(
-                completion
-                    .result
-                    .as_ref()
-                    .is_err_and(|e| e.message.contains("wrong number of translations"))
-            );
+            assert!(completion.result.as_ref().is_err_and(|e| {
+                e.message
+                    .contains("OpenAI stream ended without response.completed")
+            }));
             server.finish(&connection, completion).unwrap();
         }
         wait_held(&following, 2).await;
@@ -3752,7 +3811,7 @@ mod chatgpt_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn chatgpt_worker_never_caches_failed_compact_streams() {
         for mode in [
-            "compact_partial_json",
+            "empty_text",
             "item_role",
             "item_id_mismatch",
             "text_done_mismatch",
@@ -4018,7 +4077,7 @@ mod chatgpt_tests {
         );
         let first = Range::new(Position::new(0, 0), Position::new(0, 15));
         let second = Range::new(Position::new(1, 0), Position::new(1, 16));
-        for (range, mode) in [(first, ""), (second, "compact_missing")] {
+        for (range, mode) in [(first, ""), (second, "empty_text")] {
             fixture.state.lock().unwrap().response_mode = mode.into();
             markdown_actions(&mut server, &uri, range);
             server.selection.as_mut().unwrap().start = Some(Instant::now());
@@ -4040,7 +4099,7 @@ mod chatgpt_tests {
         };
         assert_eq!(status.method, "experimental/serverStatus");
         let message = status.params["message"].as_str().unwrap();
-        assert!(message.contains("wrong number of translations"));
+        assert!(message.contains("OpenAI completed without translation text"));
         let target = server.selection.as_ref().unwrap().target.clone();
         server
             .queue(1.into(), target.clone(), PendingReply::Command)
@@ -4647,21 +4706,10 @@ mod chatgpt_tests {
                 assert_eq!(state.records.len(), before + 1, "{selected:?}");
                 let body: Value =
                     serde_json::from_str(&state.records.last().unwrap().body).unwrap();
-                let input: Value =
-                    serde_json::from_str(body["input"][0]["content"].as_str().unwrap()).unwrap();
-                let sent: String = input["segments"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|segment| segment["text"].as_str().unwrap())
-                    .collect();
+                let sent = body["input"][0]["content"].as_str().unwrap();
                 assert_eq!(sent, selected);
                 for literal in ["retry_count", "https://example.test/path"] {
                     if selected.contains(literal) {
-                        assert!(input["segments"].as_array().unwrap().iter().any(|segment| {
-                            segment["protected"] == true
-                                && segment["text"].as_str().unwrap().contains(literal)
-                        }));
                         assert!(
                             server.documents[&uri]
                                 .preview

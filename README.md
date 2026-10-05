@@ -106,9 +106,9 @@ To translate immediately or recover from a background failure, use the `Translat
 
 Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `ChatGPT account…` → `Continue with ChatGPT / Choose account` to reconnect.
 
-Translation errors distinguish an invalid response format, the wrong number of translations, inserted line breaks, and changed Markdown structure. Rejected results are not displayed. On clients that support server status, background failures show the same reason. A timeout is separate: try a shorter selection, or adjust the timeout settings and restart the language server. Repeating a request is not guaranteed to resolve an invalid translation response.
+Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
 
-Only the extracted comment body or selected text is submitted, including its protected segments. The extension does not submit the entire document or conversation history. Code, link destinations, Markdown syntax, and line endings recognized in the submitted input are preserved in the translation.
+Only the extracted comment body or selected text is submitted. The extension does not submit the entire document or conversation history, and never writes the translation back into the source document.
 
 The server keeps the last translated range for each document in memory. Editing or closing the document, changing accounts, or reconnecting discards it. Source text and translations are not stored on disk. Failures, interrupted streams, cancellation, and expired requests do not show partial translations.
 
@@ -121,10 +121,11 @@ Mock mode supports only these samples and their newline variations. It returns a
 ## Limitations
 
 - Automatic comment Hover supports Rust, JavaScript/JSX, and TypeScript/TSX. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it. Python comments are not supported.
-- Selection changes and deselection are observed when Zed sends a new range request. Until then, a background request cannot be canceled immediately. A language server tracks only its most recently observed selection, so separate editors' selections are not tracked independently. Background failures are not automatically retried.
+- Selection changes and deselection are observed when Zed sends a new range request. Until then, a background request cannot be canceled immediately. A language server tracks only its most recently observed selection, so separate editors' selections are not tracked independently. Background failures do not start a new translation job. An explicit temporary service error can trigger one retry within the current job.
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
 - Source text is limited to 16 KiB and translated text to 64 KiB. By default, manual selection and background translation have a 30-second deadline from translation admission; each Hover request has its own 20-second deadline. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
-- Rate limits and account restrictions pause new translations and return an error. Check usage in ChatGPT settings. Temporary network failures retain credentials; wait before retrying.
+- An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. Connection failures and interrupted streams are not automatically replayed.
+- Rate limits and account restrictions pause new translations and return an error. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant.
 - Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.
 
 ## Development
