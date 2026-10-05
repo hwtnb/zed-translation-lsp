@@ -168,6 +168,11 @@ struct Pending {
 enum PendingReply {
     Hover(Position),
     Command,
+}
+
+enum TranslationRequest {
+    Reply(RequestId, PendingReply),
+    Selection,
     Document,
 }
 
@@ -179,6 +184,15 @@ struct Translation {
     deadline: watch::Sender<Option<Instant>>,
     failure_notified: bool,
     background_deadline: Option<Instant>,
+    document_deadline: Option<Instant>,
+}
+
+impl Translation {
+    fn detached_deadlines(&self) -> impl Iterator<Item = Instant> {
+        [self.background_deadline, self.document_deadline]
+            .into_iter()
+            .flatten()
+    }
 }
 
 struct Server<P: TranslationProvider> {
@@ -313,7 +327,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                     server
                         .translations
                         .values()
-                        .filter_map(|work| work.background_deadline),
+                        .flat_map(Translation::detached_deadlines),
                 )
                 .chain(server.activity.deadline())
                 .chain(server.preview_files.deadline())
@@ -411,6 +425,7 @@ impl<P: TranslationProvider> Server<P> {
         {
             settings.hover_timeout_ms = milliseconds;
             settings.selection_timeout_ms = milliseconds;
+            settings.document_timeout_ms = milliseconds;
         }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -547,11 +562,9 @@ impl<P: TranslationProvider> Server<P> {
     fn request(&mut self, connection: &Connection, request: Request) -> ServerResult<()> {
         self.expire(connection)?;
         let command = request.method == ExecuteCommand::METHOD;
+        let announce_ready = command && request.params["command"] != DOCUMENT_COMMAND;
         let id = request.id;
-        if self.pending.contains_key(&id)
-            || self.administrations.contains_key(&id)
-            || self.preview_files.contains(&id)
-        {
+        if self.pending.contains_key(&id) || self.administrations.contains_key(&id) {
             // A duplicate live ID is invalid. Retire it once, allowing later reuse
             // without a completed old ticket answering a new request.
             if command {
@@ -579,7 +592,7 @@ impl<P: TranslationProvider> Server<P> {
         match result {
             Ok(None) => Ok(()),
             Ok(Some(value)) => {
-                if command {
+                if announce_ready {
                     self.ui.inform(TRANSLATION_READY)?;
                 }
                 respond(connection, id, Ok(value))
@@ -754,8 +767,8 @@ impl<P: TranslationProvider> Server<P> {
                 + self
                     .translations
                     .values()
-                    .filter(|work| work.background_deadline.is_some())
-                    .count()
+                    .map(|work| work.detached_deadlines().count())
+                    .sum::<usize>()
                 < MAX_PENDING
             && (self
                 .translations
@@ -944,7 +957,7 @@ impl<P: TranslationProvider> Server<P> {
                 "The target language must match initialization_options",
             ));
         }
-        let reply = if params.command == DOCUMENT_COMMAND {
+        if params.command == DOCUMENT_COMMAND {
             if !self.ui.capabilities.show_document {
                 return Err(failure(
                     ErrorCode::RequestFailed,
@@ -961,11 +974,11 @@ impl<P: TranslationProvider> Server<P> {
                     "Document previews support Markdown and Plain Text",
                 ));
             }
-            PendingReply::Document
+            self.queue_translation(target, TranslationRequest::Document)?;
+            Ok(Some(Value::Null))
         } else {
-            PendingReply::Command
-        };
-        self.queue(id, target, reply)
+            self.queue(id, target, PendingReply::Command)
+        }
     }
 
     fn queue(
@@ -974,17 +987,17 @@ impl<P: TranslationProvider> Server<P> {
         target: TranslationTarget,
         reply: PendingReply,
     ) -> RequestResult<Option<Value>> {
-        self.queue_translation(target, Some((id, reply)))
+        self.queue_translation(target, TranslationRequest::Reply(id, reply))
     }
 
     fn queue_translation(
         &mut self,
         target: TranslationTarget,
-        client: Option<(RequestId, PendingReply)>,
+        request: TranslationRequest,
     ) -> RequestResult<Option<Value>> {
-        // No client reply means an independent background owner.
-        let timeout = match &client {
-            Some((_, PendingReply::Hover(_))) => self.settings.hover_timeout_ms,
+        let timeout = match &request {
+            TranslationRequest::Reply(_, PendingReply::Hover(_)) => self.settings.hover_timeout_ms,
+            TranslationRequest::Document => self.settings.document_timeout_ms,
             _ => self.settings.selection_timeout_ms,
         };
         let deadline = Instant::now() + Duration::from_millis(timeout);
@@ -1013,14 +1026,13 @@ impl<P: TranslationProvider> Server<P> {
             .as_ref()
             .filter(|preview| preview.range == target.range)
         {
-            return match client {
-                Some((_, PendingReply::Hover(position))) => {
+            return match request {
+                TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
                     to_value(preview.hover(position)).map(Some)
                 }
-                Some((id, PendingReply::Document)) => {
+                TranslationRequest::Document => {
                     self.preview_files.open(
                         &self.ui,
-                        id,
                         &preview.translation,
                         document.language_id == "markdown",
                     )?;
@@ -1033,8 +1045,8 @@ impl<P: TranslationProvider> Server<P> {
             + self
                 .translations
                 .values()
-                .filter(|work| work.background_deadline.is_some())
-                .count()
+                .map(|work| work.detached_deadlines().count())
+                .sum::<usize>()
             >= MAX_PENDING
         {
             return Err(failure(
@@ -1054,20 +1066,30 @@ impl<P: TranslationProvider> Server<P> {
             {
                 return Err(failure(ErrorCode::RequestFailed, "Translation timed out"));
             }
-            if let Some((id, reply)) = client {
-                self.pending.insert(
-                    id,
-                    Pending {
-                        ticket,
-                        deadline,
-                        reply,
-                    },
-                );
-            } else {
-                self.translations
-                    .get_mut(&ticket)
-                    .unwrap()
-                    .background_deadline = Some(deadline);
+            match request {
+                TranslationRequest::Reply(id, reply) => {
+                    self.pending.insert(
+                        id,
+                        Pending {
+                            ticket,
+                            deadline,
+                            reply,
+                        },
+                    );
+                }
+                TranslationRequest::Selection => {
+                    self.translations
+                        .get_mut(&ticket)
+                        .unwrap()
+                        .background_deadline = Some(deadline);
+                }
+                TranslationRequest::Document => {
+                    self.translations
+                        .get_mut(&ticket)
+                        .unwrap()
+                        .document_deadline
+                        .get_or_insert(deadline);
+                }
             }
             self.update_deadline(ticket);
             return Ok(None);
@@ -1117,10 +1139,13 @@ impl<P: TranslationProvider> Server<P> {
                 is_comment: input.is_comment,
                 deadline: deadline_sender,
                 failure_notified: false,
-                background_deadline: client.is_none().then_some(deadline),
+                background_deadline: matches!(request, TranslationRequest::Selection)
+                    .then_some(deadline),
+                document_deadline: matches!(request, TranslationRequest::Document)
+                    .then_some(deadline),
             },
         );
-        if let Some((id, reply)) = client {
+        if let TranslationRequest::Reply(id, reply) = request {
             self.pending.insert(
                 id,
                 Pending {
@@ -1267,13 +1292,25 @@ impl<P: TranslationProvider> Server<P> {
             }
             Err(error)
                 if !work.failure_notified
-                    && self.pending.values().any(|pending| {
-                        pending.ticket == ticket && !matches!(pending.reply, PendingReply::Hover(_))
-                    }) =>
+                    && (work.document_deadline.is_some()
+                        || self.pending.values().any(|pending| {
+                            pending.ticket == ticket
+                                && !matches!(pending.reply, PendingReply::Hover(_))
+                        })) =>
             {
                 self.command_failure(error)?
             }
             _ => (),
+        }
+        if result.is_ok() && work.document_deadline.is_some() {
+            let document = &self.documents[&work.target.uri];
+            if let Err(error) = self.preview_files.open(
+                &self.ui,
+                &document.preview.as_ref().unwrap().translation,
+                document.language_id == "markdown",
+            ) {
+                self.command_failure(&error)?;
+            }
         }
         let ids: Vec<_> = self
             .pending
@@ -1287,21 +1324,6 @@ impl<P: TranslationProvider> Server<P> {
                 Err(error) => Err(error.clone()),
                 Ok(()) => match pending.reply {
                     PendingReply::Command => Ok(Value::Null),
-                    PendingReply::Document => {
-                        let document = &self.documents[&work.target.uri];
-                        match self.preview_files.open(
-                            &self.ui,
-                            id.clone(),
-                            &document.preview.as_ref().unwrap().translation,
-                            document.language_id == "markdown",
-                        ) {
-                            Ok(()) => continue,
-                            Err(error) => {
-                                self.command_failure(&error)?;
-                                Err(error)
-                            }
-                        }
-                    }
                     PendingReply::Hover(position) => to_value(
                         self.documents
                             .get(&work.target.uri)
@@ -1334,17 +1356,30 @@ impl<P: TranslationProvider> Server<P> {
         let tickets: Vec<_> = self
             .translations
             .iter()
-            .filter(|(_, work)| {
-                work.background_deadline
-                    .is_some_and(|deadline| deadline <= now)
-            })
+            .filter(|(_, work)| work.detached_deadlines().any(|deadline| deadline <= now))
             .map(|(&ticket, _)| ticket)
             .collect();
         for ticket in tickets {
-            self.translations
-                .get_mut(&ticket)
-                .unwrap()
-                .background_deadline = None;
+            let work = self.translations.get_mut(&ticket).unwrap();
+            if work
+                .background_deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                work.background_deadline = None;
+            }
+            if work
+                .document_deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                work.document_deadline = None;
+                if !work.failure_notified {
+                    work.failure_notified = true;
+                    self.command_failure(&failure(
+                        ErrorCode::RequestFailed,
+                        "Translation timed out",
+                    ))?;
+                }
+            }
             self.expire_owner(ticket);
         }
         let ids: Vec<_> = self
@@ -1356,10 +1391,7 @@ impl<P: TranslationProvider> Server<P> {
         for id in ids {
             let pending = self.pending.remove(&id).unwrap();
             let error = failure(ErrorCode::RequestFailed, "Translation timed out");
-            if matches!(
-                pending.reply,
-                PendingReply::Command | PendingReply::Document
-            ) {
+            if matches!(pending.reply, PendingReply::Command) {
                 let work = self.translations.get_mut(&pending.ticket).unwrap();
                 if !work.failure_notified {
                     work.failure_notified = true;
@@ -1377,7 +1409,7 @@ impl<P: TranslationProvider> Server<P> {
             let target = selection.target.clone();
             let context = selection.context.clone();
             if context.is_some() && self.provider.context().ok() == context {
-                let _ = self.queue_translation(target, None);
+                let _ = self.queue_translation(target, TranslationRequest::Selection);
             }
         }
         Ok(())
@@ -1385,7 +1417,7 @@ impl<P: TranslationProvider> Server<P> {
 
     fn expire_owner(&mut self, ticket: u64) {
         if let Some(work) = self.translations.get(&ticket) {
-            let has_owner = work.background_deadline.is_some()
+            let has_owner = work.detached_deadlines().next().is_some()
                 || self
                     .pending
                     .values()
@@ -1422,7 +1454,8 @@ impl<P: TranslationProvider> Server<P> {
             .chain(
                 self.translations
                     .get(&ticket)
-                    .and_then(|work| work.background_deadline),
+                    .into_iter()
+                    .flat_map(Translation::detached_deadlines),
             )
             .max();
         if let Some(work) = self.translations.get(&ticket) {
@@ -1522,12 +1555,19 @@ impl<P: TranslationProvider> Server<P> {
         for id in ids {
             self.cancel(connection, &id, ErrorCode::ContentModified)?;
         }
+        self.translations.retain(|_, work| {
+            if &work.target.uri == uri {
+                work.deadline.send_replace(None);
+                false
+            } else {
+                true
+            }
+        });
         Ok(())
     }
 
     fn cancel_all(&mut self, connection: &Connection) -> ServerResult<()> {
-        self.preview_files
-            .cancel(&self.ui, None, ErrorCode::RequestCanceled);
+        self.preview_files.cancel_all(&self.ui);
         self.clear_problem();
         self.retire_selection();
         let ids: Vec<_> = self
@@ -1540,6 +1580,9 @@ impl<P: TranslationProvider> Server<P> {
             self.cancel(connection, &id, ErrorCode::RequestCanceled)
                 .map_err(|error| error.message)?;
         }
+        for (_, work) in self.translations.drain() {
+            work.deadline.send_replace(None);
+        }
         Ok(())
     }
 
@@ -1549,7 +1592,6 @@ impl<P: TranslationProvider> Server<P> {
         id: &RequestId,
         code: ErrorCode,
     ) -> RequestResult<()> {
-        self.preview_files.cancel(&self.ui, Some(id), code);
         if let Some(work) = self.administrations.remove(id) {
             let _ = work.stop.send(None);
             connection
@@ -3126,6 +3168,16 @@ mod chatgpt_tests {
             wait_held(&tail, 2).await;
             parallel_hover(&mut server, 3, &uris[2]);
             parallel_hover(&mut server, 4, &uris[3]);
+            let targets: Vec<_> = server
+                .translations
+                .values()
+                .map(|work| work.target.clone())
+                .collect();
+            for target in targets {
+                server
+                    .queue_translation(target, TranslationRequest::Document)
+                    .unwrap();
+            }
             if operation == "account-change" {
                 fixture.connected(&auth, 3600).await;
                 for _ in 0..4 {
@@ -3387,6 +3439,136 @@ mod chatgpt_tests {
             "Duplicate command notification"
         );
         response.response_result
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn document_deadline_is_independent_when_http_work_is_shared() {
+        assert_eq!(Settings::default().document_timeout_ms, 180_000);
+        for document_expires in [false, true] {
+            let fixture = Fixture::new().await;
+            let tail = std::sync::Arc::new(StreamTailGate::default());
+            {
+                let mut state = fixture.state.lock().unwrap();
+                state.response_mode = "delta_compact".into();
+                state.stream_tail_gate = Some(tail.clone());
+            }
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                Settings {
+                    hover_timeout_ms: if document_expires { 2_000 } else { 200 },
+                    selection_timeout_ms: 200,
+                    document_timeout_ms: if document_expires { 200 } else { 2_000 },
+                    ..Default::default()
+                },
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        show_document: true,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap();
+            let uri: Uri = "file:///shared.md".parse().unwrap();
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, "markdown".into(), "Translate this.".into()),
+            );
+            let target = TranslationTarget {
+                uri: uri.clone(),
+                version: 1,
+                session: 1,
+                range: Range::new(Position::new(0, 0), Position::new(0, 15)),
+                target_language: "ja".into(),
+            };
+            server
+                .queue(
+                    1.into(),
+                    target.clone(),
+                    PendingReply::Hover(Position::new(0, 4)),
+                )
+                .unwrap();
+            let admitted = Instant::now();
+            server
+                .queue_translation(target.clone(), TranslationRequest::Document)
+                .unwrap();
+            let ticket = server.pending[&1.into()].ticket;
+            let document_deadline = server.translations[&ticket].document_deadline.unwrap();
+            assert!(
+                document_deadline
+                    >= admitted + Duration::from_millis(server.settings.document_timeout_ms)
+            );
+            server
+                .queue_translation(target.clone(), TranslationRequest::Selection)
+                .unwrap();
+            server.selection = Some(Selection {
+                target: target.clone(),
+                context: Some(server.provider.context().unwrap()),
+                start: None,
+            });
+            server.retire_selection();
+            assert_eq!(
+                server.translations[&ticket].document_deadline,
+                Some(document_deadline)
+            );
+            // Repeated commands keep the first deadline and open a single completed result.
+            server
+                .queue_translation(target, TranslationRequest::Document)
+                .unwrap();
+            assert_eq!(
+                server.translations[&ticket].document_deadline,
+                Some(document_deadline)
+            );
+            wait_held(&tail, 1).await;
+            tokio::time::sleep(Duration::from_millis(220)).await;
+            server.expire(&connection).unwrap();
+            assert!(server.documents[&uri].preview.is_none());
+            assert_eq!(server.translations.len(), 1);
+            let messages: Vec<_> = client.receiver.try_iter().collect();
+            assert_eq!(messages.len(), 1);
+            if document_expires {
+                assert!(matches!(&messages[0], Message::Notification(notice)
+                    if notice.method == "window/showMessage" && notice.params["message"] == "Translation timed out"));
+                assert!(server.translations[&ticket].document_deadline.is_none());
+            } else {
+                assert!(matches!(&messages[0], Message::Response(reply)
+                    if reply.id == RequestId::from(1) && reply.response_result.is_err()));
+                assert!(server.pending.is_empty());
+            }
+            tail.release.notify_one();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert_eq!(response_calls(&fixture), 1);
+            let messages: Vec<_> = client.receiver.try_iter().collect();
+            assert_eq!(messages.len(), 1);
+            if document_expires {
+                assert!(matches!(&messages[0], Message::Response(reply)
+                    if reply.id == RequestId::from(1) && reply.response_result.is_ok()));
+            } else {
+                let Message::Request(open) = &messages[0] else {
+                    panic!("Expected completed document");
+                };
+                assert_eq!(open.method, "window/showDocument");
+                assert!(server.preview_files.response(
+                    &server.ui,
+                    &Response::new_ok(open.id.clone(), json!({"success":true}))
+                ));
+            }
+            assert!(server.pending.is_empty() && server.translations.is_empty());
+            assert!(client.receiver.try_recv().is_err());
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

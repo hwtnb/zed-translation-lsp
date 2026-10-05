@@ -35,6 +35,7 @@ Zedの拡張画面で `Install Dev Extension` を選び、checkout内の **`crat
         "source_language": "auto",
         "hover_timeout_ms": 20000,
         "selection_timeout_ms": 30000,
+        "document_timeout_ms": 180000,
         "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
         "provider": {
@@ -55,9 +56,12 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 | 設定 | 既定値 | 指定できる値 | 動作 |
 | --- | --- | --- | --- |
 | `hover_timeout_ms` | `20000` | 整数 `1000`〜`120000`、両端を含む | コメントや翻訳待ちの選択範囲へのHover要求ごとの期限。 |
-| `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 手動選択要求とMarkdown背景翻訳それぞれの期限。 |
+| `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 手動選択のHoverプレビュー要求とMarkdown背景翻訳それぞれの期限。 |
+| `document_timeout_ms` | `180000` | 整数 `1000`〜`600000`、両端を含む | 別タブに開く文書全体・選択範囲の翻訳期限。キューでの待ち時間を含む。 |
 | `markdown_auto_translate` | `true` | 真偽値 | 安定したMarkdownの文章選択から背景翻訳を始める。`false` でも手動選択翻訳とコメントHoverを使える。 |
 | `selection_debounce_ms` | `450` | 整数 `100`〜`2000`、両端を含む | nativeサーバーが新しい選択を観測してから待つ時間。Zed側の観測待ちは別に加わる。 |
+
+別タブに開く翻訳は、コマンドを受け付けた後も処理を続け、完了時に結果を開きます。全文・選択範囲とも既定の期限は3分です。Hoverや背景翻訳の期限とは独立しており、文字数による自動延長はしません。処理中のキャンセルは進捗表示から行えます。元の文書を編集・閉じた場合も結果を開きません。
 
 未知の項目、型の違う値、範囲外の数値は、英語の設定エラーを返して言語サーバーの起動を止めます。項目を省略すると既定値を使います。
 

@@ -9,6 +9,7 @@ pub(crate) struct Settings {
     pub provider: ProviderSettings,
     pub hover_timeout_ms: u64,
     pub selection_timeout_ms: u64,
+    pub document_timeout_ms: u64,
     pub markdown_auto_translate: bool,
     pub selection_debounce_ms: u64,
 }
@@ -49,6 +50,7 @@ impl Default for Settings {
             provider: ProviderSettings::Mock {},
             hover_timeout_ms: 20_000,
             selection_timeout_ms: 30_000,
+            document_timeout_ms: 180_000,
             markdown_auto_translate: true,
             selection_debounce_ms: 450,
         }
@@ -67,6 +69,9 @@ impl Settings {
         }
         if !(1_000..=120_000).contains(&settings.selection_timeout_ms) {
             return Err("selection_timeout_ms must be between 1000 and 120000 milliseconds");
+        }
+        if !(1_000..=600_000).contains(&settings.document_timeout_ms) {
+            return Err("document_timeout_ms must be between 1000 and 600000 milliseconds");
         }
         if !(100..=2_000).contains(&settings.selection_debounce_ms) {
             return Err("selection_debounce_ms must be between 100 and 2000 milliseconds");
@@ -114,6 +119,7 @@ mod tests {
             let settings = Settings::from_options(options).unwrap();
             assert_eq!(settings.hover_timeout_ms, 20_000);
             assert_eq!(settings.selection_timeout_ms, 30_000);
+            assert_eq!(settings.document_timeout_ms, 180_000);
             assert!(settings.markdown_auto_translate);
             assert_eq!(settings.selection_debounce_ms, 450);
         }
@@ -144,6 +150,7 @@ mod tests {
         for (field, minimum, maximum) in [
             ("hover_timeout_ms", 1_000, 120_000),
             ("selection_timeout_ms", 1_000, 120_000),
+            ("document_timeout_ms", 1_000, 600_000),
             ("selection_debounce_ms", 100, 2_000),
         ] {
             for value in [minimum, maximum] {

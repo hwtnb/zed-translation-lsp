@@ -35,6 +35,7 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
         "source_language": "auto",
         "hover_timeout_ms": 20000,
         "selection_timeout_ms": 30000,
+        "document_timeout_ms": 180000,
         "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
         "provider": {
@@ -55,9 +56,12 @@ Translation timing options are optional:
 | Setting | Default | Allowed values | Effect |
 | --- | --- | --- | --- |
 | `hover_timeout_ms` | `20000` | Integer `1000`–`120000`, inclusive | Deadline for each comment or pending selection Hover request. |
-| `selection_timeout_ms` | `30000` | Integer `1000`–`120000`, inclusive | Deadline for each manual selection request and Markdown background translation. |
+| `selection_timeout_ms` | `30000` | Integer `1000`–`120000`, inclusive | Deadline for each manual selection Hover-preview request and Markdown background translation. |
+| `document_timeout_ms` | `180000` | Integer `1000`–`600000`, inclusive | Deadline for full-document or selection translations opened in a tab, including queue waiting time. |
 | `markdown_auto_translate` | `true` | Boolean | Start Markdown prose translation after a stable selection. Set `false` to keep manual selection translation and comment Hover. |
 | `selection_debounce_ms` | `450` | Integer `100`–`2000`, inclusive | Native server's wait after observing a new selection. Zed's own observation delay is additional. |
+
+Translations opened in a tab acknowledge the command immediately and open the result when translation completes. Full documents and selections both default to a three-minute deadline, independent of Hover and background translation deadlines. Text length does not automatically extend it. Use the progress indicator to cancel pending work. Editing or closing the source document also prevents the result from opening.
 
 Unknown fields, wrong value types, and out-of-range values prevent the language server from starting and return an English settings error. Omitting a field uses its default.
 

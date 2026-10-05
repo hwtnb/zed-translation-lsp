@@ -7,29 +7,18 @@ use std::{
 };
 
 use lsp_server::{ErrorCode, Request, RequestId, Response, ResponseError};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::lsp::ui::Ui;
 
 #[derive(Default)]
 pub(in crate::lsp) struct PreviewFiles {
     files: Vec<PathBuf>,
-    opening: HashMap<RequestId, Opening>,
-}
-
-struct Opening {
-    command: RequestId,
-    deadline: Instant,
+    opening: HashMap<RequestId, Instant>,
 }
 
 impl PreviewFiles {
-    pub fn open(
-        &mut self,
-        ui: &Ui,
-        command: RequestId,
-        text: &str,
-        markdown: bool,
-    ) -> Result<(), ResponseError> {
+    pub fn open(&mut self, ui: &Ui, text: &str, markdown: bool) -> Result<(), ResponseError> {
         let extension = if markdown { "md" } else { "txt" };
         let directory =
             std::env::temp_dir().join(format!("zed-translation-{}", uuid::Uuid::new_v4()));
@@ -65,18 +54,9 @@ impl PreviewFiles {
                 .into(),
             )
             .map_err(|_| failed("The editor disconnected"))?;
-        self.opening.insert(
-            id,
-            Opening {
-                command,
-                deadline: Instant::now() + Duration::from_secs(10),
-            },
-        );
+        self.opening
+            .insert(id, Instant::now() + Duration::from_secs(10));
         Ok(())
-    }
-
-    pub fn contains(&self, command: &RequestId) -> bool {
-        self.opening.values().any(|open| &open.command == command)
     }
 
     pub fn clear(&mut self) {
@@ -89,57 +69,35 @@ impl PreviewFiles {
     }
 
     pub fn response(&mut self, ui: &Ui, response: &Response) -> bool {
-        let Some(open) = self.opening.remove(&response.id) else {
+        if self.opening.remove(&response.id).is_none() {
             return false;
-        };
-        let result = match &response.response_result {
-            Ok(value) if value["success"] == true => Ok(Value::Null),
-            _ => Err(failed("The editor could not open the translation preview")),
-        };
-        reply(ui, open.command, result);
+        }
+        if !matches!(&response.response_result, Ok(value) if value["success"] == true) {
+            let _ = ui.error("The editor could not open the translation preview");
+        }
         true
     }
 
     pub fn deadline(&self) -> Option<Instant> {
-        self.opening.values().map(|open| open.deadline).min()
+        self.opening.values().copied().min()
     }
 
     pub fn expire(&mut self, ui: &Ui) {
-        let expired: Vec<_> = self
-            .opening
-            .values()
-            .filter(|open| open.deadline <= Instant::now())
-            .map(|open| open.command.clone())
-            .collect();
-        for command in expired {
-            self.cancel(ui, Some(&command), ErrorCode::RequestFailed);
-        }
-    }
-
-    pub fn cancel(&mut self, ui: &Ui, command: Option<&RequestId>, code: ErrorCode) {
-        self.opening.retain(|id, open| {
-            if command.is_some_and(|command| command != &open.command) {
+        let now = Instant::now();
+        self.opening.retain(|id, deadline| {
+            if *deadline > now {
                 return true;
             }
-            let _ = ui.sender.send(
-                lsp_server::Notification::new("$/cancelRequest".into(), json!({"id": id})).into(),
-            );
-            reply(
-                ui,
-                open.command.clone(),
-                Err(ResponseError {
-                    code: code as i32,
-                    message: if matches!(code, ErrorCode::RequestFailed) {
-                        "Opening the translation preview timed out"
-                    } else {
-                        "Opening the translation preview was canceled"
-                    }
-                    .into(),
-                    data: None,
-                }),
-            );
+            cancel_open(ui, id);
+            let _ = ui.error("Opening the translation preview timed out");
             false
         });
+    }
+
+    pub fn cancel_all(&mut self, ui: &Ui) {
+        for (id, _) in self.opening.drain() {
+            cancel_open(ui, &id);
+        }
     }
 }
 
@@ -151,19 +109,10 @@ fn failed(message: &str) -> ResponseError {
     }
 }
 
-fn reply(ui: &Ui, id: RequestId, result: Result<Value, ResponseError>) {
-    if let Err(error) = &result
-        && error.code != ErrorCode::RequestCanceled as i32
-    {
-        let _ = ui.error(&error.message);
-    }
-    let _ = ui.sender.send(
-        Response {
-            id,
-            response_result: result,
-        }
-        .into(),
-    );
+fn cancel_open(ui: &Ui, id: &RequestId) {
+    let _ = ui
+        .sender
+        .send(lsp_server::Notification::new("$/cancelRequest".into(), json!({"id": id})).into());
 }
 
 impl Drop for PreviewFiles {
@@ -179,20 +128,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cancel_and_timeout_answer_once_and_ignore_late_editor_acknowledgements() {
+    fn cancel_and_timeout_ignore_late_editor_acknowledgements() {
         for timeout in [false, true] {
             let (server, client) = Connection::memory();
             let ui = Ui::new(server.sender, Default::default());
             let mut files = PreviewFiles::default();
-            files.open(&ui, 1.into(), "translation", true).unwrap();
+            files.open(&ui, "translation", true).unwrap();
             let Message::Request(request) = client.receiver.recv().unwrap() else {
                 panic!("Expected showDocument");
             };
             if timeout {
-                files.opening.get_mut(&request.id).unwrap().deadline = Instant::now();
+                *files.opening.get_mut(&request.id).unwrap() = Instant::now();
                 files.expire(&ui);
             } else {
-                files.cancel(&ui, Some(&1.into()), ErrorCode::RequestCanceled);
+                files.cancel_all(&ui);
             }
             let messages: Vec<_> = client.receiver.try_iter().collect();
             assert!(matches!(&messages[0], Message::Notification(cancel)
@@ -201,21 +150,8 @@ mod tests {
                 assert!(matches!(&messages[1], Message::Notification(notice)
                     if notice.method == "window/showMessage" && notice.params["type"] == 1));
             }
-            assert_eq!(messages.len(), if timeout { 3 } else { 2 });
-            let Message::Response(response) = messages.last().unwrap() else {
-                panic!("Expected command response");
-            };
-            assert_eq!(response.id, 1.into());
-            assert_eq!(
-                response.response_result.as_ref().unwrap_err().code,
-                if timeout {
-                    ErrorCode::RequestFailed
-                } else {
-                    ErrorCode::RequestCanceled
-                } as i32
-            );
+            assert_eq!(messages.len(), if timeout { 2 } else { 1 });
             assert!(files.deadline().is_none());
-            assert!(!files.contains(&1.into()));
             assert!(!files.response(&ui, &Response::new_ok(request.id, json!({"success":true}))));
             assert!(client.receiver.try_recv().is_err());
         }

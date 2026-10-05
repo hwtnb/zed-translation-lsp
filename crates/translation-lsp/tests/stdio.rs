@@ -411,6 +411,7 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
     for options in [
         json!({"hover_timeout_ms":999}),
         json!({"selection_timeout_ms":120001}),
+        json!({"document_timeout_ms":600001}),
         json!({"selection_debounce_ms":99}),
         json!({"markdown_auto_translate":"false"}),
         json!({"hover_timeout_ms":1.5}),
@@ -1859,6 +1860,39 @@ fn document_action(client: &mut Client, uri: &str, range: Value) -> Value {
 }
 
 #[test]
+fn document_translation_acknowledges_admission_before_slow_work_finishes() {
+    let mut client = Client::configured_documents(
+        &["--mock-delay-ms", "1200"],
+        false,
+        false,
+        Value::Null,
+        true,
+    );
+    let uri = "file:///slow.md";
+    client.open(uri, "markdown", PARAGRAPH, 1);
+    let action = document_action(
+        &mut client,
+        uri,
+        json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+    );
+    let id = client.execute(action);
+    assert!(
+        client
+            .receive(id, Duration::from_millis(500))
+            .unwrap()
+            .is_null()
+    );
+    assert!(client.documents.is_empty());
+    assert!(client.notifications.is_empty());
+    while client.documents.is_empty() {
+        client.pump();
+    }
+    let open = client.documents.remove(0);
+    client.send(Response::new_ok(open.id, json!({"success": true})).into());
+    client.finish(true);
+}
+
+#[test]
 fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
     for (language, extension) in [("markdown", "md"), ("plaintext", "txt")] {
         let mut client = Client::configured_documents(&[], false, false, Value::Null, true);
@@ -1933,13 +1967,9 @@ fn document_preview_reports_editor_refusal_and_does_not_claim_hover_success() {
     }
     let open = client.documents.remove(0);
     client.send(Response::new_ok(open.id, json!({"success":false})).into());
-    assert!(
-        client
-            .receive(request, TIMEOUT)
-            .unwrap_err()
-            .message
-            .contains("could not open")
-    );
+    assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+    // A following request is a barrier after the editor's refusal.
+    client.hover("file:///source.md", json!({"line":0,"character":4}));
     assert_eq!(client.notifications.len(), 1);
     assert_eq!(client.notifications[0]["type"], 1);
     client.finish(true);
@@ -1947,13 +1977,14 @@ fn document_preview_reports_editor_refusal_and_does_not_claim_hover_success() {
 
 #[test]
 fn document_preview_never_opens_canceled_stale_expired_or_failed_translation() {
-    for mode in ["cancel", "change", "timeout", "fail"] {
+    for mode in ["cancel", "change", "close", "timeout", "fail", "shutdown"] {
         let args: &[&str] = match mode {
             "timeout" => &["--mock-delay-ms", "150", "--mock-timeout-ms", "25"],
             "fail" => &["--mock-fail"],
             _ => &["--mock-delay-ms", "150"],
         };
-        let mut client = Client::configured_documents(args, false, false, Value::Null, true);
+        let mut client =
+            Client::configured_documents(args, mode == "cancel", false, Value::Null, true);
         let uri = "file:///source.md";
         client.open(uri, "markdown", PARAGRAPH, 1);
         let action = document_action(
@@ -1962,20 +1993,25 @@ fn document_preview_never_opens_canceled_stale_expired_or_failed_translation() {
             json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
         );
         let id = client.execute(action);
+        assert!(client.receive(id, TIMEOUT).unwrap().is_null());
         match mode {
-            "cancel" => client.notify("$/cancelRequest", json!({"id": id})),
+            "cancel" => {
+                let create = client.create_progress();
+                client.send(Response::new_ok(create.id, Value::Null).into());
+                let begin = client.progress_kind("begin");
+                client.notify(
+                    "window/workDoneProgress/cancel",
+                    json!({"token":begin["token"]}),
+                );
+            }
             "change" => client.change(uri, 2, json!([{"text": "Changed text"}])),
+            "close" => client.close(uri),
+            "shutdown" => {
+                client.finish(true);
+                continue;
+            }
             _ => (),
         }
-        let error = client.receive(id, TIMEOUT).unwrap_err();
-        assert_eq!(
-            error.code,
-            match mode {
-                "cancel" => -32800,
-                "change" => -32801,
-                _ => -32803,
-            }
-        );
         thread::sleep(Duration::from_millis(180));
         assert!(client.hover(uri, json!({"line":0,"character":4})).is_null());
         assert!(client.documents.is_empty(), "{mode}");
@@ -2023,6 +2059,56 @@ fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
         client.receive(id, TIMEOUT).unwrap_err().message,
         "Translation input exceeds 16 KiB"
     );
+    assert!(client.documents.is_empty());
+    client.finish(true);
+}
+
+#[test]
+fn document_deadline_includes_queue_waiting() {
+    let mut client = Client::configured_documents(
+        &["--mock-delay-ms", "1500"],
+        false,
+        false,
+        json!({"selection_timeout_ms":3000,"document_timeout_ms":1000,"markdown_auto_translate":false}),
+        true,
+    );
+    let mut blockers = Vec::new();
+    for uri in ["file:///first.md", "file:///second.md"] {
+        client.open(uri, "markdown", PARAGRAPH, 1);
+        let actions = client.actions(
+            uri,
+            json!({"start":{"line":0,"character":0},"end":{"line":1,"character":40}}),
+        );
+        let command = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["command"]["command"] == "zed-code-translation.preview")
+            .unwrap()["command"]
+            .clone();
+        blockers.push(client.execute(command));
+    }
+    let uri = "file:///queued.md";
+    client.open(uri, "markdown", PARAGRAPH, 1);
+    let action = document_action(
+        &mut client,
+        uri,
+        json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+    );
+    let request = client.execute(action);
+    assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+    for id in blockers {
+        assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+    }
+    assert_eq!(
+        client
+            .notifications
+            .iter()
+            .filter(|notice| notice["type"] == 1 && notice["message"] == "Translation timed out")
+            .count(),
+        1
+    );
+    assert!(client.hover(uri, json!({"line":0,"character":4})).is_null());
     assert!(client.documents.is_empty());
     client.finish(true);
 }
