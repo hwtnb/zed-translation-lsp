@@ -2188,3 +2188,40 @@ fn csharp_pending_hover_obeys_cancel_edit_and_close() {
         client.finish(true);
     }
 }
+
+#[test]
+fn c_family_doxygen_hover_and_selection_share_the_comment_body() {
+    let mut client = Client::new(&[]);
+    for (language, extension) in [("c", "c"), ("cpp", "cpp")] {
+        let uri = format!("file:///retry.{extension}");
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = include_str!("../../../samples/comment.c").replace('\n', ending);
+            let original =
+                "/// @brief Retry only if the remote service\n/// reports a temporary failure."
+                    .replace('\n', ending);
+            let range = json!({"start":{"line":0,"character":0},"end":{"line":1,"character":32}});
+            client.open(&uri, language, &source, 1);
+            assert_preview(
+                &client.hover(&uri, range["start"].clone()),
+                &original,
+                &format!("@brief {COMMENT_JA}"),
+                &range,
+            );
+            let action = client.action(&uri, range.clone());
+            let id = client.execute(action);
+            assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+            client.change(
+                &uri,
+                2,
+                json!([{"text":"const char *s = \"// Not a comment\";"}]),
+            );
+            assert!(
+                client
+                    .hover(&uri, json!({"line":0,"character":20}))
+                    .is_null()
+            );
+            client.close(&uri);
+        }
+    }
+    client.finish(true);
+}

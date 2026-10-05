@@ -6,7 +6,7 @@ description = "Translate code comments and selected text with ChatGPT while keep
 
 [language_servers.zed-code-translation]
 name = "Zed Code Translation"
-languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "Markdown", "Plain Text"]
+languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Markdown", "Plain Text"]
 
 [language_servers.zed-code-translation.language_ids]
 Rust = "rust"
@@ -14,5 +14,7 @@ JavaScript = "javascript"
 TypeScript = "typescript"
 TSX = "typescriptreact"
 CSharp = "csharp"
+C = "c"
+"C++" = "cpp"
 Markdown = "markdown"
 "Plain Text" = "plaintext"

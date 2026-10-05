@@ -5,6 +5,7 @@ pub(crate) struct MockProvider;
 
 const COMMENT: &str = "// Retry only if the remote service\n    // reports a temporary failure.";
 const COMMENT_BODY: &str = "Retry only if the remote service\nreports a temporary failure.";
+const DOXYGEN_BODY: &str = "@brief Retry only if the remote service\nreports a temporary failure.";
 const XML_COMMENT_BODY: &str =
     "<summary>\nRetry only if the remote service\nreports a temporary failure.\n</summary>";
 const PARAGRAPH: &str =
@@ -24,6 +25,9 @@ impl TranslationProvider for MockProvider {
         let translation = match text.replace("\r\n", "\n").replace('\r', "\n").trim() {
             COMMENT | COMMENT_BODY => {
                 "リモートサービスが一時的な障害を報告した場合に限り、再試行する。"
+            }
+            DOXYGEN_BODY => {
+                "@brief リモートサービスが一時的な障害を報告した場合に限り、再試行する。"
             }
             XML_COMMENT_BODY => {
                 "<summary>\nリモートサービスが一時的な障害を報告した場合に限り、再試行する。\n</summary>"

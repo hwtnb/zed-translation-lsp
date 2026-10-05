@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Translate Rust, JavaScript/JSX, TypeScript/TSX, and C# comments in Zed's Hover, or select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
+Translate Rust, JavaScript/JSX, TypeScript/TSX, C#, C, and C++ comments in Zed's Hover, or select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
 The ChatGPT provider uses your ChatGPT account with permission to use your plan. Without provider settings, the extension runs in mock mode: it translates only the bundled samples into Japanese and sends no text to an external service.
 
@@ -19,6 +19,8 @@ cargo build --target wasm32-wasip2 --release --locked
 In Zed's Extensions view, choose `Install Dev Extension` and select **`crates/zed-extension`** in the checkout. See [Zed's development extension instructions](https://zed.dev/docs/extensions/developing-extensions).
 
 For C# files, install Zed's [C# language extension](https://github.com/zed-extensions/csharp). Its settings key is `CSharp`. If you configure `languages.CSharp.language_servers` explicitly, add `"zed-code-translation"` alongside your existing C# server. This translation extension does not replace Roslyn or OmniSharp.
+
+C and C++ are built into Zed. If you list their language servers explicitly, add `"zed-code-translation"` under `languages.C.language_servers` and `languages."C++".language_servers`, alongside clangd.
 
 ## Configuration
 
@@ -128,15 +130,16 @@ The server keeps the last translated range for each document in memory. Editing 
 
 ## Mock mode
 
-To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
+To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). C/C++ samples are available in [samples/comment.c](samples/comment.c) and [samples/comment.cpp](samples/comment.cpp), including Doxygen comments. In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
 
 Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
 
 ## Limitations
 
-- Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, and C#. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it. Python comments are not supported.
+- Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, and C++. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it. Python comments are not supported.
 - Selection changes and deselection are observed when Zed sends a new range request. Until then, a background request cannot be canceled immediately. A language server tracks only its most recently observed selection, so separate editors' selections are not tracked independently. Background failures do not start a new translation job. An explicit temporary service error can trigger one retry within the current job.
 - C# supports `//`, `/* ... */`, `///`, and `/** ... */`. Adjacent line comments of the same kind and indentation are translated together. XML documentation is displayed as tagged text in Hover; the model is instructed to retain tags and attributes. There is no XML renderer or structural validation. Comments inside ambiguous syntax-error regions are skipped by automatic Hover; manual selection translation remains available.
+- C/C++ supports ordinary and Doxygen comments (`///`, `//!`, `/**`, `/*!`, including trailing `<` forms). Documentation commands such as `@param` remain in the displayed text; the model is instructed to retain commands and parameter names. The first syntax-error region stops further C/C++ comment extraction, because parser recovery can mistake unclosed comment contents for code. Use manual selection for those regions.
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
 - Source text is limited to 16 KiB and translated text to 64 KiB. From translation admission, translations opened in a tab default to 180 seconds, manual selection Hover previews and background translation to 30 seconds, and each Hover request to 20 seconds. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
 - An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. Connection failures and interrupted streams are not automatically replayed.
@@ -160,3 +163,5 @@ The Rust lexer (`ra-ap-rustc_lexer` 0.176) requires matching Unicode tables. The
 The OIDC SDK still depends on `ed25519-dalek` 2.2 and `rand_core` 0.6; the fixture generator uses `ed25519-dalek` 3.0 with `getrandom` 0.4. These versions coexist without changing the SDK. Cargo currently resolves the SDK's older cryptography stack to `crypto-common` 0.1.6 and `generic-array` 0.14.9. The [0.1.7 release](https://github.com/RustCrypto/traits/pull/2088) only pins `generic-array` to 0.14.7 to suppress deprecation warnings. This project does not force that downgrade.
 
 C# comment extraction uses Tree-sitter 0.27 and `tree-sitter-c-sharp` 0.23. Prefer evaluating Tree-sitter grammars for additional code languages. Rust continues to use its lexer, and JavaScript/TypeScript use Oxc. Parser input normalizes C# Unicode line terminators while preserving byte offsets; comment text is always read from the unchanged source.
+
+C/C++ extraction uses `tree-sitter-c` 0.24 and `tree-sitter-cpp` 0.23 with the same Tree-sitter runtime. Raw strings and backslash-continued line comments are parsed by their language grammars.

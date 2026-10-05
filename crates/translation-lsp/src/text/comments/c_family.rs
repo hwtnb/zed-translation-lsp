@@ -1,0 +1,51 @@
+use std::borrow::Cow;
+
+use super::{Comment, Kind, LineKind, syntax};
+
+pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
+    let language = if language_id == "c" {
+        tree_sitter_c::LANGUAGE
+    } else {
+        tree_sitter_cpp::LANGUAGE
+    };
+    let mut source = Cow::Borrowed(text.as_bytes());
+    for (index, byte) in text.bytes().enumerate() {
+        if byte == b'\r' && text.as_bytes().get(index + 1) != Some(&b'\n') {
+            source.to_mut()[index] = b'\n';
+        }
+    }
+    syntax::parse(
+        &source,
+        language.into(),
+        // Error recovery can expose apparent comments inside an unclosed block.
+        syntax::Recovery::StopAtError,
+        |node| {
+            if node.kind() != "comment" {
+                return None;
+            }
+            let mut range = node.byte_range();
+            let token = &text[range.clone()];
+            let kind = if token.starts_with("//") {
+                if token.ends_with('\r') {
+                    range.end -= 1;
+                }
+                let prefix = ["///<", "//!<", "///", "//!", "//"]
+                    .into_iter()
+                    .find(|prefix| token.starts_with(prefix))
+                    .unwrap();
+                Kind::Line(LineKind::CFamily(prefix))
+            } else {
+                let opening = ["/**<", "/*!<", "/**", "/*!", "/*"]
+                    .into_iter()
+                    .find(|prefix| token.starts_with(prefix))
+                    .unwrap()
+                    .len() as u8;
+                Kind::Block {
+                    opening,
+                    closed: token.ends_with("*/"),
+                }
+            };
+            Some(Comment { range, kind })
+        },
+    )
+}

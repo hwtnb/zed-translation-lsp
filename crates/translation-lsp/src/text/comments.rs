@@ -6,13 +6,16 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use rust_lexer::{DocStyle, FrontmatterAllowed, TokenKind};
 
+mod c_family;
 mod csharp;
+mod syntax;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LineKind {
     Rust(Option<DocStyle>),
     JavaScript(u8),
     CSharp(u8),
+    CFamily(&'static str),
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +35,9 @@ pub(crate) struct Comments(Vec<Comment>);
 
 impl Comments {
     pub fn parse(language_id: &str, uri: &Uri, text: &str) -> Self {
+        if matches!(language_id, "c" | "cpp") {
+            return Self(c_family::parse(language_id, text));
+        }
         if language_id == "csharp" {
             return Self(csharp::parse(text));
         }
@@ -146,6 +152,7 @@ impl Comments {
                         2
                     }
                 }
+                Kind::Line(LineKind::CFamily(prefix)) => prefix.len() as u8,
                 Kind::Line(LineKind::JavaScript(opening) | LineKind::CSharp(opening))
                 | Kind::Block { opening, .. } => opening,
             } as usize;
@@ -239,6 +246,69 @@ mod tests {
             text[comments.range(group.clone())].into(),
             comments.body(text, group),
         )
+    }
+
+    #[test]
+    fn c_family_groups_and_doxygen_preserve_source_text() {
+        for language in ["c", "cpp"] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = format!("/// @brief Retry.{ending}/// Only if needed.{ending}int x;");
+                assert_eq!(
+                    body_at(language, &text, "Retry.").1,
+                    format!("@brief Retry.{ending}Only if needed.")
+                );
+            }
+            for (source, expected) in [
+                ("// Read.", "Read."),
+                ("//! Read.", "Read."),
+                ("int x; ///< Read.", "Read."),
+                ("int x; //!< Read.", "Read."),
+                ("/** @param x Read. */", "@param x Read. "),
+                ("/*! Read. */", "Read. "),
+                ("int x; /**< Read. */", "Read. "),
+                ("int x; /*!< Read. */", "Read. "),
+            ] {
+                assert_eq!(body_at(language, source, "Read.").1, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn c_family_excludes_literals_and_stops_before_ambiguous_error_recovery() {
+        let uri = "untitled:comment".parse().unwrap();
+        for language in ["c", "cpp"] {
+            let source = "const char *s = \"// not /* comment */\";\nchar c = '/';\n#if ENABLED\n// Real.\n#endif\n";
+            let comments = Comments::parse(language, &uri, source);
+            assert_eq!(comments.0.len(), 1);
+            assert_eq!(comments.body(source, 0..1), "Real.");
+            for broken in [
+                "/* unclosed\n// hidden",
+                "const char *s = \"unclosed\n// hidden",
+            ] {
+                let source = format!("// Real.\n{broken}");
+                let comments = Comments::parse(language, &uri, &source);
+                assert_eq!(comments.0.len(), 1, "{language}: {broken}");
+            }
+            for ending in ["\n", "\r\n", "\r"] {
+                let source = format!("// Continued \\{ending}on this line.{ending}int x;");
+                assert_eq!(
+                    body_at(language, &source, "Continued").1,
+                    format!("Continued \\{ending}on this line.")
+                );
+            }
+            let source = "/// First.\n//! Separate.\n// Ordinary.";
+            assert_eq!(body_at(language, source, "First").1, "First.");
+            assert_eq!(body_at(language, source, "Separate").1, "Separate.");
+        }
+        for literal in [
+            r###"auto s = R"tag(// not /* comment */)tag";"###,
+            r###"auto s = u8R"(// not /* comment */)";"###,
+            "auto s = R\"tag(unclosed\n// hidden",
+        ] {
+            let source = format!("// Real.\n{literal}");
+            let comments = Comments::parse("cpp", &uri, &source);
+            assert_eq!(comments.0.len(), 1, "{literal}");
+        }
     }
 
     #[test]
