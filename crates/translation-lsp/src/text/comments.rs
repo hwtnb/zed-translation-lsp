@@ -6,10 +6,13 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use rust_lexer::{DocStyle, FrontmatterAllowed, TokenKind};
 
+mod csharp;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LineKind {
     Rust(Option<DocStyle>),
     JavaScript(u8),
+    CSharp(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +32,9 @@ pub(crate) struct Comments(Vec<Comment>);
 
 impl Comments {
     pub fn parse(language_id: &str, uri: &Uri, text: &str) -> Self {
+        if language_id == "csharp" {
+            return Self(csharp::parse(text));
+        }
         if language_id == "rust" {
             // rustc's lexer terminates line comments at LF. Preserve all byte
             // offsets when accepting the editor's standalone CR and CRLF lines.
@@ -140,7 +146,8 @@ impl Comments {
                         2
                     }
                 }
-                Kind::Line(LineKind::JavaScript(opening)) | Kind::Block { opening, .. } => opening,
+                Kind::Line(LineKind::JavaScript(opening) | LineKind::CSharp(opening))
+                | Kind::Block { opening, .. } => opening,
             } as usize;
             let closing = if matches!(comment.kind, Kind::Block { .. }) {
                 2
@@ -184,7 +191,9 @@ impl Comments {
 
 fn line_break(character: char, kind: LineKind) -> bool {
     matches!(character, '\r' | '\n')
-        || matches!(kind, LineKind::JavaScript(_)) && matches!(character, '\u{2028}' | '\u{2029}')
+        || matches!(kind, LineKind::JavaScript(_) | LineKind::CSharp(_))
+            && matches!(character, '\u{2028}' | '\u{2029}')
+        || matches!(kind, LineKind::CSharp(_)) && character == '\u{85}'
 }
 
 fn newline_len(text: &str) -> Option<usize> {
@@ -193,7 +202,9 @@ fn newline_len(text: &str) -> Option<usize> {
     } else {
         text.chars()
             .next()
-            .filter(|&character| matches!(character, '\r' | '\n' | '\u{2028}' | '\u{2029}'))
+            .filter(|&character| {
+                matches!(character, '\r' | '\n' | '\u{85}' | '\u{2028}' | '\u{2029}')
+            })
             .map(char::len_utf8)
     }
 }
@@ -228,6 +239,82 @@ mod tests {
             text[comments.range(group.clone())].into(),
             comments.body(text, group),
         )
+    }
+
+    #[test]
+    fn csharp_comment_groups_preserve_xml_and_source_newlines() {
+        for ending in ["\n", "\r\n", "\r", "\u{85}", "\u{2028}", "\u{2029}"] {
+            let text = format!(
+                "class A {{}}{ending}    /// <summary>{ending}    /// Retry safely.{ending}    /// </summary>{ending}// Ordinary."
+            );
+            let (range, body) = body_at("csharp", &text, "Retry safely.");
+            assert_eq!(
+                range,
+                format!("/// <summary>{ending}    /// Retry safely.{ending}    /// </summary>")
+            );
+            assert_eq!(
+                body,
+                format!("<summary>{ending}Retry safely.{ending}</summary>")
+            );
+            assert_eq!(body_at("csharp", &text, "Ordinary.").1, "Ordinary.");
+        }
+        assert_eq!(
+            body_at("csharp", "/** <summary>Retry.</summary> */", "Retry.").1,
+            "<summary>Retry.</summary> "
+        );
+        assert_eq!(
+            body_at("csharp", "/* First. */ /* Second. */", "Second.").1,
+            "Second. "
+        );
+    }
+
+    #[test]
+    fn csharp_ignores_literal_comments_and_keeps_interpolation_expression_comments() {
+        let uri = "file:///Example.cs".parse().unwrap();
+        for literal in [
+            r####"var s = "https://example.test/* false */";"####,
+            r####"var s = @"quote "" // false /* false */";"####,
+            "var s = \"\"\"\n// false\n/* false */\n\"\"\";",
+            r####"var s = $"https://example.test/{1}";"####,
+            r####"var s = $@"https://example.test/{1}";"####,
+            "var s = $$\"\"\"\n// false {{1}}\n\"\"\";",
+            "var s = @\"first\u{85}// false\u{2028}/* false */\";",
+            "var c = '/';",
+        ] {
+            let source = format!("{literal}\n// Real comment.");
+            let comments = Comments::parse("csharp", &uri, &source);
+            assert_eq!(comments.0.len(), 1, "{literal}");
+            assert_eq!(&source[comments.0[0].range.clone()], "// Real comment.");
+        }
+        for source in [
+            r####"var s = $"prefix {1 /* Real comment. */} // literal";"####,
+            r####"var s = $@"prefix {1 /* Real comment. */} // literal";"####,
+            "var s = $$\"\"\"\n// literal {{1 /* Real comment. */}}\n\"\"\";",
+        ] {
+            let comments = Comments::parse("csharp", &uri, source);
+            assert_eq!(comments.0.len(), 1);
+            assert_eq!(
+                body_at("csharp", source, "Real comment.").1,
+                "Real comment. "
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_skips_ambiguous_errors_and_unclosed_comments_or_strings() {
+        let uri = "untitled:Example".parse().unwrap();
+        for broken in [
+            "class A { void F( {\n// Ambiguous comment.\n}",
+            "class A {}\n/* Unclosed comment.",
+            "var s = @\"\n// Inside unclosed string.",
+            "var s = \"\"\"\n// Inside unclosed string.",
+            "var s = \"unclosed // Inside string.",
+        ] {
+            let source = format!("// Valid before error.\n{broken}");
+            let comments = Comments::parse("csharp", &uri, &source);
+            assert_eq!(comments.0.len(), 1, "{broken}");
+            assert_eq!(comments.body(&source, 0..1), "Valid before error.");
+        }
     }
 
     #[test]
@@ -290,6 +377,10 @@ mod tests {
             ("rust", "\r"),
             ("javascript", "\u{2028}"),
             ("typescript", "\u{2029}"),
+            ("csharp", "\r\n"),
+            ("csharp", "\u{85}"),
+            ("csharp", "\u{2028}"),
+            ("csharp", "\u{2029}"),
         ] {
             let uri = "untitled:comment".parse().unwrap();
             let text = format!("  // first{ending}  // second");
@@ -317,6 +408,10 @@ mod tests {
             ("javascript", "\r\n"),
             ("javascript", "\u{2028}"),
             ("typescript", "\u{2029}"),
+            ("csharp", "\r\n"),
+            ("csharp", "\u{85}"),
+            ("csharp", "\u{2028}"),
+            ("csharp", "\u{2029}"),
         ] {
             let text = [
                 "  // first  ",

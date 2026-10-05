@@ -353,7 +353,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn read_only_access_translates_under_shared_lock_and_rejects_changed_revision() {
         use super::super::{ChatGptProvider, auth::Auth, http::Http, test_support::Fixture};
-        use crate::providers::{TranslationProvider, error::ErrorKind};
+        use crate::providers::{TextKind, TranslationProvider, error::ErrorKind};
         let fixture = Fixture::new().await;
         fixture.state.lock().unwrap().response_mode = "delta_compact".into();
         let directory =
@@ -375,7 +375,7 @@ mod tests {
         reader.try_lock_shared().unwrap();
         let translated = tokio::time::timeout(
             Duration::from_secs(5),
-            provider.translate("Shared source.", "ja", context.clone()),
+            provider.translate(TextKind::Selection, "Shared source.", "ja", context.clone()),
         )
         .await
         .expect("A valid read must not need an exclusive credential lock")
@@ -389,7 +389,7 @@ mod tests {
         writer.save().unwrap();
         drop(writer);
         let stale = provider
-            .translate("Stale source.", "ja", context)
+            .translate(TextKind::Selection, "Stale source.", "ja", context)
             .await
             .err()
             .unwrap();

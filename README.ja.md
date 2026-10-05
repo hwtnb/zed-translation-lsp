@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-ZedでRust、JavaScript／JSX、TypeScript／TSXのコメントや、選択したMarkdownなどの文章を翻訳し、Hoverに訳文を表示します。原文はエディタに残ります。コードのコメントは初回からHoverで翻訳します。ChatGPTが利用可能な状態では、Markdownの文章を選択して安定させると背景で翻訳し、その範囲へのHoverで読めます。
+ZedでRust、JavaScript／JSX、TypeScript／TSX、C#のコメントや、選択したMarkdownなどの文章を翻訳し、Hoverに訳文を表示します。原文はエディタに残ります。コードのコメントは初回からHoverで翻訳します。ChatGPTが利用可能な状態では、Markdownの文章を選択して安定させると背景で翻訳し、その範囲へのHoverで読めます。
 
 ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。設定なしでは、同梱サンプルだけを日本語に訳す模擬モードで動作し、文章を外部へ送りません。
 
@@ -17,6 +17,8 @@ cargo build --target wasm32-wasip2 --release --locked
 ```
 
 Zedの拡張画面で `Install Dev Extension` を選び、checkout内の **`crates/zed-extension`** を指定します。[Zedの開発用拡張の導入手順](https://zed.dev/docs/extensions/developing-extensions)も参照してください。
+
+C#ファイルでは、Zedの[C#言語拡張](https://github.com/zed-extensions/csharp)を導入してください。設定上の言語名は `CSharp` です。`languages.CSharp.language_servers` を明示している場合は、既存のC#サーバーに `"zed-code-translation"` を追加します。RoslynやOmniSharpを置き換える必要はありません。
 
 ## 設定
 
@@ -120,14 +122,15 @@ ChatGPTへ送る文章は、抽出したコメント本文、選択範囲、ま�
 
 ## 模擬モード
 
-`provider` を省略するか `{"name":"mock"}` にすると、接続せずに同梱サンプルを試せます。[samples/comment.rs](samples/comment.rs) のコメントへHoverしてください。[samples/paragraph.md](samples/paragraph.md) では段落を選択し、Code Actionsの `Translate selection to ja` を実行してから、選択範囲へHoverします。模擬モードのMarkdownは手動実行が必要です。
+`provider` を省略するか `{"name":"mock"}` にすると、接続せずに同梱サンプルを試せます。[samples/comment.rs](samples/comment.rs) のコメント、または [samples/comment.cs](samples/comment.cs) の通常コメント・XMLドキュメントコメントへHoverしてください。[samples/paragraph.md](samples/paragraph.md) では段落を選択し、Code Actionsの `Translate selection to ja` を実行してから、選択範囲へHoverします。模擬モードのMarkdownは手動実行が必要です。
 
 模擬モードはこれらのサンプルと改行の違いだけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。Hoverには `Mock translation (fixed sample)` と表示します。
 
 ## 制約
 
-- 自動HoverはRust、JavaScript／JSX、TypeScript／TSXのコメントが対象です。Markdownは文章の選択後に背景翻訳し、段落へのHoverだけでは開始しません。Pythonのコメントには対応していません。
+- 自動HoverはRust、JavaScript／JSX、TypeScript／TSX、C#のコメントが対象です。Markdownは文章の選択後に背景翻訳し、段落へのHoverだけでは開始しません。Pythonのコメントには対応していません。
 - 選択変更・解除はZedから新しい範囲要求が届いた時点で観測します。それまでは背景要求を即時取消できません。一つの言語サーバーでは最後に観測した選択を扱うため、複数のエディタの選択を独立には扱えません。背景翻訳の失敗から新しい処理は開始しません。一時的なサービスエラーが明示された場合は、現在の処理内で一度だけ再試行します。
+- C#は `//`、`/* ... */`、`///`、`/** ... */` に対応します。同じ種類・字下げで連続する行コメントはまとめて翻訳します。XMLドキュメントコメントはタグ付きの訳文をHoverに表示し、タグ・属性の保持をモデルへ指示します。XML専用の整形表示や構造検証は行いません。構文エラーで判定が曖昧な範囲のコメントは自動Hoverの対象から外れますが、手動の範囲選択翻訳は使えます。
 - 未閉鎖のブロックコメントは、閉じるまで自動翻訳を待ちます。JS／TSの解析が致命的な構文エラーで停止した場合、その後のコメントは自動で取得できません。範囲選択による翻訳を使うか、構文を修正してください。
 - 原文範囲は16 KiBまで、翻訳結果は64 KiBまでです。翻訳受付からの期限は、既定で別タブに開く翻訳が180秒、選択範囲のHoverプレビューと背景翻訳が30秒、個々のHover要求が20秒です。workerの待ち時間、API呼出し、認証更新、streamingを含みます。選択の安定待ちや、受付前の空き枠・管理操作の待ち時間は含みません。同じ範囲への要求が合流しても、それぞれの期限を保持します。OAuth、接続、管理操作には別の内部制限もあります。混雑時は完了後に再実行してください。
 - HTTP 200の後に通知される過負荷を含め、明示された一時的なサービスエラーは元の期限内で最大一度だけ再試行します。既定の待機は2秒です。数値の `Retry-After` が120秒以内ならその秒数を使い、それ以外の値では手動再試行に委ねます。取消・文書の変更・アカウントの変更で再試行待ちも停止します。接続失敗や途中切断は自動で再送しません。
@@ -149,3 +152,5 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 Rust lexer（`ra-ap-rustc_lexer` 0.176）はUnicodeテーブルの版が一致している必要があります。lockfileでは `unicode-properties` 0.1.4に合わせ、Unicode 17の `unicode-ident` 1.0.24を使います。1.0.25・1.0.26はUnicode 18で、lexerのコンパイル時検査に失敗します。更新でこのpackageが変わった場合は `cargo update -p unicode-ident --precise 1.0.24` で互換lockへ戻すか、lexerと両テーブルcrateが同じUnicode版に対応していることを確認してください。
 
 OIDC SDKは引き続き `ed25519-dalek` 2.2と `rand_core` 0.6に依存します。Fixtureの鍵生成には `ed25519-dalek` 3.0と `getrandom` 0.4を使い、SDKを変更せずに両系列を併用します。SDKが使う旧暗号ライブラリ系列は、現在Cargoが `crypto-common` 0.1.6と `generic-array` 0.14.9へ解決します。[0.1.7の変更](https://github.com/RustCrypto/traits/pull/2088)は、非推奨警告を抑えるために `generic-array` を0.14.7へ固定するものだけです。本プロジェクトではそのダウングレードを強制しません。
+
+C#のコメント抽出にはTree-sitter 0.27と `tree-sitter-c-sharp` 0.23を使います。新しいコード言語を追加する場合も、Tree-sitterの文法を第一候補として検証します。既存のRust用lexer、JavaScript／TypeScript用Oxcは維持しています。C#の特殊なUnicode改行は、解析入力だけをbyte位置が変わらない形で調整し、コメント本文は変更していない原文から取得します。

@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     config::{ProviderSettings, Settings},
     providers::{
-        AuthUiState, Context, Translated, TranslationProvider,
+        AuthUiState, Context, TextKind, Translated, TranslationProvider,
         chatgpt::ChatGptProvider,
         error::{Error as ProviderError, ErrorKind},
         mock::MockProvider,
@@ -126,6 +126,7 @@ enum Task {
         ui: Ui,
     },
     Translation {
+        kind: TextKind,
         text: String,
         target_language: String,
         context: Context,
@@ -1116,6 +1117,11 @@ impl<P: TranslationProvider> Server<P> {
             ticket,
             deadline: deadline_receiver,
             task: Task::Translation {
+                kind: if input.is_comment {
+                    TextKind::Comment
+                } else {
+                    TextKind::Selection
+                },
                 text: input.text,
                 target_language: target.target_language.clone(),
                 context: context.clone(),
@@ -1697,6 +1703,7 @@ async fn run_job<P: TranslationProvider>(
                 .await
                 .map(Outcome::Administration),
             Task::Translation {
+                kind,
                 text,
                 target_language,
                 context,
@@ -1706,7 +1713,7 @@ async fn run_job<P: TranslationProvider>(
                     Err(ProviderError::failed("Simulated mock translation failure"))
                 } else {
                     provider
-                        .translate(text, target_language, context.clone())
+                        .translate(*kind, text, target_language, context.clone())
                         .await
                         .map(Outcome::Translation)
                 }
@@ -1873,6 +1880,7 @@ mod tests {
         impl TranslationProvider for GatedProvider {
             async fn translate(
                 &self,
+                _: TextKind,
                 text: &str,
                 _: &str,
                 context: Context,
@@ -1911,6 +1919,7 @@ mod tests {
             stops.push(stop);
             let task = if ticket < 4 {
                 Task::Translation {
+                    kind: TextKind::Selection,
                     text: format!("source {ticket}"),
                     target_language: "ja".into(),
                     context: Context::Mock,
@@ -1984,15 +1993,16 @@ mod tests {
     #[test]
     fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() {
         #[derive(Clone)]
-        struct RecordingProvider(Sender<(String, String)>);
+        struct RecordingProvider(Sender<(TextKind, String, String)>);
         impl TranslationProvider for RecordingProvider {
             async fn translate(
                 &self,
+                kind: TextKind,
                 text: &str,
                 target: &str,
                 context: Context,
             ) -> Result<Translated, ProviderError> {
-                self.0.send((text.into(), target.into())).unwrap();
+                self.0.send((kind, text.into(), target.into())).unwrap();
                 Ok(Translated {
                     text: format!("fake: {text}"),
                     context,
@@ -2026,7 +2036,10 @@ mod tests {
                     break completion;
                 }
             };
-            assert_eq!(recorded.recv().unwrap(), (body.to_owned(), "ja".into()));
+            assert_eq!(
+                recorded.recv().unwrap(),
+                (TextKind::Comment, body.to_owned(), "ja".into())
+            );
             server.finish(&connection, completion).unwrap();
             let Message::Response(response) = client.receiver.try_recv().unwrap() else {
                 panic!("Expected Hover response");
@@ -2197,6 +2210,7 @@ mod chatgpt_tests {
                 ticket: 1,
                 deadline,
                 task: Task::Translation {
+                    kind: TextKind::Selection,
                     text: "Read this.".into(),
                     target_language: "ja".into(),
                     context: provider.context().unwrap(),
@@ -3243,8 +3257,8 @@ mod chatgpt_tests {
         );
         let context = provider.context().unwrap();
         let (first, second) = tokio::join!(
-            provider.translate("First source.", "ja", context.clone()),
-            provider.translate("Second source.", "ja", context),
+            provider.translate(TextKind::Selection, "First source.", "ja", context.clone()),
+            provider.translate(TextKind::Selection, "Second source.", "ja", context),
         );
         let mut successes = 0;
         for result in [first, second] {
@@ -3260,7 +3274,12 @@ mod chatgpt_tests {
         assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
         assert_eq!(response_calls(&fixture), 1);
         let retry = provider
-            .translate("Retry source.", "ja", provider.context().unwrap())
+            .translate(
+                TextKind::Selection,
+                "Retry source.",
+                "ja",
+                provider.context().unwrap(),
+            )
             .await
             .unwrap();
         assert!(retry.text.contains("Retry source."));
@@ -3439,6 +3458,67 @@ mod chatgpt_tests {
             "Duplicate command notification"
         );
         response.response_result
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn csharp_xml_comment_reaches_http_and_returns_translated_hover() {
+        let body = "<summary>Retry safely.</summary>";
+        let translated = "<summary>安全に再試行します。</summary>";
+        let source = format!("/// {body}\nclass Example {{}}");
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().translation = Some(translated.into());
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server =
+            Server::new_with_provider(MockOptions::default(), finished, provider).unwrap();
+        let uri: Uri = "file:///Example.cs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "csharp".into(), source.clone()),
+        );
+        assert!(
+            server
+                .hover(
+                    1.into(),
+                    parse(json!({
+                        "textDocument":{"uri":uri}, "position":{"line":0,"character":15}
+                    }))
+                    .unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let state = fixture.state.lock().unwrap();
+        let requests: Vec<_> = state
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .collect();
+        assert_eq!(requests.len(), 1);
+        let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(request["input"][0]["content"], body);
+        let Message::Response(reply) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected Hover response");
+        };
+        let hover = reply.response_result.unwrap();
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains(translated)
+        );
+        assert_eq!(server.documents[&uri].text(), Some(source.as_str()));
+        assert!(client.receiver.try_recv().is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

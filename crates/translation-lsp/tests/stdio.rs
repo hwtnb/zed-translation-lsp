@@ -1369,6 +1369,7 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "const view = <div>// jsx text</div>;",
         ),
         ("file:///general.ts", "typescript", "const n: number = 1;"),
+        ("file:///general.cs", "csharp", "var s = @\"// string\";"),
         (
             "untitled:general.tsx",
             "typescriptreact",
@@ -1398,6 +1399,8 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         );
         let literal = if language == "rust" {
             format!("let t = r#\"{COMMENT}\"#;")
+        } else if language == "csharp" {
+            format!("var t = @\"{COMMENT}\";")
         } else {
             format!("const t = `{COMMENT}`;")
         };
@@ -2111,4 +2114,77 @@ fn document_deadline_includes_queue_waiting() {
     assert!(client.hover(uri, json!({"line":0,"character":4})).is_null());
     assert!(client.documents.is_empty());
     client.finish(true);
+}
+
+#[test]
+fn csharp_xml_hover_preserves_tags_utf16_ranges_and_manual_selection() {
+    let mut client = Client::new(&[]);
+    let xml = "/// <summary>\n    /// Retry only if the remote service\n    /// reports a temporary failure.\n    /// </summary>";
+    let translated = format!("<summary>\n{COMMENT_JA}\n</summary>");
+    for ending in ["\n", "\r\n"] {
+        let source = include_str!("../../../samples/comment.cs").replace('\n', ending);
+        let original = xml.replace('\n', ending);
+        let range = range_for(&source, &original);
+        let uri = "file:///Example.cs";
+        client.open(uri, "csharp", &source, 1);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            &original,
+            &translated,
+            &range,
+        );
+        let action = client.action(uri, range.clone());
+        let id = client.execute(action);
+        assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            &original,
+            &translated,
+            &range,
+        );
+        client.close(uri);
+    }
+    let source = format!("var emoji = \"🚀\"; /* {PARAGRAPH} */");
+    let selected = format!("/* {PARAGRAPH} */");
+    let range = range_for(&source, &selected);
+    client.open("untitled:Example", "csharp", &source, 1);
+    assert_preview(
+        &client.hover("untitled:Example", range["start"].clone()),
+        &selected,
+        PARAGRAPH_JA,
+        &range,
+    );
+    client.finish(true);
+}
+
+#[test]
+fn csharp_pending_hover_obeys_cancel_edit_and_close() {
+    for mode in ["cancel", "edit", "close"] {
+        let mut client = Client::new(&["--mock-delay-ms", "150"]);
+        let uri = "file:///Pending.cs";
+        let source = format!("class A {{\n    {COMMENT}\n}}");
+        let range = range_for(&source, COMMENT);
+        client.open(uri, "csharp", &source, 1);
+        let id = client.request_hover(uri, range["start"].clone());
+        match mode {
+            "cancel" => client.notify("$/cancelRequest", json!({"id":id})),
+            "edit" => client.change(uri, 2, json!([{"text":"class A {}"}])),
+            "close" => client.close(uri),
+            _ => unreachable!(),
+        }
+        assert_error(
+            client.receive(id, TIMEOUT),
+            if mode == "cancel" { -32800 } else { -32801 },
+        );
+        client.close(uri);
+        client.open(uri, "csharp", "var s = @\"// Not a comment.\";", 1);
+        thread::sleep(Duration::from_millis(180));
+        assert!(
+            client
+                .hover(uri, json!({"line":0,"character":12}))
+                .is_null()
+        );
+        assert!(client.notifications.is_empty());
+        client.finish(true);
+    }
 }
