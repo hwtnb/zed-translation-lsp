@@ -24,7 +24,7 @@ const READY: &str = "Translation ready. Hover over the selected text to view it.
 type Reply = Result<Value, ResponseError>;
 
 // Framing is read and written by the same published SDK used by the server.
-// Only advertised progress registration requests are accepted.
+// Server requests are held until each test supplies the client's response.
 struct Client {
     child: Child,
     stdin: ChildStdin,
@@ -36,6 +36,7 @@ struct Client {
     next_id: i32,
     activity_capabilities: (bool, bool),
     creates: Vec<Request>,
+    documents: Vec<Request>,
     progress: Vec<Value>,
     statuses: Vec<Value>,
 }
@@ -94,12 +95,23 @@ impl Client {
             next_id: 0,
             activity_capabilities: (progress, status),
             creates: Vec::new(),
+            documents: Vec::new(),
             progress: Vec::new(),
             statuses: Vec::new(),
         }
     }
 
     fn configured(args: &[&str], progress: bool, status: bool, options: Value) -> Self {
+        Self::configured_documents(args, progress, status, options, false)
+    }
+
+    fn configured_documents(
+        args: &[&str],
+        progress: bool,
+        status: bool,
+        options: Value,
+        documents: bool,
+    ) -> Self {
         let mut client = Self::spawn(args, progress, status);
         let initialized = client
             .call(
@@ -110,7 +122,7 @@ impl Client {
                     "rootUri": null,
                     "capabilities": {
                         "general": { "positionEncodings": ["utf-16"] },
-                        "window": {"workDoneProgress": progress},
+                        "window": {"workDoneProgress": progress, "showDocument": {"support": documents}},
                         "experimental": {"serverStatusNotification": status},
                         "textDocument": {
                             "hover": { "contentFormat": ["markdown"] },
@@ -126,7 +138,10 @@ impl Client {
         assert_eq!(initialized["capabilities"]["textDocumentSync"]["change"], 2);
         assert_eq!(
             initialized["capabilities"]["executeCommandProvider"]["commands"],
-            json!(["zed-code-translation.preview"])
+            json!([
+                "zed-code-translation.preview",
+                "zed-code-translation.open-translation"
+            ])
         );
         client.notify("initialized", json!({}));
         client
@@ -178,6 +193,9 @@ impl Client {
                         .is_none(),
                     "Duplicate response"
                 );
+            }
+            Message::Request(request) if request.method == "window/showDocument" => {
+                self.documents.push(request);
             }
             Message::Request(request)
                 if self.activity_capabilities.0
@@ -313,6 +331,10 @@ impl Client {
 
     fn finish(&mut self, expect_clean_stderr: bool) {
         assert!(self.call("shutdown", Value::Null).unwrap().is_null());
+        self.finish_exit(expect_clean_stderr);
+    }
+
+    fn finish_exit(&mut self, expect_clean_stderr: bool) {
         self.notify("exit", Value::Null);
         let start = Instant::now();
         let status = loop {
@@ -332,6 +354,7 @@ impl Client {
             "Unconsumed or invalid protocol output"
         );
         assert!(self.replies.is_empty(), "Unconsumed responses");
+        assert!(self.documents.is_empty(), "Unexpected document opening");
         let stderr = self.stderr.take().unwrap().join().unwrap();
         if expect_clean_stderr {
             assert!(stderr.is_empty(), "Unexpected stderr: {stderr}");
@@ -1821,5 +1844,185 @@ fn duplicate_live_hover_id_is_retired_once_and_can_later_be_reused() {
         &range,
     );
     assert!(restarted.elapsed() >= Duration::from_millis(90));
+    client.finish(true);
+}
+
+fn document_action(client: &mut Client, uri: &str, range: Value) -> Value {
+    client
+        .actions(uri, range)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["command"]["command"] == "zed-code-translation.open-translation")
+        .unwrap()["command"]
+        .clone()
+}
+
+#[test]
+fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
+    for (language, extension) in [("markdown", "md"), ("plaintext", "txt")] {
+        let mut client = Client::configured_documents(&[], false, false, Value::Null, true);
+        let uri = format!("file:///source.{extension}");
+        client.open(&uri, language, PARAGRAPH, 1);
+        let action = document_action(
+            &mut client,
+            &uri,
+            json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+        );
+        assert_eq!(action["title"], "Translate document to ja and open in tab");
+        let request = client.execute(action.clone());
+        while client.documents.is_empty() {
+            client.pump();
+        }
+        let open = client.documents.remove(0);
+        assert_eq!(open.params["external"], false);
+        assert_eq!(open.params["takeFocus"], true);
+        let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        assert_eq!(path.extension().unwrap(), extension);
+        assert_eq!(path.file_stem().unwrap(), "Translation");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        client.send(Response::new_ok(open.id, json!({"success":true})).into());
+        assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+        assert!(client.notifications.is_empty());
+        let saved = path.with_extension("saved");
+        std::fs::copy(&path, &saved).unwrap();
+        let cached = client.execute(action);
+        while client.documents.is_empty() {
+            client.pump();
+        }
+        let open = client.documents.remove(0);
+        let cached_path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&cached_path).unwrap(), PARAGRAPH_JA);
+        client.send(Response::new_ok(open.id, json!({"success":true})).into());
+        assert!(client.receive(cached, TIMEOUT).unwrap().is_null());
+        assert!(client.call("shutdown", Value::Null).unwrap().is_null());
+        assert!(!path.exists());
+        assert!(!cached_path.exists());
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), PARAGRAPH_JA);
+        client.finish_exit(true);
+        std::fs::remove_file(saved).unwrap();
+    }
+}
+
+#[test]
+fn document_preview_reports_editor_refusal_and_does_not_claim_hover_success() {
+    let mut client = Client::configured_documents(&[], false, false, Value::Null, true);
+    client.open("file:///source.md", "markdown", PARAGRAPH, 1);
+    let action = document_action(
+        &mut client,
+        "file:///source.md",
+        json!({"start":{"line":0,"character":0},"end":{"line":1,"character":40}}),
+    );
+    let request = client.execute(action);
+    while client.documents.is_empty() {
+        client.pump();
+    }
+    let open = client.documents.remove(0);
+    client.send(Response::new_ok(open.id, json!({"success":false})).into());
+    assert!(
+        client
+            .receive(request, TIMEOUT)
+            .unwrap_err()
+            .message
+            .contains("could not open")
+    );
+    assert_eq!(client.notifications.len(), 1);
+    assert_eq!(client.notifications[0]["type"], 1);
+    client.finish(true);
+}
+
+#[test]
+fn document_preview_never_opens_canceled_stale_expired_or_failed_translation() {
+    for mode in ["cancel", "change", "timeout", "fail"] {
+        let args: &[&str] = match mode {
+            "timeout" => &["--mock-delay-ms", "150", "--mock-timeout-ms", "25"],
+            "fail" => &["--mock-fail"],
+            _ => &["--mock-delay-ms", "150"],
+        };
+        let mut client = Client::configured_documents(args, false, false, Value::Null, true);
+        let uri = "file:///source.md";
+        client.open(uri, "markdown", PARAGRAPH, 1);
+        let action = document_action(
+            &mut client,
+            uri,
+            json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+        );
+        let id = client.execute(action);
+        match mode {
+            "cancel" => client.notify("$/cancelRequest", json!({"id": id})),
+            "change" => client.change(uri, 2, json!([{"text": "Changed text"}])),
+            _ => (),
+        }
+        let error = client.receive(id, TIMEOUT).unwrap_err();
+        assert_eq!(
+            error.code,
+            match mode {
+                "cancel" => -32800,
+                "change" => -32801,
+                _ => -32803,
+            }
+        );
+        thread::sleep(Duration::from_millis(180));
+        assert!(client.hover(uri, json!({"line":0,"character":4})).is_null());
+        assert!(client.documents.is_empty(), "{mode}");
+        assert_eq!(
+            client.notifications.len(),
+            usize::from(matches!(mode, "timeout" | "fail"))
+        );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
+    let mut client = Client::configured_documents(&[], false, false, Value::Null, true);
+    let uri = "file:///selected.md";
+    client.open(
+        uri,
+        "markdown",
+        &format!("Not selected\n{PARAGRAPH}\nAlso not selected"),
+        1,
+    );
+    let range = json!({"start":{"line":1,"character":0},"end":{"line":2,"character":40}});
+    let action = document_action(&mut client, uri, range);
+    assert_eq!(action["title"], "Translate selection to ja and open in tab");
+    let id = client.execute(action);
+    while client.documents.is_empty() {
+        client.pump();
+    }
+    let open = client.documents.remove(0);
+    let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+        .unwrap()
+        .to_file_path()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), PARAGRAPH_JA);
+    client.send(Response::new_ok(open.id, json!({"success":true})).into());
+    client.receive(id, TIMEOUT).unwrap();
+    client.change(uri, 2, json!([{"text": "a".repeat(16 * 1024 + 1)}]));
+    let action = document_action(
+        &mut client,
+        uri,
+        json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
+    );
+    let id = client.execute(action);
+    assert_eq!(
+        client.receive(id, TIMEOUT).unwrap_err().message,
+        "Translation input exceeds 16 KiB"
+    );
+    assert!(client.documents.is_empty());
     client.finish(true);
 }

@@ -1,5 +1,7 @@
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 
+pub(super) mod files;
+
 pub(crate) struct Preview {
     pub context: crate::providers::Context,
     pub range: Range,

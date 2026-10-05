@@ -37,7 +37,7 @@ use crate::{
 use super::{
     activity::{Activity, Phase, Problem, Work},
     document::Document,
-    preview::Preview,
+    preview::{Preview, files::PreviewFiles},
     ui::{Ui, UiCapabilities},
 };
 
@@ -45,6 +45,7 @@ type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 type RequestResult<T> = Result<T, ResponseError>;
 
 const COMMAND: &str = "zed-code-translation.preview";
+const DOCUMENT_COMMAND: &str = "zed-code-translation.open-translation";
 const SETTINGS_COMMAND: &str = "zed-code-translation.settings";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
@@ -167,6 +168,7 @@ struct Pending {
 enum PendingReply {
     Hover(Position),
     Command,
+    Document,
 }
 
 struct Translation {
@@ -184,6 +186,7 @@ struct Server<P: TranslationProvider> {
     settings: Settings,
     ui: Ui,
     activity: Activity,
+    preview_files: PreviewFiles,
     problem_target: Option<(TranslationTarget, Option<Context>)>,
     administrations: HashMap<RequestId, Administration>,
     documents: HashMap<Uri, Document>,
@@ -261,7 +264,8 @@ pub(crate) fn capabilities(chatgpt: bool) -> InitializeResult {
                 ..Default::default()
             })),
             execute_command_provider: Some(ExecuteCommandOptions {
-                commands: std::iter::once(COMMAND.to_owned())
+                commands: [COMMAND.to_owned(), DOCUMENT_COMMAND.to_owned()]
+                    .into_iter()
                     .chain(if chatgpt {
                         ADMIN_COMMANDS
                             .iter()
@@ -312,6 +316,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         .filter_map(|work| work.background_deadline),
                 )
                 .chain(server.activity.deadline())
+                .chain(server.preview_files.deadline())
                 .chain(
                     server
                         .selection
@@ -328,6 +333,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         if request.method == Shutdown::METHOD {
                             server.cancel_all(connection)?;
                             server.activity.shutdown();
+                            server.preview_files.clear();
                             connection.handle_shutdown(&request)?;
                             break;
                         }
@@ -340,7 +346,9 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         server.notification(connection, notification)?;
                     }
                     Message::Response(response) => {
-                        if !server.activity.response(&response) {
+                        if !server.activity.response(&response)
+                            && !server.preview_files.response(&server.ui, &response)
+                        {
                             server.ui.response(response);
                         }
                     },
@@ -419,6 +427,7 @@ impl<P: TranslationProvider> Server<P> {
             settings,
             ui,
             activity,
+            preview_files: PreviewFiles::default(),
             problem_target: None,
             administrations: HashMap::new(),
             documents: HashMap::new(),
@@ -539,7 +548,10 @@ impl<P: TranslationProvider> Server<P> {
         self.expire(connection)?;
         let command = request.method == ExecuteCommand::METHOD;
         let id = request.id;
-        if self.pending.contains_key(&id) || self.administrations.contains_key(&id) {
+        if self.pending.contains_key(&id)
+            || self.administrations.contains_key(&id)
+            || self.preview_files.contains(&id)
+        {
             // A duplicate live ID is invalid. Retire it once, allowing later reuse
             // without a completed old ticket answering a new request.
             if command {
@@ -631,35 +643,58 @@ impl<P: TranslationProvider> Server<P> {
         let Some(document) = self.documents.get(&params.text_document.uri) else {
             return Ok(actions);
         };
-        let Ok(original) = document.selection(params.range) else {
-            return Ok(actions);
-        };
-        if original.len() > MAX_SELECTION_BYTES {
-            return Ok(actions);
-        }
-        let target = TranslationTarget {
-            uri: params.text_document.uri,
-            version: document.version,
-            session: document.session,
-            range: params.range,
-            target_language: self.settings.target_language.clone(),
-        };
-        let title = format!("Translate selection to {}", self.settings.target_language);
-        let mut actions = actions;
-        actions.insert(
-            0,
-            CodeAction {
+        let mut translations = Vec::new();
+        let mut add_action = |range: Range, command: &str, title: String| -> RequestResult<()> {
+            let target = TranslationTarget {
+                uri: params.text_document.uri.clone(),
+                version: document.version,
+                session: document.session,
+                range,
+                target_language: self.settings.target_language.clone(),
+            };
+            translations.push(CodeAction {
                 title: title.clone(),
                 kind: Some(CodeActionKind::new(ACTION_KIND)),
                 command: Some(Command {
                     title,
-                    command: COMMAND.into(),
+                    command: command.into(),
                     arguments: Some(vec![to_value(target)?]),
                 }),
                 ..Default::default()
-            },
-        );
-        Ok(actions)
+            });
+            Ok(())
+        };
+        if document
+            .selection(params.range)
+            .is_ok_and(|text| text.len() <= MAX_SELECTION_BYTES)
+        {
+            add_action(
+                params.range,
+                COMMAND,
+                format!("Translate selection to {}", self.settings.target_language),
+            )?;
+        }
+        if document.supports_document_preview() && self.ui.capabilities.show_document {
+            let (range, subject) = if params.range.start == params.range.end {
+                (document.full_range(), "document")
+            } else {
+                (Some(params.range), "selection")
+            };
+            if let Some(range) = range
+                && document.selection(range).is_ok()
+            {
+                add_action(
+                    range,
+                    DOCUMENT_COMMAND,
+                    format!(
+                        "Translate {subject} to {} and open in tab",
+                        self.settings.target_language
+                    ),
+                )?;
+            }
+        }
+        translations.extend(actions);
+        Ok(translations)
     }
 
     fn observe_selection(&mut self, params: &CodeActionParams, state: AuthUiState) {
@@ -893,7 +928,7 @@ impl<P: TranslationProvider> Server<P> {
             );
             return Ok(None);
         }
-        if params.command != COMMAND {
+        if params.command != COMMAND && params.command != DOCUMENT_COMMAND {
             return Err(failure(ErrorCode::InvalidParams, "Unknown preview command"));
         }
         if params.arguments.len() != 1 {
@@ -909,7 +944,28 @@ impl<P: TranslationProvider> Server<P> {
                 "The target language must match initialization_options",
             ));
         }
-        self.queue(id, target, PendingReply::Command)
+        let reply = if params.command == DOCUMENT_COMMAND {
+            if !self.ui.capabilities.show_document {
+                return Err(failure(
+                    ErrorCode::RequestFailed,
+                    "The editor does not support opening translation documents",
+                ));
+            }
+            if !self
+                .documents
+                .get(&target.uri)
+                .is_some_and(Document::supports_document_preview)
+            {
+                return Err(failure(
+                    ErrorCode::InvalidParams,
+                    "Document previews support Markdown and Plain Text",
+                ));
+            }
+            PendingReply::Document
+        } else {
+            PendingReply::Command
+        };
+        self.queue(id, target, reply)
     }
 
     fn queue(
@@ -949,7 +1005,7 @@ impl<P: TranslationProvider> Server<P> {
         if original.len() > MAX_SELECTION_BYTES {
             return Err(failure(
                 ErrorCode::InvalidParams,
-                "Selection exceeds 16 KiB",
+                "Translation input exceeds 16 KiB",
             ));
         }
         if let Some(preview) = document
@@ -960,6 +1016,15 @@ impl<P: TranslationProvider> Server<P> {
             return match client {
                 Some((_, PendingReply::Hover(position))) => {
                     to_value(preview.hover(position)).map(Some)
+                }
+                Some((id, PendingReply::Document)) => {
+                    self.preview_files.open(
+                        &self.ui,
+                        id,
+                        &preview.translation,
+                        document.language_id == "markdown",
+                    )?;
+                    Ok(None)
                 }
                 _ => Ok(Some(Value::Null)),
             };
@@ -1192,14 +1257,23 @@ impl<P: TranslationProvider> Server<P> {
         work: &Translation,
         result: RequestResult<()>,
     ) -> ServerResult<()> {
-        if self.pending.values().any(|pending| {
-            pending.ticket == ticket && matches!(pending.reply, PendingReply::Command)
-        }) {
-            match &result {
-                Ok(()) => self.ui.inform(TRANSLATION_READY)?,
-                Err(error) if !work.failure_notified => self.command_failure(error)?,
-                Err(_) => (),
+        match &result {
+            Ok(())
+                if self.pending.values().any(|pending| {
+                    pending.ticket == ticket && matches!(pending.reply, PendingReply::Command)
+                }) =>
+            {
+                self.ui.inform(TRANSLATION_READY)?
             }
+            Err(error)
+                if !work.failure_notified
+                    && self.pending.values().any(|pending| {
+                        pending.ticket == ticket && !matches!(pending.reply, PendingReply::Hover(_))
+                    }) =>
+            {
+                self.command_failure(error)?
+            }
+            _ => (),
         }
         let ids: Vec<_> = self
             .pending
@@ -1213,6 +1287,21 @@ impl<P: TranslationProvider> Server<P> {
                 Err(error) => Err(error.clone()),
                 Ok(()) => match pending.reply {
                     PendingReply::Command => Ok(Value::Null),
+                    PendingReply::Document => {
+                        let document = &self.documents[&work.target.uri];
+                        match self.preview_files.open(
+                            &self.ui,
+                            id.clone(),
+                            &document.preview.as_ref().unwrap().translation,
+                            document.language_id == "markdown",
+                        ) {
+                            Ok(()) => continue,
+                            Err(error) => {
+                                self.command_failure(&error)?;
+                                Err(error)
+                            }
+                        }
+                    }
                     PendingReply::Hover(position) => to_value(
                         self.documents
                             .get(&work.target.uri)
@@ -1227,6 +1316,7 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn expire(&mut self, connection: &Connection) -> ServerResult<()> {
+        self.preview_files.expire(&self.ui);
         let now = Instant::now();
         let ids: Vec<_> = self
             .administrations
@@ -1266,7 +1356,10 @@ impl<P: TranslationProvider> Server<P> {
         for id in ids {
             let pending = self.pending.remove(&id).unwrap();
             let error = failure(ErrorCode::RequestFailed, "Translation timed out");
-            if matches!(pending.reply, PendingReply::Command) {
+            if matches!(
+                pending.reply,
+                PendingReply::Command | PendingReply::Document
+            ) {
                 let work = self.translations.get_mut(&pending.ticket).unwrap();
                 if !work.failure_notified {
                     work.failure_notified = true;
@@ -1433,6 +1526,8 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn cancel_all(&mut self, connection: &Connection) -> ServerResult<()> {
+        self.preview_files
+            .cancel(&self.ui, None, ErrorCode::RequestCanceled);
         self.clear_problem();
         self.retire_selection();
         let ids: Vec<_> = self
@@ -1454,6 +1549,7 @@ impl<P: TranslationProvider> Server<P> {
         id: &RequestId,
         code: ErrorCode,
     ) -> RequestResult<()> {
+        self.preview_files.cancel(&self.ui, Some(id), code);
         if let Some(work) = self.administrations.remove(id) {
             let _ = work.stop.send(None);
             connection
@@ -2539,7 +2635,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     work_done_progress: true,
                     server_status: true,
                 },
@@ -3337,7 +3433,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -3546,7 +3642,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -3609,7 +3705,7 @@ mod chatgpt_tests {
                 if mode == "admission" || mode == "refresh" {
                     1
                 } else {
-                    2
+                    3
                 }
             );
             assert!(client.receiver.try_recv().is_err());
@@ -3738,7 +3834,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             ),
@@ -3838,7 +3934,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -3932,7 +4028,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -4179,7 +4275,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -4191,7 +4287,7 @@ mod chatgpt_tests {
                 uri.clone(),
                 Document::new(1, 1, "markdown".into(), "First sentence.".into()),
             );
-            assert_eq!(markdown_actions(&mut server, &uri, range).len(), 2);
+            assert_eq!(markdown_actions(&mut server, &uri, range).len(), 3);
             assert!(server.translations.is_empty());
             let due = server.selection.as_ref().unwrap().start.unwrap();
             assert!(due > Instant::now() + Duration::from_millis(400));
@@ -4338,7 +4434,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -4538,7 +4634,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -4588,7 +4684,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             ),
@@ -4757,7 +4853,7 @@ mod chatgpt_tests {
             let ui = Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             );
@@ -4801,7 +4897,7 @@ mod chatgpt_tests {
         };
         assert_eq!(
             response.response_result.unwrap().as_array().unwrap().len(),
-            2
+            3
         );
         assert!(started.elapsed() < Duration::from_millis(200));
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -4974,7 +5070,7 @@ mod chatgpt_tests {
                 Ui::new(
                     connection.sender.clone(),
                     UiCapabilities {
-                        external_documents: true,
+                        show_document: true,
                         ..Default::default()
                     },
                 ),
@@ -5060,7 +5156,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             ),
@@ -5154,7 +5250,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             ),
@@ -5371,7 +5467,7 @@ mod chatgpt_tests {
             Ui::new(
                 connection.sender.clone(),
                 UiCapabilities {
-                    external_documents: true,
+                    show_document: true,
                     ..Default::default()
                 },
             ),

@@ -20,7 +20,7 @@ pub(crate) struct Ui {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct UiCapabilities {
-    pub external_documents: bool,
+    pub show_document: bool,
     pub work_done_progress: bool,
     pub server_status: bool,
 }
@@ -28,7 +28,7 @@ pub(crate) struct UiCapabilities {
 impl From<&ClientCapabilities> for UiCapabilities {
     fn from(client: &ClientCapabilities) -> Self {
         Self {
-            external_documents: client
+            show_document: client
                 .window
                 .as_ref()
                 .and_then(|window| window.show_document.as_ref())
@@ -92,7 +92,7 @@ impl Ui {
     }
 
     pub async fn open(&self, uri: &str) -> Result<(), Error> {
-        if !self.capabilities.external_documents {
+        if !self.capabilities.show_document {
             return Err(Error::failed(
                 "The editor must support window/showDocument with external URLs",
             ));

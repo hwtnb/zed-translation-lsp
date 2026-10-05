@@ -74,7 +74,7 @@ If `binary.path` is omitted, the extension looks for `zed-code-translation-lsp` 
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
 
-The model must support Structured Outputs with string-pattern and array-length constraints. Translation requests specify the response format through the API; unsupported models or schemas return an error without switching models or relaxing Markdown protection.
+Translation requests use ordinary text output. Choose a model available to your ChatGPT account; the extension does not switch to another model when a request fails.
 
 ## Connecting to ChatGPT
 
@@ -102,15 +102,23 @@ The spinner disappears when work ends, including cancellation and timeout. Hover
 
 With ChatGPT connected, plan use enabled, and `markdown_auto_translate` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification. Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action. Selecting prose just to copy it can also send it for translation.
 
-To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The Hover translation action is hidden when there is no selection.
+
+In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document, up to the same 16 KiB input limit. The client must support `window/showDocument`.
+
+Markdown translations open as temporary `.md` files. Run `markdown: open preview` (`⌘⇧V` on macOS) to see the rendered document and return to its source tab when needed. Plain Text translations open as `.txt` files. The extension leaves your normal Markdown opening preference unchanged. Existing translation tabs are snapshots. Edit the original and run the action again to obtain a new translation.
+
+Use **Save As** to keep a translation before restarting the language server or closing Zed. The server removes its temporary files on normal shutdown; an abnormal exit can leave them in the system temporary directory. Saved copies are yours to keep.
+
+Relative links and images resolve from the temporary file location. To use the original relative paths, save the translation beside the source.
 
 Check error notifications for failed manual translation or management operations. If token refresh returns an unusable grant such as `invalid_grant`, choose the saved registration under `ChatGPT account…` → `Continue with ChatGPT / Choose account` to reconnect.
 
 Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
 
-Only the extracted comment body or selected text is submitted. The extension does not submit the entire document or conversation history, and never writes the translation back into the source document.
+The extension submits the extracted comment body, the selected text, or the whole document when you explicitly choose document translation. It does not submit conversation history or write translations back into the source document.
 
-The server keeps the last translated range for each document in memory. Editing or closing the document, changing accounts, or reconnecting discards it. Source text and translations are not stored on disk. Failures, interrupted streams, cancellation, and expired requests do not show partial translations.
+The server keeps the last translated range for each document in memory. Editing or closing the document, changing accounts, or reconnecting discards it. Hover does not store text on disk. Opening a translation tab writes the completed translation to a temporary file as described above. Failures, interrupted streams, cancellation, and expired requests do not show partial translations.
 
 ## Mock mode
 

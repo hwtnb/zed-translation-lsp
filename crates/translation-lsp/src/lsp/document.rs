@@ -69,6 +69,18 @@ impl Document {
         self.text.as_ref().map(IndexedText::as_str)
     }
 
+    pub fn supports_document_preview(&self) -> bool {
+        matches!(self.language_id.as_str(), "markdown" | "plaintext")
+    }
+
+    pub fn full_range(&self) -> Option<Range> {
+        let text = self.text.as_ref()?;
+        Some(Range::new(
+            Position::new(0, 0),
+            text.position(text.as_str().len()).ok()?,
+        ))
+    }
+
     pub fn offset(&self, position: Position) -> Result<usize, &'static str> {
         self.text
             .as_ref()

@@ -10,7 +10,7 @@ relative to the repository root.
 - `crates/translation-lsp`: native language server. `src/config.rs` owns settings;
   `src/lsp/` owns requests, scheduling, previews, and activity;
   `src/providers/` owns translation providers and authentication;
-  `src/text/` owns comment extraction and Markdown protection.
+  `src/text/` owns comment extraction and Markdown input eligibility.
 - `crates/translation-lsp/tests/stdio.rs`: integration tests for the LSP protocol.
 - `README.md`: canonical English usage and development documentation.
   `README.ja.md` provides the Japanese version. Consult the relevant section for
@@ -47,7 +47,9 @@ relative to the repository root.
 - Keep blocking network work off the LSP request loop. Preserve bounded
   concurrency and credential-store locking and revision checks.
 - Keep stdout exclusively for LSP messages. Do not log credentials or document
-  contents, and do not persist source text or translations.
+  contents. Hover translations stay in memory. Explicit document previews may
+  write completed translations to temporary files for standard editor viewing;
+  remove those files on server exit and preserve user-created Save As copies.
 - HTTP/OIDC tests use local fixtures and synthetic credentials. Generate test
   signing keys in memory rather than committing real or fixed private keys.
 

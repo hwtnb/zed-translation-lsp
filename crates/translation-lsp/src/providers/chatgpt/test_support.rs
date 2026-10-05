@@ -210,7 +210,7 @@ impl Fixture {
         let ui = Ui::new(
             connection.sender.clone(),
             UiCapabilities {
-                external_documents: true,
+                show_document: true,
                 ..Default::default()
             },
         );
