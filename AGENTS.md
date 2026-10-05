@@ -18,9 +18,10 @@ relative to the repository root.
 
 ## Engineering conventions
 
-- Use Rust Edition 2024 and workspace resolver 3. Preserve the minimum supported
-  Rust version declared in the manifests; verify compatibility when changing
-  dependencies or using newer language features.
+- Use Rust Edition 2024 and workspace resolver 3. Prioritize dependency updates
+  over preserving an older minimum Rust version. Raise the affected manifest
+  requirements and update the READMEs when dependencies require newer Rust;
+  verify the resulting build compatibility.
 - Use named module files with matching subdirectories, such as `providers.rs`
   and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.
 - Keep providers replaceable through `TranslationProvider` and generic static

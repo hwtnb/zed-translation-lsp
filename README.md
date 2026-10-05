@@ -8,7 +8,7 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
 
 ## Installation
 
-You need Rust 1.96 or later and Zed. Build the native language server and the WASM extension from the checkout root:
+You need Rust 1.97 or later and Zed. Build the native language server and the WASM extension from the checkout root:
 
 ```sh
 cargo build -p zed-code-translation-lsp --release --locked
@@ -153,7 +153,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 
 ## Development
 
-Both crates use Rust Edition 2024 and a minimum supported Rust version of 1.96. The virtual workspace uses resolver 3. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
+Both crates use Rust Edition 2024. The native language server requires Rust 1.97 or later; the WASM extension requires Rust 1.96 or later. Dependency updates take priority over retaining an older minimum Rust version; update the affected requirement when needed. The virtual workspace uses resolver 3. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
 
 ```sh
 cargo fmt --all --check
@@ -163,7 +163,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Dependencies use normal Cargo compatibility ranges written as `major.minor` (including `1.0` for `serde` and `serde_json`). Run `cargo update` deliberately, review the lockfile changes, and repeat the checks and both release builds above. Keep the Oxc parser, allocator, and span crates on the same release line. When updating `zed_extension_api`, check the target Zed host's API support as well as the WASM build. HTTP/OIDC tests use local fixtures and synthetic credentials. Each fixture generates an Ed25519 signing key from OS randomness, keeps it in memory, and uses the same key for JWT signatures and JWKS.
 
-The Rust lexer (`ra-ap-rustc_lexer` 0.176) requires matching Unicode tables. The lockfile keeps `unicode-ident` at 1.0.24 (Unicode 17) to match `unicode-properties` 0.1.4; versions 1.0.25 and 1.0.26 use Unicode 18 and fail the lexer's compile-time check. After an update that changes this package, restore the compatible lock entry with `cargo update -p unicode-ident --precise 1.0.24`, or verify that the lexer and both table crates support the same Unicode version.
+The Rust lexer (`ra-ap-rustc_lexer` 0.176) requires matching Unicode tables. The native server manifest pins `unicode-ident` to `=1.0.24` (Unicode 17) to match `unicode-properties` 0.1.4. Versions 1.0.25 and 1.0.26 use Unicode 18 and fail the lexer's compile-time check. Keep this compatibility constraint until the lexer and both table crates support the same Unicode version; then remove the pin and update them together.
 
 The OIDC SDK still depends on `ed25519-dalek` 2.2 and `rand_core` 0.6; the fixture generator uses `ed25519-dalek` 3.0 with `getrandom` 0.4. These versions coexist without changing the SDK. Cargo currently resolves the SDK's older cryptography stack to `crypto-common` 0.1.6 and `generic-array` 0.14.9. The [0.1.7 release](https://github.com/RustCrypto/traits/pull/2088) only pins `generic-array` to 0.14.7 to suppress deprecation warnings. This project does not force that downgrade.
 

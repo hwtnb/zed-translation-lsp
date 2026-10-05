@@ -8,7 +8,7 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 
 ## 導入
 
-Rust 1.96以降のCargoとZedが必要です。checkoutのルートでネイティブLSPと拡張のWASMをビルドします。
+Rust 1.97以降のCargoとZedが必要です。checkoutのルートでネイティブLSPと拡張のWASMをビルドします。
 
 ```sh
 cargo build -p zed-code-translation-lsp --release --locked
@@ -147,7 +147,7 @@ Pythonのコメントとdocstringは [samples/comment.py](samples/comment.py) �
 
 ## 開発
 
-両crateはRust Edition 2024、最低対応Rustは1.96です。virtual workspaceにはresolver 3を使います。`Cargo.lock` をバージョン管理し、検証とreleaseビルドは `--locked` で実行してください。
+両crateはRust Edition 2024です。native言語サーバーにはRust 1.97以降、WASM拡張にはRust 1.96以降が必要です。古い最低対応Rustの維持より依存更新を優先し、必要に応じて対象crateの要件を引き上げます。virtual workspaceにはresolver 3を使います。`Cargo.lock` をバージョン管理し、検証とreleaseビルドは `--locked` で実行してください。
 
 ```sh
 cargo fmt --all --check
@@ -157,7 +157,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 依存は通常のCargo互換範囲を `major.minor` で指定します（`serde` と `serde_json` も `1.0`）。`cargo update` は意図した更新時に実行し、lockfileの変更を確認して、上記の検証とnative/WASMのreleaseビルドを繰り返してください。Oxcのparser・allocator・spanは同じリリース系列に揃えます。`zed_extension_api` を更新する場合は、WASMビルドに加えて対象ZedのAPI対応を確認してください。HTTP/OIDCテストはローカルのfixtureと合成の認証情報を使います。FixtureごとにOS乱数からEd25519署名鍵を生成し、メモリで保持して、JWT署名とJWKSに同じ鍵を使います。
 
-Rust lexer（`ra-ap-rustc_lexer` 0.176）はUnicodeテーブルの版が一致している必要があります。lockfileでは `unicode-properties` 0.1.4に合わせ、Unicode 17の `unicode-ident` 1.0.24を使います。1.0.25・1.0.26はUnicode 18で、lexerのコンパイル時検査に失敗します。更新でこのpackageが変わった場合は `cargo update -p unicode-ident --precise 1.0.24` で互換lockへ戻すか、lexerと両テーブルcrateが同じUnicode版に対応していることを確認してください。
+Rust lexer（`ra-ap-rustc_lexer` 0.176）はUnicodeテーブルの版が一致している必要があります。nativeサーバーのmanifestで `unicode-ident` を `=1.0.24`（Unicode 17）に固定し、`unicode-properties` 0.1.4と揃えています。1.0.25・1.0.26はUnicode 18で、lexerのコンパイル時検査に失敗します。lexerと両テーブルcrateが同じUnicode版に対応した時点で、この互換性のための固定を外し、まとめて更新してください。
 
 OIDC SDKは引き続き `ed25519-dalek` 2.2と `rand_core` 0.6に依存します。Fixtureの鍵生成には `ed25519-dalek` 3.0と `getrandom` 0.4を使い、SDKを変更せずに両系列を併用します。SDKが使う旧暗号ライブラリ系列は、現在Cargoが `crypto-common` 0.1.6と `generic-array` 0.14.9へ解決します。[0.1.7の変更](https://github.com/RustCrypto/traits/pull/2088)は、非推奨警告を抑えるために `generic-array` を0.14.7へ固定するものだけです。本プロジェクトではそのダウングレードを強制しません。
 
