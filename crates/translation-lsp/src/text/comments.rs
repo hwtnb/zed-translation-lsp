@@ -714,6 +714,20 @@ mod tests {
             ("javascript", "file:///a.cjs", false, true, false),
             ("typescript", "file:///a.d.ts", true, false, true),
             ("typescript", "file:///a.mts", true, false, false),
+            (
+                "typescript",
+                "file:///C:/Users/test%20user/src/example.d.ts",
+                true,
+                false,
+                true,
+            ),
+            (
+                "javascript",
+                "file://server/share/example.jsx",
+                false,
+                true,
+                false,
+            ),
             ("typescriptreact", "untitled:a", true, true, false),
         ] {
             let source = source_type(id, &path.parse().unwrap()).unwrap();

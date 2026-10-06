@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Windows assembler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:ProgramFiles\NASM"
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target wasm32-wasip2
+      - name: Select Rust
+        run: rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build native server
+        run: cargo build -p translation-lsp --release --locked
+      - name: Build WASM extension
+        run: cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked

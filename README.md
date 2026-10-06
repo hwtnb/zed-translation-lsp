@@ -8,7 +8,17 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
 
 ## Installation
 
-You need Rust 1.97 or later and Zed. Build the native language server and the WASM extension from the checkout root:
+Development and use target **Windows, macOS, and Linux**. Install Zed and [Rust through rustup](https://www.rust-lang.org/tools/install) (Rust 1.97 or later). The native dependencies also need a C/C++ toolchain:
+
+| OS | Build prerequisites | Native executable |
+| --- | --- | --- |
+| Windows | MSVC Rust toolchain, Visual Studio Build Tools with Desktop development with C++ and a Windows SDK; NASM on x86-64. Use a Visual Studio developer PowerShell or command prompt. | `target/release/translation-lsp.exe` |
+| macOS | Xcode Command Line Tools (`xcode-select --install`). | `target/release/translation-lsp` |
+| Linux | GCC or Clang with C/C++ development tools; on Debian/Ubuntu, install `build-essential` and `ca-certificates`. | `target/release/translation-lsp` |
+
+Tree-sitter and the TLS provider compile native code. See the TLS provider's [Windows](https://aws.github.io/aws-lc-rs/requirements/windows.html) and [Linux](https://aws.github.io/aws-lc-rs/requirements/linux.html) build requirements for other toolchain configurations.
+
+Run the following commands from the checkout root. They work in PowerShell, Command Prompt, Bash, and Zsh:
 
 ```sh
 cargo build -p translation-lsp --release --locked
@@ -35,7 +45,7 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
   "lsp": {
     "translation-lsp": {
       "binary": {
-        "path": "/absolute/path/to/checkout/target/release/translation-lsp",
+        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
         "arguments": []
       },
       "initialization_options": {
@@ -56,6 +66,16 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
   }
 }
 ```
+
+Use a path for the OS where the language server runs, including `.exe` on Windows. For example:
+
+| OS | Example `binary.path` value |
+| --- | --- |
+| Windows | `C:/Users/you/src/translation-lsp/target/release/translation-lsp.exe` |
+| macOS | `/Users/you/src/translation-lsp/target/release/translation-lsp` |
+| Linux | `/home/you/src/translation-lsp/target/release/translation-lsp` |
+
+Windows paths can use forward slashes in JSON. If you use backslashes, escape each one as `\\`. Do not include extra shell quotes inside the path value, even when the path contains spaces.
 
 UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language. `provider.model` is required for ChatGPT. `reasoning_effort` is optional and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported models or effort values return an error.
 
@@ -90,7 +110,7 @@ Translation requests use ordinary text output. Choose a model available to your 
 
 ## Connecting to ChatGPT
 
-Open Code Actions in a supported document (`⌘.` on macOS), choose `ChatGPT account…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, opening the account menu, and Hover do not start an OAuth sign-in flow.
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `ChatGPT account…`, then run `Continue with ChatGPT / Choose account`. Add a registration or choose a saved one, and complete sign-in and plan permission in the browser. Loading settings, opening the account menu, and Hover do not start an OAuth sign-in flow.
 
 When the account is ready, the connection item becomes `Change ChatGPT account` and the plan permission item is hidden. Sign-out appears only while signed in. While a management operation is running, duplicate management candidates are hidden. If the connection state cannot be read, use `Check ChatGPT connection…` and follow its message.
 
@@ -100,7 +120,15 @@ The account menu includes:
 - `ChatGPT Usage`: open [ChatGPT's usage settings](https://chatgpt.com/settings/usage), where your limits and credits apply.
 - `Sign out of ChatGPT`: attempt to end the current registration's session and clear its local credentials. Other registrations remain. If the remote session cannot be confirmed as ended, follow the message to disconnect the app in ChatGPT settings.
 
-Credentials are stored locally for this extension, at `~/Library/Application Support/translation-lsp/` on macOS. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Credentials are stored locally in this extension's OS-specific configuration directory:
+
+| OS | Credential directory |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\translation-lsp\` |
+| macOS | `~/Library/Application Support/translation-lsp/` |
+| Linux | `$XDG_CONFIG_HOME/translation-lsp/`, or `~/.config/translation-lsp/` when unset |
+
+The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
 ## Reading translations
 
@@ -118,7 +146,7 @@ To translate immediately or recover from a background failure, use the `Translat
 
 In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document, up to the same 16 KiB input limit. The client must support `window/showDocument`.
 
-Markdown translations open as temporary `.md` files. Run `markdown: open preview` (`⌘⇧V` on macOS) to see the rendered document and return to its source tab when needed. Plain Text translations open as `.txt` files. The extension leaves your normal Markdown opening preference unchanged. Existing translation tabs are snapshots. Edit the original and run the action again to obtain a new translation.
+Markdown translations open as temporary `.md` files. Run `markdown: open preview` from the Command Palette to see the rendered document and return to its source tab when needed. Plain Text translations open as `.txt` files. The extension leaves your normal Markdown opening preference unchanged. Existing translation tabs are snapshots. Edit the original and run the action again to obtain a new translation.
 
 Use **Save As** to keep a translation before restarting the language server or closing Zed. The server removes its temporary files on normal shutdown; an abnormal exit can leave them in the system temporary directory. Saved copies are yours to keep.
 
@@ -162,6 +190,8 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+The [CI workflow](.github/workflows/ci.yml) runs workspace tests, formatting, Clippy, the native release build, and the WASM release build on Windows, macOS, and Linux. Local success on one OS does not establish success on the others. Before releasing, check the CI results for all three OSes and test the Zed flow on each: install the extension, locate the native server, connect, translate a comment, and open and save a document translation. HTTP/OIDC fixtures use synthetic credentials and do not require a ChatGPT account.
 
 Dependencies use normal Cargo compatibility ranges written as `major.minor` (including `1.0` for `serde` and `serde_json`). Run `cargo update` deliberately, review the lockfile changes, and repeat the checks and both release builds above. Keep the Oxc parser, allocator, and span crates on the same release line. When updating `zed_extension_api`, check the target Zed host's API support as well as the WASM build. HTTP/OIDC tests use local fixtures and synthetic credentials. Each fixture generates an Ed25519 signing key from OS randomness, keeps it in memory, and uses the same key for JWT signatures and JWKS.
 

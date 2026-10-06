@@ -8,7 +8,17 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 
 ## 導入
 
-Rust 1.97以降のCargoとZedが必要です。checkoutのルートでネイティブLSPと拡張のWASMをビルドします。
+開発・利用の対象は **Windows・macOS・Linux** です。Zedと、[rustup経由のRust](https://www.rust-lang.org/tools/install)（1.97以降）を導入してください。ネイティブ依存のビルドにはC/C++の開発環境も必要です。
+
+| OS | ビルドの前提 | ネイティブ実行ファイル |
+| --- | --- | --- |
+| Windows | MSVC版Rust、Visual Studio Build Toolsの「C++によるデスクトップ開発」とWindows SDK。x86-64ではNASMも導入し、Visual Studioの開発者用PowerShellまたはコマンドプロンプトを使います。 | `target/release/translation-lsp.exe` |
+| macOS | Xcode Command Line Tools（`xcode-select --install`）。 | `target/release/translation-lsp` |
+| Linux | GCCまたはClangとC/C++開発ツール。Debian/Ubuntuでは `build-essential` と `ca-certificates` を導入します。 | `target/release/translation-lsp` |
+
+Tree-sitterとTLS Providerはネイティブコードをビルドします。別のツールチェーン構成はTLS Providerの[Windows向け要件](https://aws.github.io/aws-lc-rs/requirements/windows.html)と[Linux向け要件](https://aws.github.io/aws-lc-rs/requirements/linux.html)を参照してください。
+
+checkoutのルートで次のコマンドを実行します。PowerShell・コマンドプロンプト・Bash・Zshで共通です。
 
 ```sh
 cargo build -p translation-lsp --release --locked
@@ -35,7 +45,7 @@ PythonもZedに組み込まれています。`languages.Python.language_servers`
   "lsp": {
     "translation-lsp": {
       "binary": {
-        "path": "/absolute/path/to/checkout/target/release/translation-lsp",
+        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
         "arguments": []
       },
       "initialization_options": {
@@ -56,6 +66,16 @@ PythonもZedに組み込まれています。`languages.Python.language_servers`
   }
 }
 ```
+
+`binary.path` は言語サーバーを動かすOSの絶対パスにします。Windowsでは `.exe` まで指定してください。
+
+| OS | `binary.path` の例 |
+| --- | --- |
+| Windows | `C:/Users/you/src/translation-lsp/target/release/translation-lsp.exe` |
+| macOS | `/Users/you/src/translation-lsp/target/release/translation-lsp` |
+| Linux | `/home/you/src/translation-lsp/target/release/translation-lsp` |
+
+WindowsのパスもJSON内では `/` で区切れます。バックスラッシュを使う場合は1文字ごとに `\\` と記述してください。空白を含むパスでも、値の中にシェル用の引用符を追加しません。
 
 UIの表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。`provider.model` はChatGPTを使う場合に必須です。`reasoning_effort` は省略でき、指定する場合は `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。モデルや推論強度がアカウントで使えない場合はエラーを返します。設定を変更したら言語サーバーを再起動してください。設定変更は、実行中のサーバーには反映されません。[Zedの言語サーバー設定](https://zed.dev/docs/configuring-languages#configuring-language-servers)に従います。
 
@@ -88,13 +108,21 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 ## ChatGPTへ接続する
 
-対応する文書でCode Actions（macOSでは `⌘.`）を開き、`ChatGPT account…` から `Continue with ChatGPT / Choose account` を実行します。アカウントの選択肢から新規追加または保存済みの登録を選び、ブラウザで認証と利用許可を完了してください。設定の読込、アカウント管理メニューを開く操作、Hoverだけでは認証を開始しません。利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
+対応する文書でZedのコマンドパレットから `editor: toggle code actions` を実行し、`ChatGPT account…` から `Continue with ChatGPT / Choose account` を実行します。アカウントの選択肢から新規追加または保存済みの登録を選び、ブラウザで認証と利用許可を完了してください。設定の読込、アカウント管理メニューを開く操作、Hoverだけでは認証を開始しません。利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
 
 - `Enable ChatGPT plan use` は、サインイン済みでプラン利用が許可されていない場合に使います。
 - `ChatGPT Usage` は、[ChatGPTの使用量設定](https://chatgpt.com/settings/usage)を開きます。利用枠やcreditsの許可はこの設定に従います。
 - `Sign out of ChatGPT` は、現在の登録のセッション終了を試み、その登録の認証情報を削除します。別の登録は残ります。通信のため終了を確認できなかった場合は案内に従ってChatGPT設定からアプリを切断できます。
 
-認証情報は拡張専用のローカル保存先に保持します。macOSでは `~/Library/Application Support/translation-lsp/` です。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
+認証情報は、OSごとに次のローカル設定ディレクトリへ保存します。
+
+| OS | 認証情報の保存先 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\translation-lsp\` |
+| macOS | `~/Library/Application Support/translation-lsp/` |
+| Linux | `$XDG_CONFIG_HOME/translation-lsp/`。未設定の場合は `~/.config/translation-lsp/` |
+
+保存先は `dirs::config_local_dir()` を通じてOSから取得します。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。APIキーの設定や、別の課金経路への自動切替はありません。接続方式は[公式のSign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)に基づきます。
 
 ## 翻訳を表示する
 
@@ -108,11 +136,11 @@ UIの表示は `target_language` にかかわらず英語です。`target_langua
 
 ChatGPTが利用可能で `markdown_auto_translate` が `true` の場合、Markdownの文章を選択して安定させると背景で翻訳します。既定ではZedから選択が届いた後に450ms待ち、Zed側の観測待ちも別に加わります。その範囲でHoverを開いて訳文を読みます。背景翻訳の完了通知は表示しません。コードやリンク先だけ・空白だけの選択では開始しません。コードの囲みなどを途中で切り、選択部分だけでは構文の解釈が変わる範囲も自動対象外です。囲みを含めて選び直すか、手動翻訳を使ってください。選択した文章はコピー目的の場合も送信され得ます。
 
-すぐに実行したい場合や背景翻訳が失敗した場合は、Code Actions（macOSでは `⌘.`）の `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。選択が無いとHover用の翻訳項目は表示されません。
+すぐに実行したい場合や背景翻訳が失敗した場合は、Code Actionsの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。選択が無いとHover用の翻訳項目は表示されません。
 
 MarkdownまたはPlain Textでは、`Translate selection to … and open in tab` で訳文を別タブに開けます。選択が無い場合は `Translate document to … and open in tab` となり、文書全体を翻訳します。入力上限は選択翻訳と同じ16 KiBです。クライアントには `window/showDocument` 対応が必要です。
 
-Markdownの訳文は一時的な `.md` ファイルとして開きます。`markdown: open preview`（macOSでは `⌘⇧V`）で整形された表示にし、必要に応じてソースタブへ戻れます。Plain Textの訳文は `.txt` で開きます。通常のMarkdownの開き方は変更しません。開いた訳文はその時点の内容で、原文の編集には追従しません。必要なときに再び翻訳操作を実行してください。
+Markdownの訳文は一時的な `.md` ファイルとして開きます。コマンドパレットの `markdown: open preview` で整形された表示にし、必要に応じてソースタブへ戻れます。Plain Textの訳文は `.txt` で開きます。通常のMarkdownの開き方は変更しません。開いた訳文はその時点の内容で、原文の編集には追従しません。必要なときに再び翻訳操作を実行してください。
 
 残したい訳文は、言語サーバーの再起動やZedの終了前に「別名で保存」してください。一時ファイルはサーバーの正常終了時に削除します。異常終了した場合はシステムの一時フォルダーに残ることがあります。別名保存したファイルは削除しません。
 
@@ -156,6 +184,8 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+[CIワークフロー](.github/workflows/ci.yml)はWindows・macOS・Linuxそれぞれでworkspaceテスト、fmt、Clippy、nativeとWASMのreleaseビルドを実行します。1 OSでの成功だけを他OSの成功とは扱いません。リリース前には3 OSのCI結果に加え、各OSのZedで拡張導入・native起動・認証・コメント翻訳・文書翻訳の表示と保存を確認してください。HTTP/OIDCのfixtureは合成の認証情報を使うため、ChatGPTアカウントは不要です。
 
 依存は通常のCargo互換範囲を `major.minor` で指定します（`serde` と `serde_json` も `1.0`）。`cargo update` は意図した更新時に実行し、lockfileの変更を確認して、上記の検証とnative/WASMのreleaseビルドを繰り返してください。Oxcのparser・allocator・spanは同じリリース系列に揃えます。`zed_extension_api` を更新する場合は、WASMビルドに加えて対象ZedのAPI対応を確認してください。HTTP/OIDCテストはローカルのfixtureと合成の認証情報を使います。FixtureごとにOS乱数からEd25519署名鍵を生成し、メモリで保持して、JWT署名とJWKSに同じ鍵を使います。
 

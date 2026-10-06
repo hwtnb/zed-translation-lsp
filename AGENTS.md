@@ -26,6 +26,9 @@ relative to the repository root.
   and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.
 - Keep providers replaceable through `TranslationProvider` and generic static
   dispatch. Put provider-specific behavior under `src/providers/`.
+- Target Windows, macOS, and Linux. Document OS-specific prerequisites and paths;
+  use OS-neutral editor action names in shared instructions. Keep all three
+  platforms in CI, and distinguish build checks from actual Zed verification.
 - Follow `.editorconfig` and rustfmt. Keep UI labels in English independently of
   the translation target language. Update both READMEs for user-facing changes.
 - Use `major.minor` Cargo compatibility ranges and track `Cargo.lock`. Any exact
