@@ -60,7 +60,6 @@ const ADMIN_COMMANDS: [(&str, &str); 4] = [
 ];
 const MAX_JOBS: usize = 4;
 const MAX_PENDING: usize = 16;
-const MAX_SELECTION_BYTES: usize = 16 * 1024;
 
 #[derive(Default)]
 pub(crate) struct MockOptions {
@@ -254,8 +253,12 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
             model,
             reasoning_effort,
         } => {
-            let provider =
-                ChatGptProvider::new(model, reasoning_effort, settings.source_language.clone())?;
+            let provider = ChatGptProvider::new(
+                model,
+                reasoning_effort,
+                settings.source_language.clone(),
+                settings.translation_limits.output_kib,
+            )?;
             serve_initialized(connection, MockOptions::default(), settings, ui, provider)
         }
     }
@@ -678,10 +681,9 @@ impl<P: TranslationProvider> Server<P> {
             });
             Ok(())
         };
-        if document
-            .selection(params.range)
-            .is_ok_and(|text| text.len() <= MAX_SELECTION_BYTES)
-        {
+        if document.selection(params.range).is_ok_and(|text| {
+            text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
+        }) {
             add_action(
                 params.range,
                 COMMAND,
@@ -724,7 +726,7 @@ impl<P: TranslationProvider> Server<P> {
                     return None;
                 }
                 let source = document.selection(params.range).ok()?;
-                if source.len() > MAX_SELECTION_BYTES {
+                if source.len() > self.settings.translation_limits.input_kib.hover.bytes() {
                     return None;
                 }
                 if !document
@@ -1016,12 +1018,19 @@ impl<P: TranslationProvider> Server<P> {
         let original = document
             .selection(target.range)
             .map_err(|message| failure(ErrorCode::InvalidParams, message))?;
-        if original.len() > MAX_SELECTION_BYTES {
-            return Err(failure(
-                ErrorCode::InvalidParams,
-                "Translation input exceeds 16 KiB",
-            ));
-        }
+        let (input_limit, setting) = match request {
+            TranslationRequest::Document => (
+                self.settings.translation_limits.input_kib.document,
+                "translation_limits.input_kib.document",
+            ),
+            _ => (
+                self.settings.translation_limits.input_kib.hover,
+                "translation_limits.input_kib.hover",
+            ),
+        };
+        input_limit
+            .check(original.len(), setting)
+            .map_err(|message| failure(ErrorCode::InvalidParams, &message))?;
         if let Some(preview) = document
             .preview
             .as_ref()
@@ -1258,6 +1267,11 @@ impl<P: TranslationProvider> Server<P> {
                     "ChatGPT account changed during translation",
                 ));
             }
+            self.settings
+                .translation_limits
+                .output_kib
+                .check(translation.text.len(), "translation_limits.output_kib")
+                .map_err(|message| failure(ErrorCode::RequestFailed, &message))?;
             document.preview = Some(Preview {
                 range: target.range,
                 translation: translation.text,
@@ -2186,6 +2200,159 @@ mod chatgpt_tests {
     use super::*;
     use crate::providers::chatgpt::test_support::{Fixture, StreamTailGate};
     use serde_json::json;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hover_limits_control_actions_background_and_manual_admission() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        for (kib, bytes) in [(1, 1024), (1, 1025), (64, 32 * 1024)] {
+            let provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let settings = Settings::from_options(Some(
+                json!({"translation_limits":{"input_kib":{"hover":kib}}}),
+            ))
+            .unwrap();
+            let (connection, _client) = Connection::memory();
+            let (finished, _completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                settings,
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uri: Uri = "file:///sized.md".parse().unwrap();
+            let source = format!("{}é", "a".repeat(bytes - 2));
+            let range = Range::new(Position::new(0, 0), Position::new(0, (bytes - 1) as u32));
+            server
+                .documents
+                .insert(uri.clone(), Document::new(1, 1, "markdown".into(), source));
+            let actions = markdown_actions(&mut server, &uri, range);
+            let accepted = bytes <= kib * 1024;
+            assert_eq!(
+                actions.iter().any(|action| action
+                    .command
+                    .as_ref()
+                    .is_some_and(|command| command.command == COMMAND)),
+                accepted
+            );
+            assert_eq!(server.selection.is_some(), accepted);
+            let target = TranslationTarget {
+                uri,
+                version: 1,
+                session: 1,
+                range,
+                target_language: "ja".into(),
+            };
+            let result = server.queue_translation(
+                target,
+                TranslationRequest::Reply(1.into(), PendingReply::Command),
+            );
+            assert_eq!(result.is_ok(), accepted);
+            if !accepted {
+                let error = result.unwrap_err();
+                assert!(error.message.contains("1025 bytes"));
+                assert!(error.message.contains("translation_limits.input_kib.hover"));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn document_pipeline_opens_large_translation_and_does_not_publish_oversized_output() {
+        for (limit, output_bytes, success) in
+            [(4096, 96 * 1024, true), (1, 1024, true), (1, 1025, false)]
+        {
+            let fixture = Fixture::new().await;
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let translated = format!("{}é", "x".repeat(output_bytes - 2));
+            fixture.state.lock().unwrap().translation = Some(translated.clone());
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let settings =
+                Settings::from_options(Some(json!({"translation_limits":{"output_kib":limit}})))
+                    .unwrap();
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                settings,
+                Ui::new(
+                    connection.sender.clone(),
+                    UiCapabilities {
+                        show_document: true,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap();
+            let uri: Uri = "file:///large-document.md".parse().unwrap();
+            let source = "Read this sentence. ".repeat(2000);
+            let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, "markdown".into(), source.clone()),
+            );
+            let target = TranslationTarget {
+                uri: uri.clone(),
+                version: 1,
+                session: 1,
+                range,
+                target_language: "ja".into(),
+            };
+            server
+                .queue_translation(target, TranslationRequest::Document)
+                .unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert_eq!(server.documents[&uri].text(), Some(source.as_str()));
+            assert_eq!(server.documents[&uri].preview.is_some(), success);
+            let messages: Vec<_> = client.receiver.try_iter().collect();
+            if success {
+                let open = messages
+                    .iter()
+                    .find_map(|message| match message {
+                        Message::Request(request) if request.method == "window/showDocument" => {
+                            Some(request)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+                    .unwrap()
+                    .to_file_path()
+                    .unwrap();
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), translated);
+                drop(server);
+                assert!(!path.exists());
+            } else {
+                assert!(!messages.iter().any(|message| match message {
+                    Message::Request(request) => request.method == "window/showDocument",
+                    _ => false,
+                }));
+                assert!(messages.iter().any(|message| {
+                    match message {
+                        Message::Notification(notification) => notification
+                            .params
+                            .to_string()
+                            .contains("translation_limits.output_kib"),
+                        _ => false,
+                    }
+                }));
+            }
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn worker_deadline_and_cancellation_stop_overload_backoff() {
@@ -4914,7 +5081,7 @@ mod chatgpt_tests {
             .unwrap();
             let uri: Uri = "file:///excluded.md".parse().unwrap();
             let text = if mode == "large" {
-                "a".repeat(MAX_SELECTION_BYTES + 1)
+                "a".repeat(16 * 1024 + 1)
             } else {
                 text.into()
             };

@@ -56,6 +56,13 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
         "document_timeout_ms": 180000,
         "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
+        "translation_limits": {
+          "input_kib": {
+            "hover": 16,
+            "document": 1024
+          },
+          "output_kib": 4096
+        },
         "provider": {
           "name": "chatgpt",
           "model": "gpt-6.1-sol",
@@ -88,6 +95,18 @@ Translation timing options are optional:
 | `document_timeout_ms` | `180000` | Integer `1000`–`600000`, inclusive | Deadline for full-document or selection translations opened in a tab, including queue waiting time. |
 | `markdown_auto_translate` | `true` | Boolean | Start Markdown prose translation after a stable selection. Set `false` to keep manual selection translation and comment Hover. |
 | `selection_debounce_ms` | `450` | Integer `100`–`2000`, inclusive | Native server's wait after observing a new selection. Zed's own observation delay is additional. |
+
+Translation size limits belong to `initialization_options.translation_limits`. Values are positive integers in KiB (1 KiB = 1024 UTF-8 bytes), not character or token counts. Omitted objects and fields use their own defaults.
+
+| Setting inside `translation_limits` | Default | Applies to |
+| --- | --- | --- |
+| `input_kib.hover` | `16` | New comment Hover requests, Markdown background translation, and manual selection Hover previews. |
+| `input_kib.document` | `1024` | Whole documents and selections translated into a separate tab. |
+| `output_kib` | `4096` | Completed translations, regardless of display destination. |
+
+For example, `"translation_limits": {"input_kib": {"document": 2048}}` changes only the document input limit to 2 MiB. Zero, negative, fractional, null, unknown, and nonnumeric values are rejected, as are sizes that cannot be represented on the server platform. Restart the language server after editing these settings. Explicit requests over the input limit report the size, limit, and setting name; oversized automatic selections are skipped. Existing cached translations can still be read without another translation request.
+
+Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`. They bound transport processing separately from the decoded translation; they do not allocate the maximum up front. Increasing a local limit does not increase the model's context or output capacity or extend the request deadline. Long documents are sent in one request, without automatic splitting. Failed, incomplete, and oversized results are not displayed or saved as completed translations.
 
 Translations opened in a tab acknowledge the command immediately and open the result when translation completes. Full documents and selections both default to a three-minute deadline, independent of Hover and background translation deadlines. Text length does not automatically extend it. Use the progress indicator to cancel pending work. Editing or closing the source document also prevents the result from opening.
 
@@ -144,7 +163,7 @@ With ChatGPT connected, plan use enabled, and `markdown_auto_translate` set to `
 
 To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The Hover translation action is hidden when there is no selection.
 
-In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document, up to the same 16 KiB input limit. The client must support `window/showDocument`.
+In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. Both operations use `translation_limits.input_kib.document`, which defaults to 1 MiB. The client must support `window/showDocument`.
 
 Markdown translations open as temporary `.md` files. Run `markdown: open preview` from the Command Palette to see the rendered document and return to its source tab when needed. Plain Text translations open as `.txt` files. The extension leaves your normal Markdown opening preference unchanged. Existing translation tabs are snapshots. Edit the original and run the action again to obtain a new translation.
 
@@ -176,7 +195,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 - C/C++ supports ordinary and Doxygen comments (`///`, `//!`, `/**`, `/*!`, including trailing `<` forms). Documentation commands such as `@param` remain in the displayed text; the model is instructed to retain commands and parameter names. The first syntax-error region stops further C/C++ comment extraction, because parser recovery can mistake unclosed comment contents for code. Use manual selection for those regions.
 - Python supports `#` comments and docstrings at the beginning of a module, class, or function body. Ordinary, raw, Unicode, parenthesized, and implicitly concatenated string docstrings are supported; assigned strings, f-strings, and bytes are not automatic targets. Quotes and string prefixes are removed from docstrings; source escapes and indentation are passed through without evaluating Python. Shebangs are skipped. Extraction stops at the first syntax-error region; manual selection remains available.
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
-- Source text is limited to 16 KiB and translated text to 64 KiB. From translation admission, translations opened in a tab default to 180 seconds, manual selection Hover previews and background translation to 30 seconds, and each Hover request to 20 seconds. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
+- Default input limits are 16 KiB for Hover previews and 1 MiB for documents; the default output limit is 4 MiB. Configure them with `translation_limits`. From translation admission, translations opened in a tab default to 180 seconds, manual selection Hover previews and background translation to 30 seconds, and each Hover request to 20 seconds. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
 - An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. Connection failures and interrupted streams are not automatically replayed.
 - Rate limits and account restrictions pause new translations and return an error. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant.
 - Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.

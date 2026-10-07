@@ -1,9 +1,13 @@
+pub(crate) mod limits;
+
+use limits::TranslationLimits;
 use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Settings {
+    pub translation_limits: TranslationLimits,
     pub target_language: String,
     pub source_language: String,
     pub provider: ProviderSettings,
@@ -45,6 +49,7 @@ pub(crate) enum ReasoningEffort {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            translation_limits: TranslationLimits::default(),
             target_language: "ja".into(),
             source_language: "auto".into(),
             provider: ProviderSettings::Mock {},
@@ -101,6 +106,77 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn translation_limits_default_at_every_level_and_validate_kib_values() {
+        for options in [
+            json!({}),
+            json!({"translation_limits":{}}),
+            json!({"translation_limits":{"input_kib":{}}}),
+        ] {
+            let limits = Settings::from_options(Some(options))
+                .unwrap()
+                .translation_limits;
+            assert_eq!(limits.input_kib.hover.bytes(), 16 * 1024);
+            assert_eq!(limits.input_kib.document.bytes(), 1024 * 1024);
+            assert_eq!(limits.output_kib.bytes(), 4 * 1024 * 1024);
+        }
+        let limits = Settings::from_options(Some(
+            json!({"translation_limits":{"input_kib":{"document":2048}}}),
+        ))
+        .unwrap()
+        .translation_limits;
+        assert_eq!(limits.input_kib.document.bytes(), 2 * 1024 * 1024);
+        assert_eq!(limits.input_kib.hover.bytes(), 16 * 1024);
+        assert_eq!(limits.output_kib.bytes(), 4 * 1024 * 1024);
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("16"),
+            json!(true),
+            Value::Null,
+            json!(u64::MAX),
+        ] {
+            for limits in [
+                json!({"input_kib":{"hover":value}}),
+                json!({"input_kib":{"document":value}}),
+                json!({"output_kib":value}),
+            ] {
+                assert!(
+                    Settings::from_options(Some(json!({"translation_limits":limits}))).is_err()
+                );
+            }
+        }
+        for limits in [
+            Value::Null,
+            json!({"input_kib":null}),
+            json!({"input_kib":{"unknown":16}}),
+            json!({"unknown":16}),
+        ] {
+            assert!(Settings::from_options(Some(json!({"translation_limits":limits}))).is_err());
+        }
+        let limits = Settings::from_options(Some(
+            json!({"translation_limits":{"input_kib":{"hover":1},"output_kib":2}}),
+        ))
+        .unwrap()
+        .translation_limits;
+        assert!(
+            limits
+                .input_kib
+                .hover
+                .check("é".repeat(512).len(), "test")
+                .is_ok()
+        );
+        assert!(
+            limits
+                .input_kib
+                .hover
+                .check("é".repeat(513).len(), "test")
+                .is_err()
+        );
+        assert_eq!(limits.output_kib.bytes(), 2048);
+    }
 
     #[test]
     fn defaults_keep_mock_and_explicit_settings_are_validated() {

@@ -2051,7 +2051,7 @@ fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), PARAGRAPH_JA);
     client.send(Response::new_ok(open.id, json!({"success":true})).into());
     client.receive(id, TIMEOUT).unwrap();
-    client.change(uri, 2, json!([{"text": "a".repeat(16 * 1024 + 1)}]));
+    client.change(uri, 2, json!([{"text": "a".repeat(1024 * 1024 + 1)}]));
     let action = document_action(
         &mut client,
         uri,
@@ -2060,10 +2060,53 @@ fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
     let id = client.execute(action);
     assert_eq!(
         client.receive(id, TIMEOUT).unwrap_err().message,
-        "Translation input exceeds 16 KiB"
+        "Translation size 1048577 bytes exceeds 1024 KiB; adjust translation_limits.input_kib.document"
     );
     assert!(client.documents.is_empty());
     client.finish(true);
+}
+
+#[test]
+fn document_limits_accept_large_input_and_partial_settings_override_the_default() {
+    for (options, size) in [
+        (Value::Null, 1024 * 1024),
+        (
+            json!({"translation_limits":{"input_kib":{"document":2}}}),
+            2 * 1024,
+        ),
+        (
+            json!({"translation_limits":{"input_kib":{"document":2048}}}),
+            2 * 1024 * 1024,
+        ),
+    ] {
+        let mut client = Client::configured_documents(&[], false, false, options, true);
+        let uri = "file:///large.txt";
+        let source = format!("{}{}", " ".repeat(size - PARAGRAPH.len()), PARAGRAPH);
+        client.open(uri, "plaintext", &source, 1);
+        let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}});
+        let action = document_action(&mut client, uri, range.clone());
+        let id = client.execute(action);
+        client.receive(id, TIMEOUT).unwrap();
+        while client.documents.is_empty() {
+            client.pump();
+        }
+        let open = client.documents.remove(0);
+        let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+            .unwrap()
+            .to_file_path()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
+        client.send(Response::new_ok(open.id, json!({"success":true})).into());
+        client.change(uri, 2, json!([{"text":format!(" {source}")}]));
+        let action = document_action(&mut client, uri, range);
+        let id = client.execute(action);
+        let message = client.receive(id, TIMEOUT).unwrap_err().message;
+        assert!(message.contains("translation_limits.input_kib.document"));
+        assert!(message.contains(&(size + 1).to_string()));
+        assert!(client.documents.is_empty());
+        client.finish(true);
+        assert!(!path.exists());
+    }
 }
 
 #[test]

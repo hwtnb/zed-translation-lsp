@@ -14,7 +14,11 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
-use crate::{config::ReasoningEffort, lsp::ui::Ui, text::markdown::prose_ranges};
+use crate::{
+    config::{ReasoningEffort, limits::SizeLimit},
+    lsp::ui::Ui,
+    text::markdown::prose_ranges,
+};
 
 use super::{
     AuthUiState, Context, TextKind, Translated, TranslationProvider,
@@ -23,11 +27,6 @@ use super::{
 use auth::{AccountKey, Auth, account_changed};
 use http::{Http, response_error, temporary_network};
 
-const MAX_TRANSLATION_BYTES: usize = 64 * 1024;
-const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
-
 #[derive(Clone)]
 pub(crate) struct ChatGptProvider {
     auth: Auth,
@@ -35,6 +34,7 @@ pub(crate) struct ChatGptProvider {
     model: String,
     effort: Option<ReasoningEffort>,
     source_language: String,
+    output_limit: SizeLimit,
     api: String,
     state: Arc<Mutex<ProviderState>>,
 }
@@ -49,6 +49,7 @@ impl ChatGptProvider {
         model: String,
         effort: Option<ReasoningEffort>,
         source_language: String,
+        output_limit: SizeLimit,
     ) -> Result<Self, Error> {
         let http = Http::new()?;
         Ok(Self {
@@ -57,6 +58,7 @@ impl ChatGptProvider {
             model,
             effort,
             source_language,
+            output_limit,
             api: "https://api.openai.com/v1".into(),
             state: Arc::default(),
         })
@@ -71,6 +73,7 @@ impl ChatGptProvider {
             model,
             effort: Some(ReasoningEffort::Low),
             source_language: "auto".into(),
+            output_limit: crate::config::limits::TranslationLimits::default().output_kib,
             state: Arc::default(),
         }
     }
@@ -184,7 +187,7 @@ impl ChatGptProvider {
                             .filter(|seconds| *seconds <= 120).map(Duration::from_secs)
                     });
                 let result = if response.status().is_success() {
-                    response_text(response, &secrets).await
+                    response_text(response, &secrets, self.output_limit).await
                 } else {
                     self.auth.http.json(response, &secrets).await.and_then(|_| {
                         Err(Error::failed("OpenAI returned a non-success response"))
@@ -203,9 +206,6 @@ impl ChatGptProvider {
                     result => break result?,
                 }
             };
-            if translated.len() > MAX_TRANSLATION_BYTES {
-                return Err(Error::failed("Translated text exceeds 64 KiB"));
-            }
             Ok(translated)
         }).await;
         if let Err(error) = &result {
@@ -268,11 +268,26 @@ struct RawLimit {
 }
 
 impl RawLimit {
-    fn accept(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.total = self.total.saturating_add(bytes.len());
-        if self.total > MAX_STREAM_BYTES {
-            return Err(Error::failed("OpenAI stream exceeds 8 MiB"));
+    fn accept(&mut self, bytes: &[u8], output_limit: SizeLimit) -> Result<(), Error> {
+        self.total = self
+            .total
+            .checked_add(bytes.len())
+            .ok_or_else(|| Error::failed("OpenAI stream size exceeds the platform byte counter"))?;
+        // Allow JSON escaping, repeated snapshots and small delta events without
+        // allocating these budgets up front. Bound empty or unrelated events too.
+        let stream_limit = output_limit
+            .bytes()
+            .saturating_mul(1024)
+            .saturating_add(1024 * 1024);
+        if self.total > stream_limit {
+            return Err(Error::failed(&format!(
+                "OpenAI stream exceeds {stream_limit} bytes derived from translation_limits.output_kib"
+            )));
         }
+        let event_limit = output_limit
+            .bytes()
+            .saturating_mul(6)
+            .saturating_add(1024 * 1024);
         for &byte in bytes {
             if byte == b'\n' && self.cr {
                 self.cr = false;
@@ -288,10 +303,10 @@ impl RawLimit {
             } else {
                 self.line_content = true;
             }
-            if self.event > MAX_EVENT_BYTES {
-                return Err(Error::failed(
-                    "OpenAI SSE event exceeds 2 MiB before parsing",
-                ));
+            if self.event > event_limit {
+                return Err(Error::failed(&format!(
+                    "OpenAI SSE event exceeds {event_limit} bytes derived from translation_limits.output_kib"
+                )));
             }
         }
         Ok(())
@@ -309,7 +324,7 @@ struct OutputItem {
     texts: Vec<String>,
 }
 
-fn output_item(value: &Value) -> Result<OutputItem, Error> {
+fn output_item(value: &Value, output_limit: SizeLimit) -> Result<OutputItem, Error> {
     let mut texts = Vec::new();
     match value["type"].as_str() {
         Some("reasoning") => (),
@@ -329,9 +344,9 @@ fn output_item(value: &Value) -> Result<OutputItem, Error> {
                     .as_str()
                     .ok_or_else(|| Error::failed("OpenAI output text is invalid"))?;
                 bytes = bytes.saturating_add(text.len());
-                if bytes > MAX_OUTPUT_BYTES {
-                    return Err(Error::failed("OpenAI output exceeds 1 MiB"));
-                }
+                output_limit
+                    .check(bytes, "translation_limits.output_kib")
+                    .map_err(|message| Error::failed(&message))?;
                 texts.push(text.to_owned());
             }
         }
@@ -345,7 +360,11 @@ fn output_item(value: &Value) -> Result<OutputItem, Error> {
     Ok(OutputItem { id, texts })
 }
 
-async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<String, Error> {
+async fn response_text(
+    response: reqwest::Response,
+    secrets: &[&str],
+    output_limit: SizeLimit,
+) -> Result<String, Error> {
     let status = response.status().as_u16();
     let request_id = response
         .headers()
@@ -359,18 +378,40 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
     let mut streamed_bytes = 0usize;
     let mut item_bytes = 0usize;
     {
-        let stream = response
-            .bytes_stream()
-            .map(|chunk| {
-                let chunk = chunk.map_err(|_| temporary_network())?;
-                raw.accept(&chunk)?;
-                Ok::<_, Error>(chunk)
-            })
-            .eventsource();
+        // eventsource-stream reparses incomplete lines on every chunk. Feed whole
+        // lines so large completed-output snapshots are parsed only once.
+        let lines = futures_util::stream::try_unfold(
+            (response.bytes_stream(), Vec::new(), &mut raw),
+            |(mut source, mut pending, raw)| async move {
+                loop {
+                    let Some(chunk) = source.next().await else {
+                        return if pending.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some((std::mem::take(&mut pending), (source, pending, raw))))
+                        };
+                    };
+                    let chunk = chunk.map_err(|_| temporary_network())?;
+                    raw.accept(&chunk, output_limit)?;
+                    let end = chunk.iter().rposition(|byte| matches!(byte, b'\r' | b'\n'));
+                    pending.extend_from_slice(&chunk);
+                    if let Some(end) = end {
+                        let split = pending.len() - chunk.len() + end + 1;
+                        let tail = pending.split_off(split);
+                        return Ok(Some((
+                            std::mem::replace(&mut pending, tail),
+                            (source, pending, raw),
+                        )));
+                    }
+                }
+            },
+        );
+        let stream = lines.eventsource();
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
-            let event = event.map_err(|_| {
-                Error::failed("OpenAI SSE stream is invalid, truncated or exceeds its limit")
+            let event = event.map_err(|error| match error {
+                eventsource_stream::EventStreamError::Transport(error) => error,
+                _ => Error::failed("OpenAI SSE stream is invalid or truncated"),
             })?;
             let value: Value = serde_json::from_str(&event.data)
                 .map_err(|_| Error::failed("OpenAI SSE event contains invalid JSON"))?;
@@ -417,16 +458,16 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
                             part.done = true;
                         } else {
                             streamed_bytes = streamed_bytes.saturating_add(text.len());
-                            if streamed_bytes > MAX_OUTPUT_BYTES {
-                                return Err(Error::failed("OpenAI output exceeds 1 MiB"));
-                            }
+                            output_limit
+                                .check(streamed_bytes, "translation_limits.output_kib")
+                                .map_err(|message| Error::failed(&message))?;
                             part.text.push_str(text);
                         }
                     } else {
                         streamed_bytes = streamed_bytes.saturating_add(text.len());
-                        if streamed_bytes > MAX_OUTPUT_BYTES {
-                            return Err(Error::failed("OpenAI output exceeds 1 MiB"));
-                        }
+                        output_limit
+                            .check(streamed_bytes, "translation_limits.output_kib")
+                            .map_err(|message| Error::failed(&message))?;
                         parts.insert(
                             key,
                             TextPart {
@@ -441,7 +482,7 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
                     let index = value["output_index"]
                         .as_u64()
                         .ok_or_else(|| Error::failed("OpenAI output item index is invalid"))?;
-                    let item = output_item(&value["item"])?;
+                    let item = output_item(&value["item"], output_limit)?;
                     if completed.is_some() || done_items.contains_key(&index) || item.id.is_none() {
                         return Err(Error::failed("OpenAI output item completion is invalid"));
                     }
@@ -449,9 +490,9 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
                         .texts
                         .iter()
                         .fold(item_bytes, |bytes, text| bytes.saturating_add(text.len()));
-                    if item_bytes > MAX_OUTPUT_BYTES {
-                        return Err(Error::failed("OpenAI output exceeds 1 MiB"));
-                    }
+                    output_limit
+                        .check(item_bytes, "translation_limits.output_kib")
+                        .map_err(|message| Error::failed(&message))?;
                     done_items.insert(index, item);
                 }
                 "response.completed" => {
@@ -466,7 +507,7 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
                         .ok_or_else(|| Error::failed("OpenAI completion has no output"))?;
                     let mut items = BTreeMap::new();
                     for (index, value) in output.iter().enumerate() {
-                        items.insert(index as u64, output_item(value)?);
+                        items.insert(index as u64, output_item(value, output_limit)?);
                     }
                     for output in [&done_items, &items] {
                         let mut ids = HashSet::new();
@@ -519,9 +560,12 @@ async fn response_text(response: reqwest::Response, secrets: &[&str]) -> Result<
                     let mut text = String::new();
                     for item in items.into_values() {
                         for part in item.texts {
-                            if text.len().saturating_add(part.len()) > MAX_OUTPUT_BYTES {
-                                return Err(Error::failed("OpenAI output exceeds 1 MiB"));
-                            }
+                            output_limit
+                                .check(
+                                    text.len().saturating_add(part.len()),
+                                    "translation_limits.output_kib",
+                                )
+                                .map_err(|message| Error::failed(&message))?;
                             text.push_str(&part);
                         }
                     }
@@ -604,6 +648,85 @@ mod tests {
             .iter()
             .filter(|record| record.path == "/v1/responses")
             .count()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configurable_output_accepts_large_escaped_text_and_checks_exact_byte_boundary() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let mut provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        for (kib, mode, extra) in [
+            (1, "", 0),
+            (1, "delta_compact", 0),
+            (1, "", 1),
+            (4096, "", 0),
+            (4096, "delta_compact", 0),
+            (4096, "", 1),
+        ] {
+            provider.output_limit = SizeLimit::try_from(kib).unwrap();
+            let expected = format!("{}é", "\u{1}".repeat(kib * 1024 - 2 + extra));
+            {
+                let mut state = fixture.state.lock().unwrap();
+                state.translation = Some(expected.clone());
+                state.response_mode = mode.into();
+            }
+            let result = provider
+                .translate(
+                    TextKind::Selection,
+                    "Translate this.",
+                    "ja",
+                    provider.context().unwrap(),
+                )
+                .await;
+            if extra == 0 {
+                assert_eq!(result.unwrap().text, expected);
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error.message.contains("translation_limits.output_kib"),
+                    "{}",
+                    error.message
+                );
+                assert!(error.message.contains(&(kib * 1024 + 1).to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn raw_stream_limits_scale_with_output_and_bound_unfinished_events() {
+        let small = SizeLimit::try_from(1).unwrap();
+        let large = SizeLimit::try_from(2).unwrap();
+        let event_budget = 1024 * 6 + 1024 * 1024;
+        let event = vec![b'x'; event_budget];
+        let mut raw = RawLimit::default();
+        raw.accept(&event, small).unwrap();
+        assert!(
+            raw.accept(b"x", small)
+                .unwrap_err()
+                .message
+                .contains("SSE event")
+        );
+        RawLimit::default()
+            .accept(&[event, vec![b'x']].concat(), large)
+            .unwrap();
+        let stream_budget = 1024 * 1024 + 1024 * 1024;
+        let stream = vec![b'\n'; stream_budget];
+        let mut raw = RawLimit::default();
+        raw.accept(&stream, small).unwrap();
+        assert!(
+            raw.accept(b"\n", small)
+                .unwrap_err()
+                .message
+                .contains("stream")
+        );
+        RawLimit::default()
+            .accept(&[stream, vec![b'\n']].concat(), large)
+            .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -979,11 +1102,12 @@ mod tests {
             fixture.state.lock().unwrap().response_mode = mode.into();
             let auth = fixture.auth();
             fixture.connected(&auth, 3600).await;
-            let provider = ChatGptProvider::synthetic(
+            let mut provider = ChatGptProvider::synthetic(
                 auth,
                 format!("{}/v1", fixture.base),
                 "synthetic-model".into(),
             );
+            provider.output_limit = SizeLimit::try_from(1).unwrap();
             let body = "Read `retry_count` and [the guide](https://example.invalid). 🚀\r\n\r\n```rust\r\nlet n = 1;\r\n```\r\n";
             let result = provider
                 .translate(TextKind::Selection, body, "ja", provider.context().unwrap())
