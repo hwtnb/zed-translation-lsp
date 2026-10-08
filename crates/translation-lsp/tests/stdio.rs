@@ -429,6 +429,9 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
         json!({"markdown_auto_translate":"false"}),
         json!({"hover_timeout_ms":1.5}),
         json!({"unknown_setting":true}),
+        json!({"translation_limits":{"input_kib":{"document":16385}}}),
+        json!({"translation_limits":{"work":{"admitted":65}}}),
+        json!({"translation_limits":{"output_kib":16384,"work":{"concurrent":8}}}),
     ] {
         let mut client = Client::spawn(&["--mock-timeout-ms", "80"], false, false);
         let error = client

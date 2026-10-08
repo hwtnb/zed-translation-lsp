@@ -1,4 +1,6 @@
 use super::{Error, SizeLimit, http, response_error, temporary_network};
+use crate::config::limits::SizeSetting;
+use crate::providers::error::{TransportExceeded, TransportScope};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -25,9 +27,12 @@ impl RawLimit {
             .saturating_mul(1024)
             .saturating_add(1024 * 1024);
         if self.total > stream_limit {
-            return Err(Error::failed(&format!(
-                "OpenAI stream exceeds {stream_limit} bytes derived from translation_limits.output_kib"
-            )));
+            return Err(TransportExceeded {
+                scope: TransportScope::Stream,
+                actual_bytes: self.total,
+                maximum_bytes: stream_limit,
+            }
+            .into());
         }
         let event_limit = output_limit
             .bytes()
@@ -49,9 +54,12 @@ impl RawLimit {
                 self.line_content = true;
             }
             if self.event > event_limit {
-                return Err(Error::failed(&format!(
-                    "OpenAI SSE event exceeds {event_limit} bytes derived from translation_limits.output_kib"
-                )));
+                return Err(TransportExceeded {
+                    scope: TransportScope::Event,
+                    actual_bytes: self.event,
+                    maximum_bytes: event_limit,
+                }
+                .into());
             }
         }
         Ok(())
@@ -89,9 +97,7 @@ fn output_item(value: &Value, output_limit: SizeLimit) -> Result<OutputItem, Err
                     .as_str()
                     .ok_or_else(|| Error::failed("OpenAI output text is invalid"))?;
                 bytes = bytes.saturating_add(text.len());
-                output_limit
-                    .check(bytes, "translation_limits.output_kib")
-                    .map_err(|message| Error::failed(&message))?;
+                output_limit.check(bytes, SizeSetting::Output)?;
                 texts.push(text.to_owned());
             }
         }
@@ -132,7 +138,7 @@ pub(super) async fn response_text(
                             Ok(Some((std::mem::take(&mut pending), (source, pending, raw))))
                         };
                     };
-                    let chunk = chunk.map_err(|_| temporary_network())?;
+                    let chunk = chunk.map_err(temporary_network)?;
                     raw.accept(&chunk, output_limit)?;
                     let end = chunk.iter().rposition(|byte| matches!(byte, b'\r' | b'\n'));
                     pending.extend_from_slice(&chunk);
@@ -199,16 +205,12 @@ pub(super) async fn response_text(
                             part.done = true;
                         } else {
                             streamed_bytes = streamed_bytes.saturating_add(text.len());
-                            output_limit
-                                .check(streamed_bytes, "translation_limits.output_kib")
-                                .map_err(|message| Error::failed(&message))?;
+                            output_limit.check(streamed_bytes, SizeSetting::Output)?;
                             part.text.push_str(text);
                         }
                     } else {
                         streamed_bytes = streamed_bytes.saturating_add(text.len());
-                        output_limit
-                            .check(streamed_bytes, "translation_limits.output_kib")
-                            .map_err(|message| Error::failed(&message))?;
+                        output_limit.check(streamed_bytes, SizeSetting::Output)?;
                         parts.insert(
                             key,
                             TextPart {
@@ -231,9 +233,7 @@ pub(super) async fn response_text(
                         .texts
                         .iter()
                         .fold(item_bytes, |bytes, text| bytes.saturating_add(text.len()));
-                    output_limit
-                        .check(item_bytes, "translation_limits.output_kib")
-                        .map_err(|message| Error::failed(&message))?;
+                    output_limit.check(item_bytes, SizeSetting::Output)?;
                     done_items.insert(index, item);
                 }
                 "response.completed" => {
@@ -301,12 +301,10 @@ pub(super) async fn response_text(
                     let mut text = String::new();
                     for item in items.into_values() {
                         for part in item.texts {
-                            output_limit
-                                .check(
-                                    text.len().saturating_add(part.len()),
-                                    "translation_limits.output_kib",
-                                )
-                                .map_err(|message| Error::failed(&message))?;
+                            output_limit.check(
+                                text.len().saturating_add(part.len()),
+                                SizeSetting::Output,
+                            )?;
                             text.push_str(&part);
                         }
                     }
@@ -327,17 +325,18 @@ pub(super) async fn response_text(
                     let fields = &error["error"];
                     let unknown = fields.get("code").and_then(Value::as_str).is_none()
                         || fields.get("message").and_then(Value::as_str).is_none();
-                    let mut error = response_error(status, &error, request_id.as_deref(), secrets);
-                    error.message =
-                        format!("OpenAI stream failed (event={kind}); {}", error.message);
-                    if unknown {
-                        error.message.push_str(&format!(
+                    let error = response_error(status, &error, request_id.as_deref(), secrets);
+                    let diagnostics = if unknown {
+                        format!(
                             " (event_keys=[{}], response_keys=[{}], error_keys=[{}])",
                             error_keys(&value, secrets),
                             error_keys(&value["response"], secrets),
                             error_keys(fields, secrets),
-                        ));
-                    }
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let error = error.in_stream(kind.to_owned(), diagnostics);
                     return Err(error);
                 }
                 "response.incomplete" => {

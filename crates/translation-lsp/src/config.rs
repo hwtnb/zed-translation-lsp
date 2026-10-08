@@ -1,4 +1,7 @@
+pub(crate) mod error;
 pub(crate) mod limits;
+
+use error::{ConfigError, bounded_number};
 
 use limits::TranslationLimits;
 use serde::Deserialize;
@@ -63,36 +66,61 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn from_options(options: Option<Value>) -> Result<Self, &'static str> {
+    pub fn from_options(options: Option<Value>) -> Result<Self, ConfigError> {
         let settings = match options {
             None | Some(Value::Null) => Self::default(),
-            Some(options) => serde_json::from_value(options)
-                .map_err(|_| "Invalid translation settings: check field names and value types")?,
+            Some(options) => serde_json::from_value(options)?,
         };
         settings.translation_limits.validate()?;
-        if !(1_000..=120_000).contains(&settings.hover_timeout_ms) {
-            return Err("hover_timeout_ms must be between 1000 and 120000 milliseconds");
+        for (name, value, minimum, maximum) in [
+            (
+                "hover_timeout_ms",
+                settings.hover_timeout_ms,
+                1_000,
+                120_000,
+            ),
+            (
+                "selection_timeout_ms",
+                settings.selection_timeout_ms,
+                1_000,
+                120_000,
+            ),
+            (
+                "document_timeout_ms",
+                settings.document_timeout_ms,
+                1_000,
+                600_000,
+            ),
+            (
+                "selection_debounce_ms",
+                settings.selection_debounce_ms,
+                100,
+                2_000,
+            ),
+        ] {
+            bounded_number(name, value, minimum, maximum)?;
         }
-        if !(1_000..=120_000).contains(&settings.selection_timeout_ms) {
-            return Err("selection_timeout_ms must be between 1000 and 120000 milliseconds");
+        for (setting, value) in [
+            ("source_language", &settings.source_language),
+            ("target_language", &settings.target_language),
+        ] {
+            if !bounded(value, 128) {
+                return Err(ConfigError::Text {
+                    setting,
+                    maximum_bytes: 128,
+                });
+            }
         }
-        if !(1_000..=600_000).contains(&settings.document_timeout_ms) {
-            return Err("document_timeout_ms must be between 1000 and 600000 milliseconds");
-        }
-        if !(100..=2_000).contains(&settings.selection_debounce_ms) {
-            return Err("selection_debounce_ms must be between 100 and 2000 milliseconds");
-        }
-        if !bounded(&settings.target_language, 128) || !bounded(&settings.source_language, 128) {
-            return Err(
-                "source_language and target_language must be nonempty, without control characters, and at most 128 bytes",
-            );
-        }
-        if let ProviderSettings::Chatgpt { model, .. } = &settings.provider
-            && (!bounded(model, 256) || model.chars().any(char::is_whitespace))
-        {
-            return Err(
-                "ChatGPT model must be a nonempty slug without whitespace and at most 256 bytes",
-            );
+        if let ProviderSettings::Chatgpt { model, .. } = &settings.provider {
+            if !bounded(model, 256) {
+                return Err(ConfigError::Text {
+                    setting: "provider.model",
+                    maximum_bytes: 256,
+                });
+            }
+            if model.chars().any(char::is_whitespace) {
+                return Err(ConfigError::ModelWhitespace);
+            }
         }
         Ok(settings)
     }
@@ -107,6 +135,97 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn decode_error_retains_source_without_echoing_rejected_values() {
+        use std::error::Error as _;
+        let error = Settings::from_options(Some(json!({"provider": {"name": "synthetic-secret"}})))
+            .err()
+            .unwrap();
+        assert!(matches!(error, ConfigError::Decode(_)));
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<serde_json::Error>()
+                .is_some()
+        );
+        assert!(!error.to_string().contains("synthetic-secret"));
+        assert!(!format!("{error:?}").contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn resource_limits_accept_boundaries_and_reject_excess_with_typed_details() {
+        for (path, maximum) in [
+            (vec!["input_kib", "hover"], 1024),
+            (vec!["input_kib", "document"], 16384),
+            (vec!["output_kib"], 16384),
+            (vec!["cache", "capacity_kib"], 262144),
+            (vec!["cache", "entries"], 4096),
+            (vec!["work", "admitted"], 64),
+            (vec!["work", "concurrent"], 8),
+            (vec!["work", "documents"], 8),
+            (vec!["work", "automatic"], 63),
+            (vec!["work", "hover_waiters"], 256),
+        ] {
+            let settings = |value| {
+                let mut options = json!({"translation_limits": {"work": {"admitted": 64, "concurrent": 8}, "input_kib": {"document": 1024}}});
+                // Use fewer accepted operations for the maximum document size.
+                if path == ["input_kib", "document"] {
+                    options["translation_limits"]["work"]["admitted"] = json!(8);
+                }
+                // Use fewer workers for the maximum output size.
+                if path == ["output_kib"] {
+                    options["translation_limits"]["work"]["concurrent"] = json!(2);
+                }
+                let mut slot = &mut options["translation_limits"];
+                for name in &path {
+                    slot = &mut slot[*name];
+                }
+                *slot = json!(value);
+                Settings::from_options(Some(options))
+            };
+            assert!(settings(maximum).is_ok(), "{path:?}");
+            let error = settings(maximum + 1).err().unwrap();
+            let ConfigError::OutOfRange {
+                setting,
+                value,
+                minimum,
+                maximum: bound,
+            } = error
+            else {
+                panic!("Wrong error: {error}")
+            };
+            assert_eq!(setting, format!("translation_limits.{}", path.join(".")));
+            assert_eq!((value, minimum, bound), (maximum + 1, 1, maximum));
+        }
+    }
+
+    #[test]
+    fn combined_budgets_reject_individually_valid_settings() {
+        use error::Budget;
+        let options = json!({"translation_limits": {"input_kib":{"document":4096},"output_kib":8192,"work":{"admitted":64,"concurrent":8}}});
+        assert!(Settings::from_options(Some(options.clone())).is_ok());
+        for (field, value, input) in [("document", 4097, true), ("output_kib", 8193, false)] {
+            let mut options = options.clone();
+            if input {
+                options["translation_limits"]["input_kib"][field] = json!(value);
+            } else {
+                options["translation_limits"][field] = json!(value);
+            }
+            let error = Settings::from_options(Some(options)).err().unwrap();
+            let ConfigError::Budget {
+                budget,
+                required_bytes,
+                maximum_bytes,
+            } = error
+            else {
+                panic!("Wrong error: {error}")
+            };
+            assert!(required_bytes > maximum_bytes);
+            assert_eq!(matches!(budget, Budget::AcceptedInput), input);
+        }
+    }
 
     #[test]
     fn translation_limits_default_at_every_level_and_validate_kib_values() {
@@ -166,14 +285,14 @@ mod tests {
             limits
                 .input_kib
                 .hover
-                .check("é".repeat(512).len(), "test")
+                .check("é".repeat(512).len(), limits::SizeSetting::HoverInput)
                 .is_ok()
         );
         assert!(
             limits
                 .input_kib
                 .hover
-                .check("é".repeat(513).len(), "test")
+                .check("é".repeat(513).len(), limits::SizeSetting::HoverInput)
                 .is_err()
         );
         assert_eq!(limits.output_kib.bytes(), 2048);
@@ -237,7 +356,7 @@ mod tests {
                 let error = Settings::from_options(Some(json!({(field):value})))
                     .err()
                     .unwrap();
-                assert!(error.starts_with(field), "{field}: {error}");
+                assert!(error.to_string().starts_with(field), "{field}: {error}");
             }
             for value in [
                 json!(-1),

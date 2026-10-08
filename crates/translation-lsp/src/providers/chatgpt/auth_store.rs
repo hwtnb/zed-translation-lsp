@@ -1,3 +1,4 @@
+use crate::providers::error::credentials::CredentialError;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions, TryLockError},
@@ -71,14 +72,6 @@ pub(crate) struct LockedStore {
     pub state: AuthState,
 }
 
-#[derive(Debug)]
-pub(crate) enum StoreError {
-    Busy,
-    Invalid,
-    Permissions,
-    Io,
-}
-
 impl Credentials {
     pub fn plan_enabled(&self) -> bool {
         self.token_type.eq_ignore_ascii_case("Bearer")
@@ -100,7 +93,7 @@ impl AuthState {
         }
     }
 
-    fn validate(&self) -> Result<(), StoreError> {
+    fn validate(&self) -> Result<(), CredentialError> {
         if !matches!(self.version, 1 | 2)
             || !self.ext_agent_host_id.starts_with("urn:uuid:")
             || Uuid::parse_str(&self.ext_agent_host_id).is_err()
@@ -108,7 +101,7 @@ impl AuthState {
                 .active_registration
                 .is_some_and(|id| !self.registrations.contains_key(&id))
         {
-            return Err(StoreError::Invalid);
+            return Err(CredentialError::Invalid);
         }
         for registration in self.registrations.values() {
             if (self.version == 2 && registration.authorization_id.is_nil())
@@ -117,7 +110,7 @@ impl AuthState {
                 || registration.client_id.is_empty()
                 || registration.client_id == "dynamic_agent_client"
             {
-                return Err(StoreError::Invalid);
+                return Err(CredentialError::Invalid);
             }
             if let Some(credentials) = &registration.credentials
                 && (credentials.id_token.is_empty()
@@ -125,7 +118,7 @@ impl AuthState {
                     || credentials.refresh_token.is_empty()
                     || !credentials.token_type.eq_ignore_ascii_case("Bearer"))
             {
-                return Err(StoreError::Invalid);
+                return Err(CredentialError::Invalid);
             }
         }
         Ok(())
@@ -133,8 +126,8 @@ impl AuthState {
 }
 
 impl AuthStore {
-    pub fn production() -> Result<Self, StoreError> {
-        let root = dirs::config_local_dir().ok_or(StoreError::Io)?;
+    pub fn production() -> Result<Self, CredentialError> {
+        let root = dirs::config_local_dir().ok_or(CredentialError::MissingDirectory)?;
         Ok(Self {
             directory: root.join("translation-lsp"),
         })
@@ -148,7 +141,7 @@ impl AuthStore {
     // Atomic rename permits coherent reads without holding a lock over display.
     // Check a stable lock separately so another process's signout/refresh can
     // suppress a cache hit while that credential operation is in progress.
-    pub fn snapshot(&self) -> Result<Option<Snapshot>, StoreError> {
+    pub fn snapshot(&self) -> Result<Option<Snapshot>, CredentialError> {
         if !check_path(&self.directory, true)? {
             return Ok(None);
         }
@@ -164,13 +157,16 @@ impl AuthStore {
                 {
                     return Ok(snapshot);
                 }
-                lock.unlock().map_err(|_| StoreError::Io)?;
+                lock.unlock()
+                    .map_err(|source| CredentialError::io("unlock", source))?;
                 match lock.try_lock() {
                     Ok(()) => (),
-                    Err(TryLockError::WouldBlock) => return Err(StoreError::Busy),
-                    Err(_) => return Err(StoreError::Io),
+                    Err(TryLockError::WouldBlock) => return Err(CredentialError::Busy),
+                    Err(TryLockError::Error(source)) => {
+                        return Err(CredentialError::io("lock", source));
+                    }
                 }
-                let state = self.read()?.ok_or(StoreError::Invalid)?.state;
+                let state = self.read()?.ok_or(CredentialError::Invalid)?.state;
                 let mut locked = LockedStore {
                     lock,
                     store: self.clone(),
@@ -179,12 +175,12 @@ impl AuthStore {
                 locked.migrate()?;
                 self.read()
             }
-            Err(TryLockError::WouldBlock) => Err(StoreError::Busy),
-            Err(_) => Err(StoreError::Io),
+            Err(TryLockError::WouldBlock) => Err(CredentialError::Busy),
+            Err(TryLockError::Error(source)) => Err(CredentialError::io("lock", source)),
         }
     }
 
-    pub async fn lock(&self, create: bool) -> Result<Option<LockedStore>, StoreError> {
+    pub async fn lock(&self, create: bool) -> Result<Option<LockedStore>, CredentialError> {
         if create {
             if !check_path(&self.directory, true)? {
                 #[cfg(unix)]
@@ -194,10 +190,11 @@ impl AuthStore {
                         .recursive(true)
                         .mode(0o700)
                         .create(&self.directory)
-                        .map_err(|_| StoreError::Io)?;
+                        .map_err(|source| CredentialError::io("create directory", source))?;
                 }
                 #[cfg(not(unix))]
-                fs::create_dir_all(&self.directory).map_err(|_| StoreError::Io)?;
+                fs::create_dir_all(&self.directory)
+                    .map_err(|source| CredentialError::io("create directory", source))?;
             }
         } else if !check_path(&self.directory, true)? {
             return Ok(None);
@@ -211,7 +208,9 @@ impl AuthStore {
                 Err(TryLockError::WouldBlock) => {
                     tokio::time::sleep(Duration::from_millis(25)).await
                 }
-                Err(_) => return Err(StoreError::Io),
+                Err(TryLockError::Error(source)) => {
+                    return Err(CredentialError::io("lock", source));
+                }
             }
         }
         let state = self
@@ -226,7 +225,7 @@ impl AuthStore {
         Ok(Some(locked))
     }
 
-    fn open_lock(&self, create: bool) -> Result<Option<File>, StoreError> {
+    fn open_lock(&self, create: bool) -> Result<Option<File>, CredentialError> {
         let path = self.directory.join("auth.lock");
         if !check_path(&path, false)? && !create {
             return Ok(None);
@@ -238,25 +237,31 @@ impl AuthStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        options.open(path).map(Some).map_err(|_| StoreError::Io)
+        options
+            .open(path)
+            .map(Some)
+            .map_err(|source| CredentialError::io("open lock", source))
     }
 
-    fn read(&self) -> Result<Option<Snapshot>, StoreError> {
+    fn read(&self) -> Result<Option<Snapshot>, CredentialError> {
         let path = self.directory.join("auth.json");
         if !check_path(&path, false)? {
             return Ok(None);
         }
-        let mut file = File::open(path).map_err(|_| StoreError::Io)?;
-        let metadata = file.metadata().map_err(|_| StoreError::Io)?;
+        let mut file =
+            File::open(path).map_err(|source| CredentialError::io("open credentials", source))?;
+        let metadata = file
+            .metadata()
+            .map_err(|source| CredentialError::io("read metadata", source))?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
             .take(MAX_AUTH_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| StoreError::Io)?;
+            .map_err(|source| CredentialError::io("read credentials", source))?;
         if bytes.len() as u64 > MAX_AUTH_BYTES {
-            return Err(StoreError::Invalid);
+            return Err(CredentialError::Invalid);
         }
-        let state: AuthState = serde_json::from_slice(&bytes).map_err(|_| StoreError::Invalid)?;
+        let state: AuthState = serde_json::from_slice(&bytes).map_err(CredentialError::Json)?;
         state.validate()?;
         Ok(Some(Snapshot {
             state,
@@ -266,7 +271,7 @@ impl AuthStore {
 }
 
 impl LockedStore {
-    fn migrate(&mut self) -> Result<(), StoreError> {
+    fn migrate(&mut self) -> Result<(), CredentialError> {
         if self.state.version == 2 {
             return Ok(());
         }
@@ -278,19 +283,19 @@ impl LockedStore {
         Ok(())
     }
 
-    pub fn revision(&self) -> Result<Option<Revision>, StoreError> {
+    pub fn revision(&self) -> Result<Option<Revision>, CredentialError> {
         self.store
             .read()
             .map(|snapshot| snapshot.map(|snapshot| snapshot.revision))
     }
-    pub fn save(&self) -> Result<Revision, StoreError> {
+    pub fn save(&self) -> Result<Revision, CredentialError> {
         self.state.validate()?;
         if self.state.version != 2 {
-            return Err(StoreError::Invalid);
+            return Err(CredentialError::Invalid);
         }
-        let bytes = serde_json::to_vec(&self.state).map_err(|_| StoreError::Invalid)?;
+        let bytes = serde_json::to_vec(&self.state).map_err(CredentialError::Json)?;
         if bytes.len() as u64 > MAX_AUTH_BYTES {
-            return Err(StoreError::Invalid);
+            return Err(CredentialError::Invalid);
         }
         let temporary = self
             .store
@@ -304,16 +309,24 @@ impl LockedStore {
             options.mode(0o600);
         }
         let result = (|| {
-            let mut file = options.open(&temporary).map_err(|_| StoreError::Io)?;
-            file.write_all(&bytes).map_err(|_| StoreError::Io)?;
-            file.sync_all().map_err(|_| StoreError::Io)?;
+            let mut file = options
+                .open(&temporary)
+                .map_err(|source| CredentialError::io("create temporary file", source))?;
+            file.write_all(&bytes)
+                .map_err(|source| CredentialError::io("write credentials", source))?;
+            file.sync_all()
+                .map_err(|source| CredentialError::io("sync credentials", source))?;
             fs::rename(&temporary, self.store.directory.join("auth.json"))
-                .map_err(|_| StoreError::Io)?;
+                .map_err(|source| CredentialError::io("replace credentials", source))?;
             #[cfg(unix)]
             File::open(&self.store.directory)
                 .and_then(|directory| directory.sync_all())
-                .map_err(|_| StoreError::Io)?;
-            revision(&file.metadata().map_err(|_| StoreError::Io)?)
+                .map_err(|source| CredentialError::io("sync directory", source))?;
+            revision(
+                &file
+                    .metadata()
+                    .map_err(|source| CredentialError::io("read metadata", source))?,
+            )
         })();
         if result.is_err() {
             let _ = fs::remove_file(temporary);
@@ -328,30 +341,32 @@ impl Drop for LockedStore {
     }
 }
 
-fn check_path(path: &Path, directory: bool) -> Result<bool, StoreError> {
+fn check_path(path: &Path, directory: bool) -> Result<bool, CredentialError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return Err(StoreError::Io),
+        Err(source) => return Err(CredentialError::io("inspect path", source)),
     };
     if metadata.file_type().is_symlink() || metadata.is_dir() != directory {
-        return Err(StoreError::Permissions);
+        return Err(CredentialError::Permissions);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o777 != if directory { 0o700 } else { 0o600 } {
-            return Err(StoreError::Permissions);
+            return Err(CredentialError::Permissions);
         }
     }
     Ok(true)
 }
 
-fn revision(metadata: &fs::Metadata) -> Result<Revision, StoreError> {
+fn revision(metadata: &fs::Metadata) -> Result<Revision, CredentialError> {
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     Ok(Revision {
-        modified: metadata.modified().map_err(|_| StoreError::Io)?,
+        modified: metadata
+            .modified()
+            .map_err(|source| CredentialError::io("read modification time", source))?,
         length: metadata.len(),
         #[cfg(unix)]
         inode: metadata.ino(),
@@ -386,7 +401,7 @@ mod tests {
         );
         drop(reader);
         let writer = store.lock(false).await.unwrap().unwrap();
-        assert!(matches!(store.snapshot(), Err(StoreError::Busy)));
+        assert!(matches!(store.snapshot(), Err(CredentialError::Busy)));
         drop(writer);
         assert_eq!(store.snapshot().unwrap().unwrap().revision, revision);
         fs::remove_dir_all(directory).unwrap();
@@ -456,7 +471,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert_eq!(stale.kind, ErrorKind::Modified);
+        assert_eq!(stale.kind(), ErrorKind::Modified);
         assert_eq!(
             fixture
                 .state
@@ -498,7 +513,7 @@ mod tests {
         }
         let bytes = serde_json::to_vec(&legacy).unwrap();
         fs::write(directory.join("auth.json"), &bytes).unwrap();
-        assert!(matches!(store.snapshot(), Err(StoreError::Busy)));
+        assert!(matches!(store.snapshot(), Err(CredentialError::Busy)));
         drop(writer);
         let snapshot = store.snapshot().unwrap().unwrap();
         assert_eq!(snapshot.state.version, 2);
@@ -548,7 +563,7 @@ mod tests {
             .next()
             .unwrap()
             .authorization_id = Uuid::nil();
-        assert!(matches!(invalid.validate(), Err(StoreError::Invalid)));
+        assert!(matches!(invalid.validate(), Err(CredentialError::Invalid)));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -561,7 +576,7 @@ mod tests {
         let locked = store.lock(true).await.unwrap().unwrap();
         let host = locked.state.ext_agent_host_id.clone();
         locked.save().unwrap();
-        assert!(matches!(store.snapshot(), Err(StoreError::Busy)));
+        assert!(matches!(store.snapshot(), Err(CredentialError::Busy)));
         assert!(
             tokio::time::timeout(Duration::from_millis(60), store.lock(false))
                 .await

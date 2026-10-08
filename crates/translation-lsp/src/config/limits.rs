@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use super::error::{Budget, ConfigError, Relation, SizeExceeded, bounded_number};
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct TranslationLimits {
@@ -21,13 +23,13 @@ pub(crate) struct InputLimits {
 pub(crate) struct SizeLimit(usize);
 
 impl TryFrom<usize> for SizeLimit {
-    type Error = &'static str;
+    type Error = SizeConversionError;
 
     fn try_from(kib: usize) -> Result<Self, Self::Error> {
         kib.checked_mul(1024)
             .filter(|bytes| *bytes > 0)
             .map(Self)
-            .ok_or("Translation limits must be positive KiB integers that fit in memory-size arithmetic")
+            .ok_or(SizeConversionError { kib })
     }
 }
 
@@ -36,12 +38,13 @@ impl SizeLimit {
         self.0
     }
 
-    pub fn check(self, actual: usize, setting: &str) -> Result<(), String> {
-        if actual > self.0 {
-            Err(format!(
-                "Translation size {actual} bytes exceeds {} KiB; adjust {setting}",
-                self.0 / 1024,
-            ))
+    pub fn check(self, actual_bytes: usize, setting: SizeSetting) -> Result<(), SizeExceeded> {
+        if actual_bytes > self.0 {
+            Err(SizeExceeded {
+                setting,
+                actual_bytes,
+                maximum_bytes: self.0,
+            })
         } else {
             Ok(())
         }
@@ -106,30 +109,138 @@ impl Default for CacheLimits {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Translation limits must be positive KiB integers that fit in memory-size arithmetic; received {kib}"
+)]
+pub(crate) struct SizeConversionError {
+    pub kib: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizeSetting {
+    HoverInput,
+    DocumentInput,
+    Output,
+    CacheCapacity,
+}
+
+impl SizeSetting {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HoverInput => "translation_limits.input_kib.hover",
+            Self::DocumentInput => "translation_limits.input_kib.document",
+            Self::Output => "translation_limits.output_kib",
+            Self::CacheCapacity => "translation_limits.cache.capacity_kib",
+        }
+    }
+}
+
+impl std::fmt::Display for SizeSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 impl TranslationLimits {
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Local resource policy, not a provider context-window or token guarantee.
+        for (setting, limit, maximum_kib) in [
+            (SizeSetting::HoverInput, self.input_kib.hover, 1024),
+            (
+                SizeSetting::DocumentInput,
+                self.input_kib.document,
+                16 * 1024,
+            ),
+            (SizeSetting::Output, self.output_kib, 16 * 1024),
+            (
+                SizeSetting::CacheCapacity,
+                self.cache.capacity_kib,
+                256 * 1024,
+            ),
+        ] {
+            bounded_number(
+                setting.name(),
+                (limit.bytes() / 1024) as u64,
+                1,
+                maximum_kib,
+            )?;
+        }
         let w = self.work;
-        if [
-            w.admitted,
-            w.concurrent,
-            w.documents,
-            w.automatic,
-            w.hover_waiters,
-            self.cache.entries,
-        ]
-        .contains(&0)
-        {
-            return Err("Translation work and cache counts must be positive integers");
+        for (setting, value, maximum) in [
+            ("translation_limits.work.admitted", w.admitted, 64),
+            ("translation_limits.work.concurrent", w.concurrent, 8),
+            ("translation_limits.work.documents", w.documents, 8),
+            ("translation_limits.work.automatic", w.automatic, 63),
+            (
+                "translation_limits.work.hover_waiters",
+                w.hover_waiters,
+                256,
+            ),
+            ("translation_limits.cache.entries", self.cache.entries, 4096),
+        ] {
+            bounded_number(setting, value as u64, 1, maximum)?;
         }
-        if w.concurrent > tokio::sync::Semaphore::MAX_PERMITS {
-            return Err(
-                "translation_limits.work.concurrent exceeds the platform concurrency capacity",
-            );
+        for (lower, lower_value, upper, upper_value, relation) in [
+            (
+                "translation_limits.work.documents",
+                w.documents,
+                "translation_limits.work.concurrent",
+                w.concurrent,
+                Relation::AtMost,
+            ),
+            (
+                "translation_limits.work.concurrent",
+                w.concurrent,
+                "translation_limits.work.admitted",
+                w.admitted,
+                Relation::AtMost,
+            ),
+            (
+                "translation_limits.work.automatic",
+                w.automatic,
+                "translation_limits.work.admitted",
+                w.admitted,
+                Relation::LessThan,
+            ),
+        ] {
+            let valid = match relation {
+                Relation::AtMost => lower_value <= upper_value,
+                Relation::LessThan => lower_value < upper_value,
+            };
+            if !valid {
+                return Err(ConfigError::Relation {
+                    lower,
+                    lower_value,
+                    upper,
+                    upper_value,
+                    relation,
+                });
+            }
         }
-        if w.documents > w.concurrent || w.concurrent > w.admitted || w.automatic >= w.admitted {
-            return Err(
-                "translation_limits.work requires documents <= concurrent <= admitted and automatic < admitted",
-            );
+        for (budget, required_bytes, maximum_bytes) in [
+            (
+                Budget::AcceptedInput,
+                self.input_kib
+                    .hover
+                    .bytes()
+                    .max(self.input_kib.document.bytes()) as u64
+                    * w.admitted as u64,
+                256 * 1024 * 1024,
+            ),
+            (
+                Budget::ConcurrentOutput,
+                self.output_kib.bytes() as u64 * w.concurrent as u64,
+                64 * 1024 * 1024,
+            ),
+        ] {
+            if required_bytes > maximum_bytes {
+                return Err(ConfigError::Budget {
+                    budget,
+                    required_bytes,
+                    maximum_bytes,
+                });
+            }
         }
         Ok(())
     }

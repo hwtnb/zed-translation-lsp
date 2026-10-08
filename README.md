@@ -115,9 +115,26 @@ Work and cache limits are optional objects inside `translation_limits`:
 }
 ```
 
-`admitted` counts running and queued translation operations, including canceled workers until they terminate. `concurrent` limits all executing translations, `documents` limits operations dispatched as tab translations, `automatic` limits jobs retained only by automatic selection, and `hover_waiters` limits individual pending Hover responses. All counts must be positive integers. Require `documents <= concurrent <= admitted` and `automatic < admitted`; `concurrent` must fit the platform's concurrency primitive. This reserves admission capacity for explicit requests, but does not reserve an idle worker. Increasing concurrency can increase simultaneous provider usage.
+`admitted` counts running and queued translation operations, including canceled workers until they terminate. `concurrent` limits all executing translations, `documents` limits operations dispatched as tab translations, `automatic` limits jobs retained only by automatic selection, and `hover_waiters` limits individual pending Hover responses. All counts must be positive integers. Require `documents <= concurrent <= admitted` and `automatic < admitted`. This reserves admission capacity for explicit requests, but does not reserve an idle worker. Increasing concurrency can increase simultaneous provider usage.
 
 `cache.entries` bounds the combined successful, failed, and tab cache entries across all documents. `cache.capacity_kib` bounds their stored text, not total process memory. The effective capacity is the greater of this value and `output_kib`, so one maximum-size result can fit. Metadata, source documents, in-flight input, and temporary tab files are outside this text budget. Defaults are a starting point for sequential reading, not measured provider or hardware limits. Omitted nested fields retain their defaults; restart the language server after changing them.
+
+The following are **maximum configurable values**, separate from the defaults above. Larger values fail initialization rather than being silently clamped.
+
+| Setting inside `translation_limits` | Maximum |
+| --- | --- |
+| `input_kib.hover` | `1024` (1 MiB) |
+| `input_kib.document`, `output_kib` | `16384` (16 MiB each) |
+| `work.admitted` | `64` |
+| `work.concurrent`, `work.documents` | `8` each |
+| `work.automatic` | `63`, also less than `admitted` |
+| `work.hover_waiters` | `256` |
+| `cache.entries` | `4096` |
+| `cache.capacity_kib` | `262144` (256 MiB) |
+
+Two combined limits also apply: `max(input_kib.hover, input_kib.document) × work.admitted` must not exceed `262144` KiB (256 MiB), and `output_kib × work.concurrent` must not exceed `65536` KiB (64 MiB). For example, 16 MiB document input with 64 accepted jobs is rejected; use at most 16 accepted jobs at that input limit. A 16 MiB output limit permits at most four simultaneous translations. These checks apply to configured worst cases, even when the queue is currently empty.
+
+These ceilings are a local resource policy, not measured hardware limits or provider guarantees. The input budget bounds accepted source payloads; the smaller output budget leaves room for escaped SSE events and multiple decoded output snapshots. The individual input caps allow larger documents while keeping automatic/selection Hover input more restricted. Job and cache-entry caps also bound scheduler and cache scans when texts are tiny. Cache text has a separate 256 MiB ceiling. Source documents, parser state, allocator overhead, transport buffers, and preview files are additional costs, so these figures are **not a process-memory guarantee**. The default settings are unchanged. Raising a limit beyond these ceilings requires reviewing this policy in the server, rather than overriding it in Zed.
 
 Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`. They bound transport processing separately from the decoded translation; they do not allocate the maximum up front. Increasing a local limit does not increase the model's context or output capacity or extend the request deadline. Long documents are sent in one request, without automatic splitting. Failed, incomplete, and oversized results are not displayed or saved as completed translations.
 

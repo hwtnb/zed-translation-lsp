@@ -3,7 +3,9 @@ use std::time::Duration;
 use openidconnect::{HttpRequest, HttpResponse};
 use serde_json::Value;
 
-use crate::providers::error::{Error, ErrorKind};
+#[cfg(test)]
+use crate::providers::error::ErrorKind;
+use crate::providers::error::{Cause, Error, RemoteError, RemoteKind};
 
 #[derive(Clone)]
 pub(crate) struct Http {
@@ -40,46 +42,36 @@ pub(super) fn response_error(
         .or_else(|| body.as_str())
         .unwrap_or("OpenAI request failed");
     let kind = match code {
-        "subscription_sharing_usage_limit_exceeded" => ErrorKind::UsageLimit,
-        "subscription_sharing_user_not_eligible" => ErrorKind::NotEligible,
+        "subscription_sharing_usage_limit_exceeded" => RemoteKind::UsageLimit,
+        "subscription_sharing_user_not_eligible" => RemoteKind::NotEligible,
         "subscription_sharing_usage_unavailable"
         | "subscription_sharing_user_unavailable"
-        | "server_is_overloaded" => ErrorKind::Temporary,
+        | "server_is_overloaded" => RemoteKind::Temporary,
         "subscription_sharing_unsupported_capability"
         | "invalid_client"
         | "model_not_found"
-        | "unsupported_value" => ErrorKind::Configuration,
+        | "unsupported_value" => RemoteKind::Configuration,
         "invalid_grant"
         | "invalid_refresh_token"
         | "token_expired"
         | "refresh_token_expired"
         | "refresh_token_invalidated"
-        | "refresh_token_reused" => ErrorKind::RefreshUnusable,
-        _ if status >= 500 => ErrorKind::Temporary,
+        | "refresh_token_reused" => RemoteKind::RefreshUnusable,
+        _ if status >= 500 => RemoteKind::Temporary,
         _ if status == 400 && matches!(param, Some("model" | "reasoning.effort")) => {
-            ErrorKind::Configuration
+            RemoteKind::Configuration
         }
-        _ => ErrorKind::Failed,
+        _ => RemoteKind::Failed,
     };
-    let mut message = format!("OpenAI HTTP {status}: {}", safe(detail, secrets, 512));
-    if !code.is_empty() {
-        message.push_str(&format!(" (code={})", safe(code, secrets, 128)));
+    RemoteError {
+        kind,
+        status,
+        detail: safe(detail, secrets, 512),
+        code: (!code.is_empty()).then(|| safe(code, secrets, 128)),
+        param: param.map(|value| safe(value, secrets, 128)),
+        request_id: request_id.map(|value| safe(value, secrets, 128)),
     }
-    if let Some(param) = param {
-        message.push_str(&format!(" (param={})", safe(param, secrets, 128)));
-    }
-    if let Some(id) = request_id {
-        message.push_str(&format!(" (request_id={})", safe(id, secrets, 128)));
-    }
-    if kind == ErrorKind::UsageLimit {
-        message.push_str(". Check ChatGPT usage at https://chatgpt.com/settings/usage");
-    }
-    if kind == ErrorKind::RefreshUnusable {
-        message.push_str(
-            ". Choose Continue with ChatGPT / Choose account and reconnect the saved account.",
-        );
-    }
-    Error { kind, message }
+    .into()
 }
 
 impl Http {
@@ -148,13 +140,13 @@ impl Http {
             .client
             .execute(request)
             .await
-            .map_err(|_| temporary_network())?;
+            .map_err(temporary_network)?;
         let mut builder = openidconnect::http::Response::builder().status(response.status());
         for (name, value) in response.headers() {
             builder = builder.header(name, value);
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| temporary_network())? {
+        while let Some(chunk) = response.chunk().await.map_err(temporary_network)? {
             if body.len().saturating_add(chunk.len()) > 512 * 1024 {
                 return Err(Error::failed("OIDC response exceeds 512 KiB"));
             }
@@ -186,7 +178,7 @@ impl Http {
         let status = response.status();
         let request_id = request_id(response.headers()).map(str::to_owned);
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| temporary_network())? {
+        while let Some(chunk) = response.chunk().await.map_err(temporary_network)? {
             if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
                 return Err(Error::failed("OpenAI JSON response exceeds 1 MiB"));
             }
@@ -209,13 +201,8 @@ impl Http {
     }
 }
 
-pub(super) fn temporary_network() -> Error {
-    Error {
-        kind: ErrorKind::Temporary,
-        message:
-            "OpenAI network request failed or timed out; credentials are retained, retry later"
-                .into(),
-    }
+pub(super) fn temporary_network(source: reqwest::Error) -> Error {
+    Cause::Network(source.without_url()).into()
 }
 
 pub(super) fn safe(value: &str, secrets: &[&str], maximum: usize) -> String {
@@ -246,7 +233,7 @@ mod tests {
             None,
             &[],
         );
-        assert_eq!(error.kind, ErrorKind::Temporary);
+        assert_eq!(error.kind(), ErrorKind::Temporary);
     }
 
     #[test]
@@ -257,12 +244,12 @@ mod tests {
             Some("req-test"),
             &["synthetic-secret"],
         );
-        assert_eq!(error.kind, ErrorKind::UsageLimit);
-        assert!(error.message.contains("req-test"));
-        assert!(error.message.contains("settings/usage"));
-        assert!(!error.message.contains("synthetic-secret"));
+        assert_eq!(error.kind(), ErrorKind::UsageLimit);
+        assert!(error.to_string().contains("req-test"));
+        assert!(error.to_string().contains("settings/usage"));
+        assert!(!error.to_string().contains("synthetic-secret"));
         let error = response_error(503, &json!({"detail":"Temporarily unavailable"}), None, &[]);
-        assert_eq!(error.kind, ErrorKind::Temporary);
-        assert!(error.message.contains("Temporarily unavailable"));
+        assert_eq!(error.kind(), ErrorKind::Temporary);
+        assert!(error.to_string().contains("Temporarily unavailable"));
     }
 }

@@ -1,3 +1,4 @@
+use crate::providers::error::{Cause, credentials::CredentialError};
 mod callback;
 #[cfg(test)]
 use callback::callback;
@@ -20,15 +21,12 @@ use crate::providers::{
 };
 
 use super::{
-    auth_store::{AuthStore, Credentials, Registration, StoreError, now},
+    auth_store::{AuthStore, Credentials, Registration, now},
     http::{Http, response_error},
 };
 
 pub(super) fn account_changed() -> Error {
-    Error {
-        kind: ErrorKind::Modified,
-        message: "ChatGPT account or authorization changed; retry the preview".into(),
-    }
+    Cause::Modified.into()
 }
 
 const RESOURCE: &str = "https://api.openai.com/v1";
@@ -97,7 +95,7 @@ pub(crate) struct Access {
 impl Auth {
     pub fn production(http: Http) -> Result<Self, Error> {
         Ok(Self {
-            store: AuthStore::production().map_err(store_error)?,
+            store: AuthStore::production()?,
             http,
             issuer: IssuerUrl::new("https://auth.openai.com".into()).unwrap(),
         })
@@ -135,8 +133,7 @@ impl Auth {
     pub fn key(&self) -> Result<AccountKey, Error> {
         let snapshot = self
             .store
-            .snapshot()
-            .map_err(store_error)?
+            .snapshot()?
             .ok_or_else(|| Error::failed("Use Continue with ChatGPT before translating"))?;
         let id = snapshot
             .state
@@ -187,7 +184,7 @@ impl Auth {
         // Create the host only after the explicit command, then release the lock
         // while the user interacts with the browser.
         let (host, previous, before) = {
-            let locked = self.store.lock(true).await.map_err(store_error)?.unwrap();
+            let locked = self.store.lock(true).await?.unwrap();
             let previous =
                 selected
                     .map(|id| {
@@ -196,9 +193,9 @@ impl Auth {
                         })
                     })
                     .transpose()?;
-            let revision = match locked.revision().map_err(store_error)? {
+            let revision = match locked.revision()? {
                 Some(revision) => revision,
-                None => locked.save().map_err(store_error)?,
+                None => locked.save()?,
             };
             (locked.state.ext_agent_host_id.clone(), previous, revision)
         };
@@ -311,20 +308,15 @@ impl Auth {
             .credentials
             .as_ref()
             .is_some_and(Credentials::plan_enabled);
-        let mut locked = self
-            .store
-            .lock(false)
-            .await
-            .map_err(store_error)?
-            .ok_or_else(account_changed)?;
-        let current = locked.revision().map_err(store_error)?;
+        let mut locked = self.store.lock(false).await?.ok_or_else(account_changed)?;
+        let current = locked.revision()?;
         if current.as_ref() != Some(&before) {
             return Err(account_changed());
         }
         let id = selected.unwrap_or_else(Uuid::new_v4);
         locked.state.registrations.insert(id, registration);
         locked.state.active_registration = Some(id);
-        locked.save().map_err(store_error)?;
+        locked.save()?;
         let message = if enabled {
             "ChatGPT is connected. Hover over a comment or translate a selection."
         } else {
@@ -369,15 +361,10 @@ impl Auth {
                 }
             }
             Ok(None) => return Err(account_changed()),
-            Err(StoreError::Busy) => (),
-            Err(error) => return Err(store_error(error)),
+            Err(CredentialError::Busy) => (),
+            Err(error) => return Err(Error::from(error)),
         }
-        let mut locked = self
-            .store
-            .lock(false)
-            .await
-            .map_err(store_error)?
-            .ok_or_else(account_changed)?;
+        let mut locked = self.store.lock(false).await?.ok_or_else(account_changed)?;
         if locked.state.active_registration != Some(expected.registration)
             || locked
                 .state
@@ -419,9 +406,9 @@ impl Auth {
                 Ok(response) => response,
                 Err(error) => {
                     let error = token_error(error);
-                    if error.kind == ErrorKind::RefreshUnusable {
+                    if error.kind() == ErrorKind::RefreshUnusable {
                         registration.credentials = None;
-                        locked.save().map_err(store_error)?;
+                        locked.save()?;
                     }
                     return Err(error);
                 }
@@ -470,7 +457,7 @@ impl Auth {
                 }
             }
             registration.credentials = Some(credentials(&response, Some(&previous))?);
-            locked.save().map_err(store_error)?;
+            locked.save()?;
         }
         let credentials = locked.state.registrations[&expected.registration]
             .credentials
@@ -488,7 +475,7 @@ impl Auth {
     }
 
     pub async fn sign_out(&self) -> Result<String, Error> {
-        let Some(mut locked) = self.store.lock(false).await.map_err(store_error)? else {
+        let Some(mut locked) = self.store.lock(false).await? else {
             return Ok("No ChatGPT account is connected.".into());
         };
         let Some(id) = locked.state.active_registration else {
@@ -532,7 +519,7 @@ impl Auth {
                         confirmed = true;
                         break;
                     }
-                    Err(error) if error.kind == ErrorKind::Temporary => (),
+                    Err(error) if error.kind() == ErrorKind::Temporary => (),
                     Err(_) => break,
                 }
                 if attempt < 2 {
@@ -541,7 +528,7 @@ impl Auth {
             }
         }
         locked.state.registrations.get_mut(&id).unwrap().credentials = None;
-        locked.save().map_err(store_error)?;
+        locked.save()?;
         let message = if confirmed {
             "Signed out of this ChatGPT registration."
         } else {
@@ -558,7 +545,7 @@ impl Auth {
         ui: &impl Interaction,
         enable: bool,
     ) -> Result<String, Error> {
-        let snapshot = self.store.snapshot().map_err(store_error)?;
+        let snapshot = self.store.snapshot()?;
         let mut choices = Vec::new();
         let mut ids = HashMap::new();
         if let Some(snapshot) = snapshot {
@@ -667,25 +654,6 @@ fn token_error(
     }
 }
 
-pub(crate) fn store_error(error: StoreError) -> Error {
-    let kind = match error {
-        StoreError::Busy => ErrorKind::Unavailable,
-        _ => ErrorKind::Storage,
-    };
-    let message = match error {
-        StoreError::Busy => "ChatGPT credentials are being updated by another process; retry later",
-        StoreError::Permissions => {
-            "ChatGPT credential storage must be a private directory (0700) with private files (0600)"
-        }
-        StoreError::Invalid => "ChatGPT credential storage is invalid",
-        StoreError::Io => "Could not read or save the dedicated ChatGPT credentials",
-    };
-    Error {
-        kind,
-        message: message.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::test_support::Fixture;
@@ -696,9 +664,19 @@ mod tests {
 
     #[test]
     fn only_store_contention_is_retryable() {
-        assert_eq!(store_error(StoreError::Busy).kind, ErrorKind::Unavailable);
-        for error in [StoreError::Invalid, StoreError::Permissions, StoreError::Io] {
-            assert_eq!(store_error(error).kind, ErrorKind::Storage);
+        assert_eq!(
+            Error::from(CredentialError::Busy).kind(),
+            ErrorKind::Unavailable
+        );
+        for error in [
+            CredentialError::Invalid,
+            CredentialError::Permissions,
+            CredentialError::io(
+                "test",
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            ),
+        ] {
+            assert_eq!(Error::from(error).kind(), ErrorKind::Storage);
         }
     }
 
@@ -948,7 +926,11 @@ mod tests {
         fixture.state.lock().unwrap().refresh_failure =
             Some((503, json!({"detail":"temporary refresh outage"})));
         assert_eq!(
-            auth.access(&auth.key().unwrap()).await.err().unwrap().kind,
+            auth.access(&auth.key().unwrap())
+                .await
+                .err()
+                .unwrap()
+                .kind(),
             ErrorKind::Temporary
         );
         assert!(
@@ -959,7 +941,11 @@ mod tests {
         fixture.state.lock().unwrap().refresh_failure =
             Some((400, json!({"error":"invalid_grant"})));
         assert_eq!(
-            auth.access(&auth.key().unwrap()).await.err().unwrap().kind,
+            auth.access(&auth.key().unwrap())
+                .await
+                .err()
+                .unwrap()
+                .kind(),
             ErrorKind::RefreshUnusable
         );
         let state = auth.store.snapshot().unwrap().unwrap().state;
@@ -1002,7 +988,7 @@ mod tests {
                                 assert_eq!(access.credentials.refresh_token, "synthetic-refresh-1");
                                 break;
                             }
-                            Err(error) => assert_eq!(error.kind, ErrorKind::Modified),
+                            Err(error) => assert_eq!(error.kind(), ErrorKind::Modified),
                         }
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;

@@ -275,7 +275,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             assert!(
                 completion
                     .result
-                    .is_err_and(|error| error.message == "Translation timed out")
+                    .is_err_and(|error| error.to_string() == "Translation timed out")
             );
         }
         if cancel {
@@ -621,7 +621,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         .phase = Phase::Running;
     assert!(matches!(
         auth.store.snapshot(),
-        Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+        Err(crate::providers::error::credentials::CredentialError::Busy)
     ));
     assert!(provider.context().is_err());
     tokio::time::sleep(Duration::from_millis(160)).await;
@@ -671,7 +671,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     .unwrap();
     assert!(matches!(
         auth.store.snapshot(),
-        Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+        Err(crate::providers::error::credentials::CredentialError::Busy)
     ));
     server.publish_activity();
     assert!(
@@ -1072,7 +1072,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
                     completion
                         .result
                         .as_ref()
-                        .is_err_and(|error| error.message.contains("timed out"))
+                        .is_err_and(|error| error.to_string().contains("timed out"))
                 );
                 server.finish(&connection, completion).unwrap();
                 ErrorCode::RequestFailed
@@ -1141,7 +1141,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             if operation != "timeout-active" {
                 let canceled = next(&completions).await;
                 assert!(
-                    matches!(&canceled.result, Err(error) if error.kind == ErrorKind::Cancelled)
+                    matches!(&canceled.result, Err(error) if error.kind() == ErrorKind::Cancelled)
                 );
                 server.finish(&connection, canceled).unwrap();
             }
@@ -1160,8 +1160,8 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
                     .result
                     .as_ref()
                     .err()
-                    .map(|e| e.message.as_str())
-                    .unwrap_or("")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default()
             );
             server.finish(&connection, completion).unwrap();
         }
@@ -1277,8 +1277,8 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
                     .result
                     .as_ref()
                     .err()
-                    .map(|e| e.message.as_str())
-                    .unwrap_or("")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default()
             );
             server.finish(&connection, completion).unwrap();
             assert!(server.cache.latest(&uris[0]).is_some());
@@ -1388,7 +1388,7 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
                 successes += 1;
                 assert_eq!(translated.context, provider.context().unwrap());
             }
-            Err(error) => assert_eq!(error.kind, ErrorKind::Modified),
+            Err(error) => assert_eq!(error.kind(), ErrorKind::Modified),
         }
     }
     assert_eq!(successes, 2);
@@ -1515,7 +1515,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     for _ in 0..2 {
         let completion = next(&completions).await;
         assert!(completion.result.as_ref().is_err_and(|e| {
-            e.message
+            e.to_string()
                 .contains("OpenAI stream ended without response.completed")
         }));
         server.finish(&connection, completion).unwrap();
@@ -3294,7 +3294,7 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
     assert!(
         auth.key()
             .unwrap_err()
-            .message
+            .to_string()
             .contains("Enable ChatGPT plan use")
     );
     {
@@ -3344,10 +3344,10 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
     let error = auth.key().unwrap_err();
     assert!(
         error
-            .message
+            .to_string()
             .contains("Continue with ChatGPT / Choose account")
     );
-    assert!(!error.message.contains("Enable"));
+    assert!(!error.to_string().contains("Enable"));
     fixture.connected(&auth, 3600).await;
     assert_eq!(actions(&server), ready);
     // An invalid local snapshot also retains the explicit recovery entry.

@@ -131,7 +131,7 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
             let _ = respond(
                 connection,
                 id.clone(),
-                Err(failure(ErrorCode::InvalidParams, message)),
+                Err(failure(ErrorCode::InvalidParams, &message.to_string())),
             );
         })?;
     let chatgpt = matches!(settings.provider, ProviderSettings::Chatgpt { .. });
@@ -447,7 +447,7 @@ impl<P: TranslationProvider> Server<P> {
         let context = match self.provider.context() {
             Ok(context) => context,
             Err(error) => {
-                if error.kind != ErrorKind::Unavailable {
+                if error.kind() != ErrorKind::Unavailable {
                     self.clear_previews();
                 }
                 return Err(provider_failure(error));
@@ -745,14 +745,14 @@ impl<P: TranslationProvider> Drop for Server<P> {
 
 fn provider_failure(error: ProviderError) -> ResponseError {
     failure(
-        if error.kind == ErrorKind::Modified {
+        if error.kind() == ErrorKind::Modified {
             ErrorCode::ContentModified
-        } else if error.kind == ErrorKind::Cancelled {
+        } else if error.kind() == ErrorKind::Cancelled {
             ErrorCode::RequestCanceled
         } else {
             ErrorCode::RequestFailed
         },
-        &error.message,
+        &error.to_string(),
     )
 }
 

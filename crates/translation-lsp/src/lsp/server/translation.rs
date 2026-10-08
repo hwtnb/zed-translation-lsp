@@ -1,4 +1,5 @@
 use super::*;
+use crate::{config::limits::SizeSetting, providers::error::Notification as ErrorNotification};
 
 impl<P: TranslationProvider> Server<P> {
     pub(super) fn dispatch(&mut self) -> RequestResult<()> {
@@ -41,17 +42,17 @@ impl<P: TranslationProvider> Server<P> {
         let (limit, setting) = if tab {
             (
                 self.settings.translation_limits.input_kib.document,
-                "translation_limits.input_kib.document",
+                SizeSetting::DocumentInput,
             )
         } else {
             (
                 self.settings.translation_limits.input_kib.hover,
-                "translation_limits.input_kib.hover",
+                SizeSetting::HoverInput,
             )
         };
         limit
             .check(original.len(), setting)
-            .map_err(|m| failure(ErrorCode::InvalidParams, &m))?;
+            .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))?;
         if let Some(preview) = self.cache.exact(&target.uri, target.range, tab) {
             self.next_ticket += 1;
             self.cache.insert(
@@ -226,7 +227,7 @@ impl<P: TranslationProvider> Server<P> {
             .result
             .as_ref()
             .err()
-            .is_some_and(|e| e.kind == ErrorKind::Paused);
+            .is_some_and(|e| e.notification() == ErrorNotification::Suppress);
         let result = (|| {
             if !self.target_is_current(&work.target) {
                 return Err(failure(
@@ -252,8 +253,8 @@ impl<P: TranslationProvider> Server<P> {
             self.settings
                 .translation_limits
                 .output_kib
-                .check(translation.text.len(), "translation_limits.output_kib")
-                .map_err(|m| failure(ErrorCode::RequestFailed, &m))?;
+                .check(translation.text.len(), SizeSetting::Output)
+                .map_err(|m| failure(ErrorCode::RequestFailed, &m.to_string()))?;
             Ok(Preview {
                 range: work.target.range,
                 translation: translation.text,

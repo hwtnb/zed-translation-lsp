@@ -27,11 +27,6 @@ use super::{
 use auth::{AccountKey, Auth, account_changed};
 use http::{Http, response_error, temporary_network};
 
-const RETRY_GUIDANCE: &str = concat!(
-    ". Automatic translation is paused. After resolving the cause, ",
-    "run a selection or document translation to retry."
-);
-
 const CONNECT: &str = "translation-lsp.connect";
 const ENABLE: &str = "translation-lsp.enable";
 const SIGN_OUT: &str = "translation-lsp.sign-out";
@@ -144,19 +139,19 @@ impl ChatGptProvider {
     }
 
     fn record_error(&self, key: &AccountKey, error: &mut Error, generation: u64) {
-        let pause = match error.kind {
+        let pause = match error.kind() {
             ErrorKind::UsageLimit | ErrorKind::NotEligible | ErrorKind::Configuration => Some(None),
             ErrorKind::Temporary => Some(Some(Instant::now() + Duration::from_secs(2))),
             _ => None,
         };
         if let Some(until) = pause {
-            if until.is_none() && !error.message.ends_with(RETRY_GUIDANCE) {
-                error.message.push_str(RETRY_GUIDANCE);
+            if until.is_none() {
+                error.require_explicit_retry();
             }
             let mut state = self.state.lock().unwrap();
             if until.is_none() {
                 if generation < state.generation {
-                    error.kind = ErrorKind::Paused;
+                    error.suppress_notification();
                     return;
                 }
                 state.generation += 1;
@@ -194,8 +189,8 @@ impl ChatGptProvider {
                         return result;
                     }
                 }
-                Err(error) if error.kind == ErrorKind::Unavailable => (),
-                Err(error) if error.kind == ErrorKind::Storage => return Err(error),
+                Err(error) if error.kind() == ErrorKind::Unavailable => (),
+                Err(error) if error.kind() == ErrorKind::Storage => return Err(error),
                 _ => return Err(account_changed()),
             }
         }
@@ -261,7 +256,7 @@ impl ChatGptProvider {
                     .json(&request)
                     .send()
                     .await
-                    .map_err(|_| temporary_network())?;
+                    .map_err(temporary_network)?;
                 // A date or invalid delay must not cause a retry earlier than requested.
                 let retry_after = response
                     .headers()
@@ -279,7 +274,7 @@ impl ChatGptProvider {
                     })
                 };
                 match result {
-                    Err(error) if !retried && error.kind == ErrorKind::Temporary => {
+                    Err(error) if !retried && error.kind() == ErrorKind::Temporary => {
                         let Some(delay) = retry_after else {
                             return Err(error);
                         };
@@ -323,7 +318,7 @@ impl TranslationProvider for ChatGptProvider {
             && context == &Context::ChatGpt(key.clone())
         {
             let mut error = error.clone();
-            error.kind = ErrorKind::Paused;
+            error.suppress_notification();
             return Err(error);
         }
         Ok(())
@@ -440,8 +435,8 @@ mod tests {
                     .await
                     .expect("Storage errors must release work without waiting for its deadline")
                     .unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Storage);
-            assert!(error.message.contains(if permissions {
+            assert_eq!(error.kind(), ErrorKind::Storage);
+            assert!(error.to_string().contains(if permissions {
                 "private directory"
             } else {
                 "storage is invalid"
@@ -499,11 +494,11 @@ mod tests {
             } else {
                 let error = result.err().unwrap();
                 assert!(
-                    error.message.contains("translation_limits.output_kib"),
+                    error.to_string().contains("translation_limits.output_kib"),
                     "{}",
-                    error.message
+                    error.to_string()
                 );
-                assert!(error.message.contains(&(kib * 1024 + 1).to_string()));
+                assert!(error.to_string().contains(&(kib * 1024 + 1).to_string()));
             }
         }
     }
@@ -519,7 +514,7 @@ mod tests {
         assert!(
             raw.accept(b"x", small)
                 .unwrap_err()
-                .message
+                .to_string()
                 .contains("SSE event")
         );
         RawLimit::default()
@@ -532,7 +527,7 @@ mod tests {
         assert!(
             raw.accept(b"\n", small)
                 .unwrap_err()
-                .message
+                .to_string()
                 .contains("stream")
         );
         RawLimit::default()
@@ -580,7 +575,7 @@ mod tests {
                     .await;
                 assert_eq!(response_calls(&fixture), 2);
                 if permanent {
-                    assert_eq!(result.err().unwrap().kind, ErrorKind::Temporary);
+                    assert_eq!(result.err().unwrap().kind(), ErrorKind::Temporary);
                     assert_eq!(
                         provider
                             .admit(
@@ -588,7 +583,7 @@ mod tests {
                                 crate::providers::Intent::Automatic
                             )
                             .unwrap_err()
-                            .kind,
+                            .kind(),
                         ErrorKind::Temporary
                     );
                 } else {
@@ -643,7 +638,7 @@ mod tests {
                 let result = tokio::time::timeout(Duration::from_secs(1), &mut request)
                     .await
                     .unwrap();
-                assert_eq!(result.err().unwrap().kind, ErrorKind::Modified);
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
                 assert_eq!(response_calls(&fixture), 1);
             }
         }
@@ -686,7 +681,7 @@ mod tests {
                 assert!(started.elapsed() >= Duration::from_secs(1));
                 assert_eq!(response_calls(&fixture), 2);
             } else {
-                assert_eq!(result.err().unwrap().kind, ErrorKind::Temporary);
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::Temporary);
                 assert_eq!(response_calls(&fixture), 1);
             }
         }
@@ -727,7 +722,7 @@ mod tests {
             assert_eq!(
                 result
                     .map(|translated| translated.text)
-                    .map_err(|error| error.message),
+                    .map_err(|error| error.to_string()),
                 Ok(translation.into())
             );
             let state = fixture.state.lock().unwrap();
@@ -832,7 +827,7 @@ mod tests {
                 .await
                 .err()
                 .unwrap();
-            assert_eq!(error.kind, kind);
+            assert_eq!(error.kind(), kind);
             if matches!(kind, ErrorKind::Configuration | ErrorKind::UsageLimit) {
                 assert_eq!(
                     provider
@@ -841,18 +836,18 @@ mod tests {
                             crate::providers::Intent::Automatic
                         )
                         .unwrap_err()
-                        .kind,
+                        .kind(),
                     kind
                 );
             }
             assert!(
                 error
-                    .message
+                    .to_string()
                     .contains(&format!("event={}", event["type"].as_str().unwrap()))
             );
-            assert!(error.message.contains("HTTP 200"));
-            assert!(error.message.contains("request_id=req-synthetic"));
-            assert_eq!(error.message.contains("event_keys="), unknown);
+            assert!(error.to_string().contains("HTTP 200"));
+            assert!(error.to_string().contains("request_id=req-synthetic"));
+            assert_eq!(error.to_string().contains("event_keys="), unknown);
             for secret in [
                 source,
                 "synthetic-access-0",
@@ -860,7 +855,7 @@ mod tests {
                 "synthetic-secret",
                 "https://auth.openai.com/",
             ] {
-                assert!(!error.message.contains(secret));
+                assert!(!error.to_string().contains(secret));
             }
             if !unknown {
                 let fields = if event["type"] == "error" {
@@ -868,13 +863,13 @@ mod tests {
                 } else {
                     &event["response"]["error"]
                 };
-                assert!(error.message.contains(fields["code"].as_str().unwrap()));
+                assert!(error.to_string().contains(fields["code"].as_str().unwrap()));
                 if fields.get("param").is_some() {
-                    assert!(error.message.contains("param=reasoning.effort"));
-                    assert!(error.message.contains("[redacted]"));
+                    assert!(error.to_string().contains("param=reasoning.effort"));
+                    assert!(error.to_string().contains("[redacted]"));
                 }
             } else {
-                assert!(error.message.contains("type"));
+                assert!(error.to_string().contains("type"));
             }
         }
     }
@@ -966,7 +961,14 @@ mod tests {
                 mode,
                 "late_failed" | "after_complete_failed" | "explicit_error" | "compact_late_failed"
             ) {
-                assert!(result.as_ref().err().unwrap().message.contains("HTTP 200"));
+                assert!(
+                    result
+                        .as_ref()
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("HTTP 200")
+                );
             }
             if let Ok(translated) = result {
                 for code in [
@@ -1035,11 +1037,20 @@ mod tests {
                 .await
                 .err()
                 .unwrap();
-            assert_eq!(error.kind, kind);
-            assert!(error.message.contains("req-synthetic"));
+            assert_eq!(error.kind(), kind);
+            let suppressed = provider
+                .check_admission(&provider.context().unwrap(), 0)
+                .unwrap_err();
+            assert_eq!(suppressed.kind(), kind);
+            assert_eq!(
+                suppressed.notification(),
+                crate::providers::error::Notification::Suppress
+            );
+            assert_eq!(suppressed.to_string(), error.to_string());
+            assert!(error.to_string().contains("req-synthetic"));
             assert!(
                 error
-                    .message
+                    .to_string()
                     .contains("run a selection or document translation to retry")
             );
             assert!(
@@ -1071,7 +1082,7 @@ mod tests {
                 provider
                     .admit(&context, crate::providers::Intent::Automatic)
                     .unwrap_err()
-                    .kind,
+                    .kind(),
                 kind
             );
             fixture.state.lock().unwrap().failure = None;
@@ -1082,7 +1093,7 @@ mod tests {
                 provider
                     .admit(&context, crate::providers::Intent::Automatic)
                     .unwrap_err()
-                    .kind,
+                    .kind(),
                 kind
             );
             let translated = provider
@@ -1142,7 +1153,7 @@ mod tests {
                     }
                 );
             } else {
-                assert_eq!(result.err().unwrap().kind, ErrorKind::Configuration);
+                assert_eq!(result.err().unwrap().kind(), ErrorKind::Configuration);
                 assert!(
                     provider
                         .admit(
@@ -1162,7 +1173,7 @@ mod tests {
                         .await
                         .err()
                         .unwrap()
-                        .kind,
+                        .kind(),
                     ErrorKind::Configuration
                 );
             }
@@ -1213,9 +1224,9 @@ mod tests {
                 )
                 .await;
             let error = result.err().unwrap();
-            assert!(error.message.contains(&status.to_string()));
-            assert!(error.message.contains("req-synthetic"));
-            assert!(error.message.contains(if status == 307 {
+            assert!(error.to_string().contains(&status.to_string()));
+            assert!(error.to_string().contains("req-synthetic"));
+            assert!(error.to_string().contains(if status == 307 {
                 "redirect"
             } else {
                 "plain unavailable detail"
@@ -1336,7 +1347,7 @@ mod tests {
             fixture.connected(&auth, 3600).await;
         };
         let (result, ()) = tokio::join!(translation, switch);
-        assert_eq!(result.err().unwrap().kind, ErrorKind::Modified);
+        assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
         assert_eq!(
             fixture
                 .state
