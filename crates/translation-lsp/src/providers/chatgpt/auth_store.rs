@@ -270,21 +270,6 @@ impl LockedStore {
         if self.state.version == 2 {
             return Ok(());
         }
-        let backup = self
-            .store
-            .directory
-            .join(format!("auth-v1-{}.backup.json", Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(backup).map_err(|_| StoreError::Io)?;
-        let bytes = fs::read(self.store.directory.join("auth.json")).map_err(|_| StoreError::Io)?;
-        file.write_all(&bytes).map_err(|_| StoreError::Io)?;
-        file.sync_all().map_err(|_| StoreError::Io)?;
         for registration in self.state.registrations.values_mut() {
             registration.authorization_id = Uuid::new_v4();
         }
@@ -410,7 +395,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn read_only_access_preserves_rewrites_and_rejects_new_authorization() {
         use super::super::{ChatGptProvider, auth::Auth, http::Http, test_support::Fixture};
-        use crate::providers::{TextKind, TranslationProvider, error::ErrorKind};
+        use crate::providers::{TranslationProvider, error::ErrorKind};
         let fixture = Fixture::new().await;
         fixture.state.lock().unwrap().response_mode = "delta_compact".into();
         let directory =
@@ -434,7 +419,6 @@ mod tests {
             Duration::from_secs(5),
             provider.translate(
                 crate::providers::Intent::Automatic,
-                TextKind::Selection,
                 "Shared source.",
                 "ja",
                 context.clone(),
@@ -465,7 +449,6 @@ mod tests {
         let stale = provider
             .translate(
                 crate::providers::Intent::Automatic,
-                TextKind::Selection,
                 "Stale source.",
                 "ja",
                 context,
@@ -541,26 +524,23 @@ mod tests {
         assert_eq!(writer.state.version, 2);
         drop(writer);
         assert_eq!(auth.key().unwrap(), key);
-        let backups: Vec<_> = fs::read_dir(&directory)
+        let mut files: Vec<_> = fs::read_dir(&directory)
             .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .ends_with(".backup.json")
-            })
+            .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(backups.len(), 1);
-        assert!(fs::read(&backups[0]).unwrap() == bytes);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
+        files.sort();
+        assert_eq!(files, ["auth.json", "auth.lock"]);
+        fixture.state.lock().unwrap().revoke_failure = true;
+        auth.sign_out().await.unwrap();
+        let signed_out = store.snapshot().unwrap().unwrap();
+        assert!(
+            signed_out
+                .state
+                .registrations
+                .values()
+                .all(|registration| registration.credentials.is_none())
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
         let mut invalid = snapshot.state;
         invalid
             .registrations

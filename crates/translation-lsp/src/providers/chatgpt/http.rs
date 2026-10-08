@@ -72,9 +72,7 @@ pub(super) fn response_error(
         message.push_str(&format!(" (request_id={})", safe(id, secrets, 128)));
     }
     if kind == ErrorKind::UsageLimit {
-        message.push_str(
-            ". New ChatGPT plan requests are paused; check https://chatgpt.com/settings/usage",
-        );
+        message.push_str(". Check ChatGPT usage at https://chatgpt.com/settings/usage");
     }
     if kind == ErrorKind::RefreshUnusable {
         message.push_str(

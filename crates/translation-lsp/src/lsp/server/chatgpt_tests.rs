@@ -249,7 +249,6 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             deadline,
             task: Task::Translation {
                 intent: crate::providers::Intent::Automatic,
-                kind: TextKind::Selection,
                 text: "Read this.".into(),
                 target_language: "ja".into(),
                 context: provider.context().unwrap(),
@@ -1334,8 +1333,17 @@ async fn cached_translation_survives_store_lock_but_not_reauthorization() {
         .authorization_id = uuid::Uuid::new_v4();
     writer.save().unwrap();
     drop(writer);
-    server.check_cache().unwrap();
+    fixture.state.lock().unwrap().translation = Some("New authorization translation".into());
+    assert!(server.hover(4.into(), hover()).unwrap().is_none());
     assert!(server.documents[&uri].preview.is_none());
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(
+        server.documents[&uri].preview.as_ref().unwrap().translation,
+        "New authorization translation"
+    );
+    assert_eq!(response_calls(&fixture), 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1353,14 +1361,12 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     let (first, second) = tokio::join!(
         provider.translate(
             crate::providers::Intent::Automatic,
-            TextKind::Selection,
             "First source.",
             "ja",
             context.clone()
         ),
         provider.translate(
             crate::providers::Intent::Automatic,
-            TextKind::Selection,
             "Second source.",
             "ja",
             context
@@ -1382,7 +1388,6 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     let retry = provider
         .translate(
             crate::providers::Intent::Automatic,
-            TextKind::Selection,
             "Retry source.",
             "ja",
             provider.context().unwrap(),
@@ -4022,4 +4027,99 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
         .unwrap();
     assert!(server.hover(4.into(), hover()).unwrap().is_some());
     assert_eq!(response_calls(&fixture), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unrelated_hover_is_null_when_translation_authorization_is_unavailable() {
+    for state in ["signed-out", "plan-disabled", "busy", "administration"] {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        if state != "signed-out" {
+            let registration = fixture.connected(&auth, 3600).await;
+            if state == "plan-disabled" {
+                let mut writer = auth.store.lock(false).await.unwrap().unwrap();
+                writer
+                    .state
+                    .registrations
+                    .get_mut(&registration)
+                    .unwrap()
+                    .credentials
+                    .as_mut()
+                    .unwrap()
+                    .scopes
+                    .clear();
+                writer.save().unwrap();
+            }
+        }
+        let _locked = if state == "busy" {
+            auth.store.lock(false).await.unwrap()
+        } else {
+            None
+        };
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, _client) = Connection::memory();
+        let (finished, _completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        if state == "administration" {
+            let deadline = Instant::now() + Duration::from_secs(180);
+            let (stop, _receiver) = watch::channel(Some(deadline));
+            server.administrations.insert(
+                99.into(),
+                Administration {
+                    command: SETTINGS_COMMAND.into(),
+                    ticket: 1,
+                    stop,
+                    deadline,
+                },
+            );
+        }
+        let uri: Uri = "file:///unrelated.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(
+                1,
+                1,
+                "rust".into(),
+                "let value = 1;   \n// Read this.".into(),
+            ),
+        );
+        for (uri, line, character) in [
+            (uri.as_str(), 0, 4),
+            (uri.as_str(), 0, 15),
+            (uri.as_str(), 50, 0),
+            ("file:///not-open.rs", 0, 0),
+        ] {
+            let params = parse(json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }))
+            .unwrap();
+            let result = server.hover(1.into(), params);
+            assert_eq!(
+                result.unwrap(),
+                Some(Value::Null),
+                "{state}: {uri}:{line}:{character}"
+            );
+        }
+        assert!(
+            server
+                .hover(
+                    2.into(),
+                    parse(json!({"textDocument":{"uri":uri},"position":{"line":1,"character":4}}))
+                        .unwrap()
+                )
+                .is_err()
+        );
+        assert_eq!(response_calls(&fixture), 0);
+    }
 }

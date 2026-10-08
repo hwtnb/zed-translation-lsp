@@ -1,4 +1,4 @@
-use super::{Capabilities, Context, TextKind, Translated, TranslationProvider, error::Error};
+use super::{Capabilities, Context, Translated, TranslationProvider, error::Error};
 
 use std::time::Duration;
 
@@ -80,7 +80,6 @@ impl TranslationProvider for MockProvider {
     async fn translate(
         &self,
         _intent: crate::providers::Intent,
-        _: TextKind,
         text: &str,
         target_language: &str,
         context: Context,
@@ -127,7 +126,6 @@ mod tests {
             MockProvider::default()
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Any text",
                     "ja",
                     Context::Mock
@@ -140,7 +138,6 @@ mod tests {
                 MockProvider::default()
                     .translate(
                         crate::providers::Intent::Automatic,
-                        TextKind::Selection,
                         &text.replace('\n', "\r\n"),
                         "ja",
                         Context::Mock
@@ -153,7 +150,6 @@ mod tests {
             MockProvider::default()
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     COMMENT_BODY,
                     "en",
                     Context::Mock

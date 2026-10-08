@@ -112,11 +112,6 @@ impl<P: TranslationProvider> Server<P> {
             deadline: deadline_receiver,
             task: Task::Translation {
                 intent,
-                kind: if input.is_comment {
-                    TextKind::Comment
-                } else {
-                    TextKind::Selection
-                },
                 text: input.text,
                 target_language: target.target_language.clone(),
                 context: context.clone(),

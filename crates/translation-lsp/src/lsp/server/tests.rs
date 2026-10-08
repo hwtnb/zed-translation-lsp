@@ -14,7 +14,6 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
-            _: TextKind,
             text: &str,
             _: &str,
             context: Context,
@@ -54,7 +53,6 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         let task = if ticket < 4 {
             Task::Translation {
                 intent: crate::providers::Intent::Automatic,
-                kind: TextKind::Selection,
                 text: format!("source {ticket}"),
                 target_language: "ja".into(),
                 context: Context::Mock,
@@ -120,17 +118,16 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
 #[test]
 fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() {
     #[derive(Clone)]
-    struct RecordingProvider(Sender<(TextKind, String, String)>);
+    struct RecordingProvider(Sender<(String, String)>);
     impl TranslationProvider for RecordingProvider {
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
-            kind: TextKind,
             text: &str,
             target: &str,
             context: Context,
         ) -> Result<Translated, ProviderError> {
-            self.0.send((kind, text.into(), target.into())).unwrap();
+            self.0.send((text.into(), target.into())).unwrap();
             Ok(Translated {
                 text: format!("fake: {text}"),
                 context,
@@ -162,10 +159,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
                 break completion;
             }
         };
-        assert_eq!(
-            recorded.recv().unwrap(),
-            (TextKind::Comment, body.to_owned(), "ja".into())
-        );
+        assert_eq!(recorded.recv().unwrap(), (body.to_owned(), "ja".into()));
         server.finish(&connection, completion).unwrap();
         let Message::Response(response) = client.receiver.try_recv().unwrap() else {
             panic!("Expected Hover response");
@@ -329,7 +323,6 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
-            _: TextKind,
             text: &str,
             _: &str,
             context: Context,

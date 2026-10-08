@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     config::{ProviderSettings, Settings},
     providers::{
-        AuthUiState, Context, Interaction, TextKind, Translated, TranslationProvider,
+        AuthUiState, Context, Interaction, Translated, TranslationProvider,
         chatgpt::ChatGptProvider,
         error::{Error as ProviderError, ErrorKind},
         mock::{MockOptions, MockProvider},
@@ -592,7 +592,9 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn hover(&mut self, id: RequestId, params: HoverParams) -> RequestResult<Option<Value>> {
-        self.check_cache()?;
+        // Invalidate stale previews before reading them. Only translation targets
+        // propagate authorization failures; unrelated Hover requests return null.
+        let authorization = self.check_cache();
         let position = params.text_document_position_params;
         let Some(document) = self.documents.get_mut(&position.text_document.uri) else {
             return Ok(Some(Value::Null));
@@ -621,6 +623,7 @@ impl<P: TranslationProvider> Server<P> {
                     .range
                     .is_some_and(|range| range.end == position.position))
         {
+            authorization?;
             return to_value(hover).map(Some);
         }
         if document.language_id.eq_ignore_ascii_case("markdown")
@@ -643,6 +646,7 @@ impl<P: TranslationProvider> Server<P> {
             && end_is_clear
             && !range.is_some_and(|range| range.start == position.position)
         {
+            authorization?;
             return to_value(hover).map(Some);
         }
         let Some(range) = range else {

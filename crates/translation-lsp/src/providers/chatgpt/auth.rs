@@ -668,6 +668,10 @@ fn token_error(
 }
 
 pub(crate) fn store_error(error: StoreError) -> Error {
+    let kind = match error {
+        StoreError::Busy => ErrorKind::Unavailable,
+        _ => ErrorKind::Storage,
+    };
     let message = match error {
         StoreError::Busy => "ChatGPT credentials are being updated by another process; retry later",
         StoreError::Permissions => {
@@ -677,7 +681,7 @@ pub(crate) fn store_error(error: StoreError) -> Error {
         StoreError::Io => "Could not read or save the dedicated ChatGPT credentials",
     };
     Error {
-        kind: ErrorKind::Unavailable,
+        kind,
         message: message.into(),
     }
 }
@@ -689,6 +693,14 @@ mod tests {
     use http_body_util::Full;
     use hyper::body::Bytes;
     use serde_json::json;
+
+    #[test]
+    fn only_store_contention_is_retryable() {
+        assert_eq!(store_error(StoreError::Busy).kind, ErrorKind::Unavailable);
+        for error in [StoreError::Invalid, StoreError::Permissions, StoreError::Io] {
+            assert_eq!(store_error(error).kind, ErrorKind::Storage);
+        }
+    }
 
     #[test]
     fn callback_checks_state_path_duplicates_and_issued_client_before_exchange() {

@@ -20,12 +20,17 @@ use serde_json::json;
 use crate::config::{ReasoningEffort, limits::SizeLimit};
 
 use super::{
-    AuthUiState, Capabilities, Context, Intent, Interaction, ProviderCommand, TextKind, Translated,
+    AuthUiState, Capabilities, Context, Intent, Interaction, ProviderCommand, Translated,
     TranslationProvider,
     error::{Error, ErrorKind},
 };
 use auth::{AccountKey, Auth, account_changed};
 use http::{Http, response_error, temporary_network};
+
+const RETRY_GUIDANCE: &str = concat!(
+    ". Automatic translation is paused. After resolving the cause, ",
+    "run a selection or document translation to retry."
+);
 
 const CONNECT: &str = "translation-lsp.connect";
 const ENABLE: &str = "translation-lsp.enable";
@@ -136,13 +141,16 @@ impl ChatGptProvider {
         Ok(())
     }
 
-    fn record_error(&self, key: &AccountKey, error: &Error) {
+    fn record_error(&self, key: &AccountKey, error: &mut Error) {
         let pause = match error.kind {
             ErrorKind::UsageLimit | ErrorKind::NotEligible | ErrorKind::Configuration => Some(None),
             ErrorKind::Temporary => Some(Some(Instant::now() + Duration::from_secs(2))),
             _ => None,
         };
         if let Some(until) = pause {
+            if until.is_none() && !error.message.ends_with(RETRY_GUIDANCE) {
+                error.message.push_str(RETRY_GUIDANCE);
+            }
             self.state.lock().unwrap().paused = Some((key.clone(), error.clone(), until));
         }
     }
@@ -168,6 +176,7 @@ impl ChatGptProvider {
                     }
                 }
                 Err(error) if error.kind == ErrorKind::Unavailable => (),
+                Err(error) if error.kind == ErrorKind::Storage => return Err(error),
                 _ => return Err(account_changed()),
             }
         }
@@ -185,13 +194,13 @@ impl ChatGptProvider {
         }
         let access = match self.auth.access(expected).await {
             Ok(access) => access,
-            Err(error) => {
-                self.record_error(expected, &error);
+            Err(mut error) => {
+                self.record_error(expected, &mut error);
                 return Err(error);
             }
         };
         let key = &access.key;
-        let result = self.unchanged(key, async {
+        let mut result = self.unchanged(key, async {
             let instructions = format!(
                 concat!(
                     "Translate the text into {}. Source language: {}. ",
@@ -266,7 +275,7 @@ impl ChatGptProvider {
             };
             Ok(translated)
         }).await;
-        if let Err(error) = &result {
+        if let Err(error) = &mut result {
             self.record_error(key, error);
         } else if intent == Intent::Explicit {
             let mut state = self.state.lock().unwrap();
@@ -321,7 +330,6 @@ impl TranslationProvider for ChatGptProvider {
     async fn translate(
         &self,
         intent: Intent,
-        _kind: TextKind,
         text: &str,
         target: &str,
         context: Context,
@@ -350,6 +358,59 @@ impl TranslationProvider for ChatGptProvider {
 mod tests {
     use super::test_support::Fixture;
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_store_aborts_inflight_work_with_its_original_diagnostic() {
+        use super::{auth_store::AuthStore, http::Http};
+        for permissions in [false, true] {
+            if permissions && !cfg!(unix) {
+                continue;
+            }
+            let fixture = Fixture::new().await;
+            let directory = std::env::temp_dir().join(format!(
+                "translation-store-failure-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let auth = Auth::synthetic(
+                AuthStore::synthetic(directory.clone()),
+                Http::synthetic_revocation(&fixture.base),
+                fixture.base.clone(),
+            );
+            fixture.connected(&auth, 3600).await;
+            let key = auth.key().unwrap();
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let operation = async {
+                let path = directory.join("auth.json");
+                if permissions {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+                            .unwrap();
+                    }
+                } else {
+                    std::fs::write(path, b"{}").unwrap();
+                }
+                std::future::pending::<Result<(), Error>>().await
+            };
+            let error =
+                tokio::time::timeout(Duration::from_secs(1), provider.unchanged(&key, operation))
+                    .await
+                    .expect("Storage errors must release work without waiting for its deadline")
+                    .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Storage);
+            assert!(error.message.contains(if permissions {
+                "private directory"
+            } else {
+                "storage is invalid"
+            }));
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
 
     fn response_calls(fixture: &Fixture) -> usize {
         fixture
@@ -390,7 +451,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -475,7 +535,6 @@ mod tests {
                 let result = provider
                     .translate(
                         crate::providers::Intent::Automatic,
-                        TextKind::Selection,
                         "Retry after a temporary failure.",
                         "ja",
                         provider.context().unwrap(),
@@ -530,7 +589,6 @@ mod tests {
             );
             let request = provider.translate(
                 crate::providers::Intent::Automatic,
-                TextKind::Selection,
                 "Read this.",
                 "ja",
                 provider.context().unwrap(),
@@ -580,7 +638,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Read this.",
                     "ja",
                     provider.context().unwrap(),
@@ -601,15 +658,13 @@ mod tests {
     async fn complete_translation_is_returned_as_text_without_reassembly() {
         let source = "- Use named module files, such as `providers.rs` and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.\r\n- Keep providers replaceable through `TranslationProvider`.";
         let translation = "- `providers.rs` や `providers/chatgpt.rs` のような名前付きモジュールファイルを使用してください。\n  `mod.rs` ファイルを導入しないでください。\n- `TranslationProvider` を通じてプロバイダーを交換可能にしてください。";
-        for (kind, source, translation) in [
-            (TextKind::Selection, source, translation),
+        for (source, translation) in [
+            (source, translation),
             (
-                TextKind::Comment,
                 "@brief Retry safely.\n@param count Retry count.",
                 "@brief 安全に再試行します。\n@param count 再試行回数。",
             ),
             (
-                TextKind::Comment,
                 "<summary>Retry safely.</summary>\n<param name=\"count\">Retry count.</param>",
                 "<summary>安全に再試行します。</summary>\n<param name=\"count\">再試行回数。</param>",
             ),
@@ -626,7 +681,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    kind,
                     source,
                     "ja",
                     provider.context().unwrap(),
@@ -733,7 +787,6 @@ mod tests {
             let error = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     source,
                     "ja",
                     provider.context().unwrap(),
@@ -853,7 +906,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     body,
                     "ja",
                     provider.context().unwrap(),
@@ -938,7 +990,6 @@ mod tests {
             let error = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -948,6 +999,11 @@ mod tests {
                 .unwrap();
             assert_eq!(error.kind, kind);
             assert!(error.message.contains("req-synthetic"));
+            assert!(
+                error
+                    .message
+                    .contains("run a selection or document translation to retry")
+            );
             assert!(
                 provider
                     .admit(
@@ -992,13 +1048,7 @@ mod tests {
                 kind
             );
             let translated = provider
-                .translate(
-                    Intent::Explicit,
-                    TextKind::Selection,
-                    "Try again.",
-                    "ja",
-                    context.clone(),
-                )
+                .translate(Intent::Explicit, "Try again.", "ja", context.clone())
                 .await
                 .unwrap();
             assert_eq!(translated.context, context);
@@ -1038,7 +1088,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Retry only when the remote service reports a transient failure.",
                     "ja",
                     context.clone(),
@@ -1068,7 +1117,6 @@ mod tests {
                     provider
                         .translate(
                             crate::providers::Intent::Automatic,
-                            TextKind::Selection,
                             "Translate this.",
                             "ja",
                             context
@@ -1121,7 +1169,6 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -1182,7 +1229,6 @@ mod tests {
         let translated = provider
             .translate(
                 crate::providers::Intent::Automatic,
-                TextKind::Selection,
                 "Translate this.",
                 "ja",
                 provider.context().unwrap(),
@@ -1221,7 +1267,6 @@ mod tests {
             let translated = provider
                 .translate(
                     crate::providers::Intent::Automatic,
-                    TextKind::Selection,
                     body,
                     "ja",
                     provider.context().unwrap(),
@@ -1244,7 +1289,6 @@ mod tests {
         let key = provider.context().unwrap();
         let translation = provider.translate(
             crate::providers::Intent::Automatic,
-            TextKind::Selection,
             "Translate this.",
             "ja",
             key,

@@ -50,12 +50,6 @@ pub(crate) enum Intent {
     Explicit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextKind {
-    Comment,
-    Selection,
-}
-
 pub(crate) struct Translated {
     pub text: String,
     pub context: Context,
@@ -85,7 +79,6 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
     fn translate(
         &self,
         intent: Intent,
-        kind: TextKind,
         text: &str,
         target_language: &str,
         context: Context,
