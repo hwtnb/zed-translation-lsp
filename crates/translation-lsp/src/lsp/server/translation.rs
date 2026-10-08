@@ -107,10 +107,10 @@ impl<P: TranslationProvider> Server<P> {
             }
             return Ok(immediate.then_some(Value::Null));
         }
-        if !self.scheduler.available(
-            &self.settings,
-            matches!(request, TranslationRequest::Selection),
-        ) {
+        if !self
+            .scheduler
+            .available(&self.settings, !request.explicit())
+        {
             return Err(failure(
                 ErrorCode::RequestFailed,
                 "Translation queue is full; this range was not accepted",
@@ -278,7 +278,7 @@ impl<P: TranslationProvider> Server<P> {
         match &result {
             Ok(preview) => {
                 let has_hover = self.scheduler.pending.values().any(|p| p.ticket == ticket);
-                if work.automatic || work.manual || has_hover {
+                if work.range_output() || has_hover {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
@@ -313,7 +313,7 @@ impl<P: TranslationProvider> Server<P> {
                     && error.code != ErrorCode::RequestCanceled as i32 =>
             {
                 self.record_problem(work, Problem::Failed(error.message.clone()));
-                if work.automatic || work.manual {
+                if work.range_output() {
                     let preview = Preview::new(
                         work.context.clone(),
                         work.target.range,

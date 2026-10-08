@@ -1640,7 +1640,7 @@ fn coalesced_commands_acknowledge_once_and_report_one_failure_for_the_range() {
 }
 
 #[test]
-fn canceled_hover_id_can_be_reused_without_receiving_the_old_work() {
+fn canceled_hover_id_can_be_reused_to_join_retained_work() {
     let mut client = Client::new(&["--mock-delay-ms", "200"]);
     let uri = "file:///reuse.rs";
     client.open(uri, "rust", COMMENT_DOCUMENT, 1);
@@ -1651,7 +1651,6 @@ fn canceled_hover_id_can_be_reused_without_receiving_the_old_work() {
     assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
     client.notify("$/cancelRequest", json!({"id":"hover-reuse"}));
     assert_error(client.receive(id.clone(), TIMEOUT), -32800);
-    let restarted = Instant::now();
     client.request_with_id(id.clone(), "textDocument/hover", params);
     assert_preview(
         &client.receive(id, TIMEOUT).unwrap(),
@@ -1659,7 +1658,6 @@ fn canceled_hover_id_can_be_reused_without_receiving_the_old_work() {
         COMMENT_JA,
         &range,
     );
-    assert!(restarted.elapsed() >= Duration::from_millis(190));
     client.finish(true);
 }
 
@@ -1710,7 +1708,7 @@ fn pending_hovers_are_invalidated_by_edit_close_reopen_and_broken_sync() {
 }
 
 #[test]
-fn automatic_hover_failure_and_deadline_do_not_cache_or_block_other_requests() {
+fn automatic_hover_failure_and_deadline_preserve_failure_without_blocking_other_requests() {
     for args in [
         vec!["--mock-fail", "--mock-delay-ms", "100"],
         vec!["--mock-delay-ms", "5000", "--mock-timeout-ms", "100"],
@@ -1733,10 +1731,13 @@ fn automatic_hover_failure_and_deadline_do_not_cache_or_block_other_requests() {
                 "timed out"
             }));
         }
-        let retry = Instant::now();
-        let id = client.request_hover(uri, range["start"].clone());
-        assert_error(client.receive(id, Duration::from_secs(1)), -32803);
-        assert!(retry.elapsed() >= Duration::from_millis(90));
+        let cached = client.hover(uri, range["start"].clone());
+        assert!(
+            cached["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("translation failed")
+        );
         assert!(
             client.notifications.is_empty(),
             "Automatic Hover failures should be silent"
@@ -1818,7 +1819,6 @@ fn duplicate_live_hover_id_is_retired_once_and_can_later_be_reused() {
     client.request_with_id(id.clone(), "textDocument/hover", params.clone());
     client.request_with_id(id.clone(), "textDocument/hover", params.clone());
     assert_error(client.receive(id.clone(), TIMEOUT), -32600);
-    let restarted = Instant::now();
     client.request_with_id(id.clone(), "textDocument/hover", params);
     assert_preview(
         &client.receive(id, TIMEOUT).unwrap(),
@@ -1826,7 +1826,6 @@ fn duplicate_live_hover_id_is_retired_once_and_can_later_be_reused() {
         COMMENT_JA,
         &range,
     );
-    assert!(restarted.elapsed() >= Duration::from_millis(90));
     client.finish(true);
 }
 
@@ -2334,4 +2333,70 @@ fn python_pending_docstring_obeys_cancel_edit_and_close() {
         assert!(client.notifications.is_empty());
         client.finish(true);
     }
+}
+
+#[test]
+fn comment_hover_response_cancellation_preserves_work_until_explicit_cancel_or_completion() {
+    let mut client = Client::new(&["--mock-delay-ms", "300"]);
+    let uri = "file:///retained-comments.rs";
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let hover = client.request_hover(uri, range["start"].clone());
+    client.notify("$/cancelRequest", json!({"id":hover}));
+    assert_error(client.receive(hover, TIMEOUT), -32800);
+    let actions = client.actions(uri, range.clone());
+    assert!(
+        actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["command"]["command"] == "translation-lsp.cancel-range")
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while client
+        .actions(uri, range.clone())
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["command"]["command"] == "translation-lsp.cancel-range")
+    {
+        assert!(Instant::now() < deadline, "Retained comment did not finish");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let revisit = client.request_hover(uri, range["start"].clone());
+    assert_preview(
+        &client.receive(revisit, Duration::from_millis(200)).unwrap(),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert!(client.notifications.is_empty());
+    for (version, command) in [
+        (2, "translation-lsp.cancel-range"),
+        (3, "translation-lsp.cancel-all"),
+    ] {
+        client.change(uri, version, json!([{"text": COMMENT_DOCUMENT}]));
+        let hover = client.request_hover(uri, range["start"].clone());
+        client.notify("$/cancelRequest", json!({"id":hover}));
+        assert_error(client.receive(hover, TIMEOUT), -32800);
+        let actions = client.actions(uri, range.clone());
+        let cancel = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["command"]["command"] == command)
+            .unwrap()["command"]
+            .clone();
+        let cancel = client.execute(cancel);
+        assert!(client.receive(cancel, TIMEOUT).unwrap().is_null());
+        assert!(
+            !client
+                .actions(uri, range.clone())
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["command"]["command"] == "translation-lsp.cancel-range")
+        );
+    }
+    client.finish(true);
 }

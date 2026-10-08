@@ -250,7 +250,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     assert!(server.hover(id.clone(), params()).unwrap().is_none());
     let old_ticket = server.scheduler.pending[&id].ticket;
     server
-        .cancel(&connection, &id, ErrorCode::RequestCanceled)
+        .cancel_range(&connection, old_ticket, ErrorCode::RequestCanceled)
         .unwrap();
     let Message::Response(canceled) = client.receiver.try_recv().unwrap() else {
         panic!("Expected cancellation response");

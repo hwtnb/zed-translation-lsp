@@ -47,7 +47,10 @@ relative to the repository root.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Hover waiters retain independent cancellation and deadlines, including queue
-  waiting time. Accepted distinct ranges and explicit selection/tab translations
+  waiting time. Accepted comment Hover work survives its response cancellation or
+  expiry, shares the automatic admission limit with selection automation, and
+  retains completed results and failure state for revisits. Accepted distinct
+  ranges and explicit selection/tab translations
   survive selection changes and request cancellation. Only the immediately preceding
   overlapping automatic selection may be superseded by a stable adjustment; other
   owners keep shared work alive. Execution deadlines start at dispatch and never restart

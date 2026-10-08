@@ -858,10 +858,12 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
     );
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(MAX_JOBS);
+    let mut settings = Settings::default();
+    settings.translation_limits.work.automatic = 5;
     let mut server = Server::configured(
         finished,
         provider,
-        Settings::default(),
+        settings,
         Ui::new(connection.sender.clone(), UiCapabilities::default()),
     )
     .unwrap();
@@ -1021,7 +1023,6 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         "cancel-active",
         "cancel-queued",
         "timeout-active",
-        "timeout-queued",
         "edit",
         "reopen",
     ] {
@@ -1077,11 +1078,6 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
                 server.finish(&connection, completion).unwrap();
                 ErrorCode::RequestFailed
             }
-            "timeout-queued" => {
-                server.scheduler.pending.get_mut(&id).unwrap().deadline = Instant::now();
-                server.expire(&connection).unwrap();
-                ErrorCode::RequestFailed
-            }
             "edit" => {
                 server
                     .notification(
@@ -1121,7 +1117,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             }
             _ => {
                 server
-                    .cancel(&connection, &id, ErrorCode::RequestCanceled)
+                    .cancel_range(&connection, ticket, ErrorCode::RequestCanceled)
                     .unwrap();
                 ErrorCode::RequestCanceled
             }
@@ -1221,10 +1217,12 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
         );
         let (connection, client) = Connection::memory();
         let (finished, completions) = bounded(MAX_JOBS);
+        let mut settings = Settings::default();
+        settings.translation_limits.work.automatic = 4;
         let mut server = Server::configured(
             finished,
             provider,
-            Settings::default(),
+            settings,
             Ui::new(connection.sender.clone(), UiCapabilities::default()),
         )
         .unwrap();
@@ -1424,10 +1422,12 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
         let (connection, client) = Connection::memory();
         let (finished, completions) = bounded(MAX_JOBS);
+        let mut settings = Settings::default();
+        settings.translation_limits.work.automatic = 4;
         let mut server = Server::configured(
             finished,
             provider.clone(),
-            Settings::default(),
+            settings,
             Ui::new(connection.sender.clone(), UiCapabilities::default()),
         )
         .unwrap();
@@ -1490,10 +1490,12 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     );
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(MAX_JOBS);
+    let mut settings = Settings::default();
+    settings.translation_limits.work.automatic = 4;
     let mut server = Server::configured(
         finished,
         provider,
-        Settings::default(),
+        settings,
         Ui::new(connection.sender.clone(), UiCapabilities::default()),
     )
     .unwrap();
@@ -2180,7 +2182,23 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
             );
         } else {
             fixture.state.lock().unwrap().response_mode = "delta_compact".into();
-            assert!(server.hover(RequestId::from(2), hover()).unwrap().is_none());
+            let failure = server.hover(RequestId::from(2), hover()).unwrap().unwrap();
+            assert!(
+                failure["contents"]["value"]
+                    .as_str()
+                    .unwrap()
+                    .contains("translation failed")
+            );
+            let target = TranslationTarget {
+                uri: uri.clone(),
+                version: 1,
+                session: 1,
+                range: Range::new(Position::new(0, 0), Position::new(0, 18)),
+                target_language: "ja".into(),
+            };
+            server
+                .queue(4.into(), target, PendingReply::Command)
+                .unwrap();
             server
                 .finish(&connection, next(&completions).await)
                 .unwrap();
@@ -2286,13 +2304,13 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         );
         match operation {
             "deadline" => {
-                // Removing the extending waiter restores the remaining Hover's deadline.
+                // Canceling a display waiter does not change the execution deadline.
                 server
                     .cancel(&connection, &2.into(), ErrorCode::RequestCanceled)
                     .unwrap();
                 assert_eq!(
                     *server.scheduler.translations[&ticket].deadline.borrow(),
-                    Some(server.scheduler.pending[&1.into()].deadline)
+                    server.scheduler.translations[&ticket].execution_deadline()
                 );
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 server.expire(&connection).unwrap();
@@ -3547,7 +3565,13 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
         .unwrap();
     assert!(server.cache.latest(&uri).is_none());
     client.receiver.try_recv().unwrap();
-    assert!(server.hover(2.into(), hover()).is_err());
+    let failure = server.hover(2.into(), hover()).unwrap().unwrap();
+    assert!(
+        failure["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("translation failed")
+    );
     assert_eq!(response_calls(&fixture), 1);
     fixture.state.lock().unwrap().failure = None;
     let target = TranslationTarget {
@@ -3684,10 +3708,12 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
     );
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(MAX_JOBS);
+    let mut settings = Settings::default();
+    settings.translation_limits.work.automatic = 4;
     let mut server = Server::configured(
         finished,
         provider,
-        Settings::default(),
+        settings,
         Ui::new(connection.sender.clone(), UiCapabilities::default()),
     )
     .unwrap();
@@ -3702,7 +3728,11 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
         parallel_hover(&mut server, id, &uris[3]);
         assert_eq!(server.scheduler.translations.len(), 4);
         server
-            .cancel(&connection, &id.into(), ErrorCode::RequestCanceled)
+            .cancel_range(
+                &connection,
+                server.scheduler.pending[&id.into()].ticket,
+                ErrorCode::RequestCanceled,
+            )
             .unwrap();
         let Message::Response(response) = client.receiver.try_recv().unwrap() else {
             panic!("Expected cancellation response")
@@ -3966,4 +3996,181 @@ async fn reselecting_a_cached_overlap_updates_display_order_without_http() {
             .contains("訳Alpha sent")
     );
     assert_eq!(response_calls(&fixture), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_parallel_http() {
+    let (fixture, mut server, connection, client, completions, uri) =
+        range_server(Settings::default()).await;
+    server.documents.insert(
+        uri.clone(),
+        Document::new(
+            1,
+            1,
+            "rust".into(),
+            "// Alpha sentence.\n\n// Bravo sentence.\n\n// Third sentence.\n\n// Fourth sentence."
+                .into(),
+        ),
+    );
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let hover = |line| {
+        parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":4}})).unwrap()
+    };
+    for (id, line) in [(1, 0), (2, 2), (3, 4)] {
+        assert!(server.hover(id.into(), hover(line)).unwrap().is_none());
+        if id < 3 {
+            wait_held(&tail, id as usize).await;
+        }
+    }
+    assert_eq!(response_calls(&fixture), 2);
+    assert!(
+        server
+            .hover(4.into(), hover(6))
+            .unwrap_err()
+            .message
+            .contains("queue is full")
+    );
+    // Both running requests can disappear; the queued waiter's own deadline can expire.
+    for id in [1, 2] {
+        server
+            .cancel(&connection, &id.into(), ErrorCode::RequestCanceled)
+            .unwrap();
+    }
+    server
+        .scheduler
+        .pending
+        .get_mut(&3.into())
+        .unwrap()
+        .deadline = Instant::now();
+    server.expire(&connection).unwrap();
+    assert_eq!(client.receiver.try_iter().count(), 3);
+    assert_eq!(server.scheduler.automatic_count(), 3);
+    assert!(server.scheduler.pending.is_empty());
+    let actions = server
+        .cancel_actions(&CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            range: Range::new(Position::new(0, 4), Position::new(0, 4)),
+            context: lsp_types::CodeActionContext::default(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.command.as_ref().unwrap().command == CANCEL_COMMAND)
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.command.as_ref().unwrap().command == CANCEL_ALL_COMMAND)
+    );
+    fixture.state.lock().unwrap().stream_tail_gate = None;
+    tail.release.notify_waiters();
+    while !server.scheduler.translations.is_empty() {
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
+    assert_eq!(response_calls(&fixture), 3);
+    assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        client.receiver.is_empty(),
+        "Canceled responses and automatic completion must stay silent"
+    );
+    for (id, line, text) in [(5, 0, "Alpha"), (6, 2, "Bravo"), (7, 4, "Third")] {
+        let cached = server.hover(id.into(), hover(line)).unwrap().unwrap();
+        assert!(cached["contents"]["value"].as_str().unwrap().contains(text));
+    }
+    assert_eq!(
+        response_calls(&fixture),
+        3,
+        "Revisits must use all three cached results"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_retained_comment_is_visible_after_its_hover_was_canceled() {
+    let (fixture, mut server, connection, client, completions, uri) =
+        range_server(Settings::default()).await;
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), "// Source.".into()),
+    );
+    fixture.state.lock().unwrap().failure = Some((
+        400,
+        json!({"error":{"code":"invalid_request_error","message":"Synthetic failure"}}),
+    ));
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    server.hover(1.into(), hover()).unwrap();
+    server
+        .cancel(&connection, &1.into(), ErrorCode::RequestCanceled)
+        .unwrap();
+    client.receiver.try_recv().unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let cached = server.hover(2.into(), hover()).unwrap().unwrap();
+    assert!(
+        cached["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("translation failed")
+    );
+    assert_eq!(response_calls(&fixture), 1);
+    assert!(client.receiver.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn comment_and_selection_share_automatic_capacity_but_manual_promotion_frees_it() {
+    let mut settings = Settings::default();
+    settings.translation_limits.work.automatic = 1;
+    let (_fixture, mut server, connection, _client, completions, markdown) =
+        range_server(settings).await;
+    let first = range_target(&server, &markdown, 0);
+    server
+        .queue_translation(first.clone(), TranslationRequest::Selection)
+        .unwrap();
+    let uri: Uri = "file:///capacity.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 2, "rust".into(), "// Read this.".into()),
+    );
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    assert!(
+        server
+            .hover(1.into(), hover())
+            .unwrap_err()
+            .message
+            .contains("queue is full")
+    );
+    server
+        .queue(2.into(), first, PendingReply::Command)
+        .unwrap();
+    assert!(server.hover(3.into(), hover()).unwrap().is_none());
+    server
+        .cancel(&connection, &3.into(), ErrorCode::RequestCanceled)
+        .unwrap();
+    assert!(server.hover(4.into(), hover()).unwrap().is_none());
+    assert_eq!(
+        server.scheduler.automatic_count(),
+        1,
+        "Revisiting a retained comment must join it"
+    );
+    let second = range_target(&server, &markdown, 2);
+    assert!(
+        server
+            .queue_translation(second, TranslationRequest::Selection)
+            .unwrap_err()
+            .message
+            .contains("queue is full")
+    );
+    while !server.scheduler.translations.is_empty() {
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
 }

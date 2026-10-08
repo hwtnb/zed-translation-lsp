@@ -18,9 +18,6 @@ pub(super) enum TranslationRequest {
 }
 
 impl TranslationRequest {
-    pub fn retained(&self) -> bool {
-        !matches!(self, Self::Reply(_, PendingReply::Hover(_)))
-    }
     pub fn explicit(&self) -> bool {
         matches!(self, Self::Document | Self::Reply(_, PendingReply::Command))
     }
@@ -47,6 +44,7 @@ pub(super) struct Translation {
     pub is_comment: bool,
     pub deadline: watch::Sender<Option<Instant>>,
     pub automatic: bool,
+    pub comment_hover: bool,
     pub manual: bool,
     pub document: bool,
     pub phase: Phase,
@@ -57,7 +55,13 @@ pub(super) struct Translation {
 
 impl Translation {
     pub fn retained(&self) -> bool {
-        self.automatic || self.manual || self.document
+        self.range_output() || self.document
+    }
+    pub fn range_output(&self) -> bool {
+        self.automatic || self.comment_hover || self.manual
+    }
+    pub fn automatic_only(&self) -> bool {
+        (self.automatic || self.comment_hover) && !self.manual && !self.document
     }
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
@@ -85,7 +89,7 @@ impl Scheduler {
             .iter()
             .filter(|(_, w)| {
                 &w.target.uri == uri
-                    && (!w.document || w.manual || w.automatic)
+                    && (!w.document || w.range_output())
                     && w.target.range.start <= position
                     && position <= w.target.range.end
             })
@@ -104,7 +108,7 @@ impl Scheduler {
     pub fn automatic_count(&self) -> usize {
         self.translations
             .values()
-            .filter(|w| w.automatic && !w.manual && !w.document)
+            .filter(|w| w.automatic_only())
             .count()
     }
     pub fn available(&self, settings: &Settings, automatic: bool) -> bool {
@@ -140,11 +144,15 @@ impl Scheduler {
             ));
         }
         // Repeated Hover joins never renew the operation's execution budget.
-        if request.retained() {
+        if !matches!(
+            request,
+            TranslationRequest::Reply(_, PendingReply::Hover(_))
+        ) {
             work.limit = work.limit.max(request.timeout(settings));
         }
         match request {
             TranslationRequest::Reply(id, PendingReply::Hover(position)) => {
+                work.comment_hover |= work.is_comment;
                 self.pending.insert(
                     id,
                     Pending {
@@ -195,6 +203,7 @@ impl Scheduler {
                 is_comment,
                 deadline,
                 automatic: false,
+                comment_hover: false,
                 manual: false,
                 document: false,
                 phase: Phase::Queued,
