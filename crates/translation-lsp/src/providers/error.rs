@@ -2,6 +2,7 @@
 pub(crate) enum ErrorKind {
     Failed,
     Modified,
+    Unavailable,
     UsageLimit,
     NotEligible,
     Temporary,

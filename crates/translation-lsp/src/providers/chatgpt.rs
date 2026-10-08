@@ -105,17 +105,22 @@ impl ChatGptProvider {
         future: impl std::future::Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
         tokio::pin!(future);
+        let mut completed = None;
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                result = &mut future => {
-                    if !self.auth.key().is_ok_and(|current| &current == key) { return Err(account_changed()); }
-                    return result;
+                result = &mut future, if completed.is_none() => completed = Some(result),
+                _ = interval.tick() => (),
+            }
+            match self.auth.key() {
+                Ok(current) if &current == key => {
+                    if let Some(result) = completed.take() {
+                        return result;
+                    }
                 }
-                _ = interval.tick() => {
-                    if !self.auth.key().is_ok_and(|current| &current == key) { return Err(account_changed()); }
-                }
+                Err(error) if error.kind == ErrorKind::Unavailable => (),
+                _ => return Err(account_changed()),
             }
         }
     }
@@ -213,8 +218,24 @@ impl ChatGptProvider {
 impl TranslationProvider for ChatGptProvider {
     fn context(&self) -> Result<Context, Error> {
         let key = self.auth.key()?;
-        self.allowed(&key)?;
         Ok(Context::ChatGpt(key))
+    }
+
+    fn admit(&self, context: &Context, explicit: bool) -> Result<(), Error> {
+        let Context::ChatGpt(key) = context else {
+            return Err(account_changed());
+        };
+        if explicit {
+            let mut state = self.state.lock().unwrap();
+            if state
+                .paused
+                .as_ref()
+                .is_some_and(|(blocked, _, _)| blocked == key)
+            {
+                state.paused = None;
+            }
+        }
+        self.allowed(key)
     }
 
     fn auth_ui_state(&self) -> AuthUiState {
@@ -762,7 +783,13 @@ mod tests {
                 assert_eq!(response_calls(&fixture), 2);
                 if permanent {
                     assert_eq!(result.err().unwrap().kind, ErrorKind::Temporary);
-                    assert_eq!(provider.context().err().unwrap().kind, ErrorKind::Temporary);
+                    assert_eq!(
+                        provider
+                            .admit(&provider.context().unwrap(), false)
+                            .unwrap_err()
+                            .kind,
+                        ErrorKind::Temporary
+                    );
                 } else {
                     assert_eq!(result.unwrap().text, "一時的な障害の後に再試行する。");
                     assert!(provider.context().is_ok());
@@ -1003,7 +1030,13 @@ mod tests {
                 .unwrap();
             assert_eq!(error.kind, kind);
             if matches!(kind, ErrorKind::Configuration | ErrorKind::UsageLimit) {
-                assert_eq!(provider.context().err().unwrap().kind, kind);
+                assert_eq!(
+                    provider
+                        .admit(&provider.context().unwrap(), false)
+                        .unwrap_err()
+                        .kind,
+                    kind
+                );
             }
             assert!(
                 error
@@ -1192,7 +1225,7 @@ mod tests {
                 .unwrap();
             assert_eq!(error.kind, kind);
             assert!(error.message.contains("req-synthetic"));
-            assert!(provider.context().is_err());
+            assert!(provider.admit(&provider.context().unwrap(), false).is_err());
             assert_eq!(
                 fixture
                     .state
@@ -1209,6 +1242,17 @@ mod tests {
                     .credentials
                     .is_some()
             );
+            let context = provider.context().unwrap();
+            assert_eq!(provider.admit(&context, false).unwrap_err().kind, kind);
+            fixture.state.lock().unwrap().failure = None;
+            provider.admit(&context, true).unwrap();
+            let translated = provider
+                .translate(TextKind::Selection, "Try again.", "ja", context.clone())
+                .await
+                .unwrap();
+            assert_eq!(translated.context, context);
+            assert_eq!(response_calls(&fixture), 2);
+            provider.admit(&context, false).unwrap();
         }
     }
 
@@ -1258,7 +1302,7 @@ mod tests {
                 );
             } else {
                 assert_eq!(result.err().unwrap().kind, ErrorKind::Configuration);
-                assert!(provider.context().is_err());
+                assert!(provider.admit(&provider.context().unwrap(), false).is_err());
                 assert_eq!(
                     provider
                         .translate(TextKind::Selection, "Translate this.", "ja", context)

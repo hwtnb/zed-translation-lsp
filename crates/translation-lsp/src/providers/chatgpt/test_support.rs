@@ -171,6 +171,7 @@ impl Fixture {
         locked.state.registrations.insert(
             id,
             Registration {
+                authorization_id: Uuid::new_v4(),
                 issuer: self.base.clone(),
                 subject: "synthetic-subject".into(),
                 email: "same@example.invalid".into(),

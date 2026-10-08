@@ -547,7 +547,9 @@ impl<P: TranslationProvider> Server<P> {
         let context = match self.provider.context() {
             Ok(context) => context,
             Err(error) => {
-                self.clear_previews();
+                if error.kind != ErrorKind::Unavailable {
+                    self.clear_previews();
+                }
                 return Err(provider_failure(error));
             }
         };
@@ -806,7 +808,7 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn hover(&mut self, id: RequestId, params: HoverParams) -> RequestResult<Option<Value>> {
-        let _ = self.check_cache();
+        self.check_cache()?;
         let position = params.text_document_position_params;
         let Some(document) = self.documents.get_mut(&position.text_document.uri) else {
             return Ok(Some(Value::Null));
@@ -1004,7 +1006,7 @@ impl<P: TranslationProvider> Server<P> {
             _ => self.settings.selection_timeout_ms,
         };
         let deadline = Instant::now() + Duration::from_millis(timeout);
-        let context = self.check_cache();
+        let context = self.check_cache()?;
         let document = self
             .documents
             .get_mut(&target.uri)
@@ -1115,7 +1117,16 @@ impl<P: TranslationProvider> Server<P> {
                 "Translation is busy; retry after completion",
             ));
         }
-        let context = context?;
+        self.provider
+            .admit(
+                &context,
+                matches!(
+                    request,
+                    TranslationRequest::Document
+                        | TranslationRequest::Reply(_, PendingReply::Command)
+                ),
+            )
+            .map_err(provider_failure)?;
         let input = document
             .translation_input(&target.uri, target.range)
             .map_err(|message| failure(ErrorCode::InvalidParams, message))?;
@@ -2871,11 +2882,8 @@ mod chatgpt_tests {
             "HTTP refresh holding auth lock keeps progress alive"
         );
         let completion = next(&completions).await;
-        assert_ne!(
-            provider.context().unwrap(),
-            original_context,
-            "Synthetic expired credentials must refresh"
-        );
+        assert_eq!(provider.context().unwrap(), original_context);
+        assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
         server.publish_activity();
         assert!(
             client.receiver.is_empty(),
@@ -3485,7 +3493,61 @@ mod chatgpt_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn concurrent_refresh_preserves_revision_guard_and_allows_manual_retry() {
+    async fn cached_translation_survives_store_lock_but_not_reauthorization() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        let registration = fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            MockOptions::default(),
+            finished,
+            provider.clone(),
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uri: Uri = "file:///cached.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), "// Read this.\n".into()),
+        );
+        let hover = || {
+            parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap()
+        };
+        assert!(server.hover(1.into(), hover()).unwrap().is_none());
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        client.receiver.try_recv().unwrap();
+        assert!(server.documents[&uri].preview.is_some());
+        let mut writer = auth.store.lock(false).await.unwrap().unwrap();
+        assert!(server.hover(2.into(), hover()).is_err());
+        assert!(server.documents[&uri].preview.is_some());
+        writer.save().unwrap();
+        drop(writer);
+        assert!(server.hover(3.into(), hover()).unwrap().is_some());
+        assert_eq!(response_calls(&fixture), 1);
+        writer = auth.store.lock(false).await.unwrap().unwrap();
+        writer
+            .state
+            .registrations
+            .get_mut(&registration)
+            .unwrap()
+            .authorization_id = uuid::Uuid::new_v4();
+        writer.save().unwrap();
+        drop(writer);
+        server.check_cache().unwrap();
+        assert!(server.documents[&uri].preview.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_refresh_preserves_authorization_and_completes_both_requests() {
         let fixture = Fixture::new().await;
         fixture.state.lock().unwrap().response_mode = "delta_compact".into();
         let auth = fixture.auth();
@@ -3510,9 +3572,9 @@ mod chatgpt_tests {
                 Err(error) => assert_eq!(error.kind, ErrorKind::Modified),
             }
         }
-        assert_eq!(successes, 1);
+        assert_eq!(successes, 2);
         assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
-        assert_eq!(response_calls(&fixture), 1);
+        assert_eq!(response_calls(&fixture), 2);
         let retry = provider
             .translate(
                 TextKind::Selection,
@@ -3524,7 +3586,7 @@ mod chatgpt_tests {
             .unwrap();
         assert!(retry.text.contains("Retry source."));
         assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
-        assert_eq!(response_calls(&fixture), 2);
+        assert_eq!(response_calls(&fixture), 3);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4477,7 +4539,7 @@ mod chatgpt_tests {
             };
             assert!(response.response_result.is_err());
             if mode == "compact_late_failed" {
-                assert!(provider.context().is_err());
+                assert!(provider.admit(&provider.context().unwrap(), false).is_err());
                 assert_eq!(
                     fixture
                         .state

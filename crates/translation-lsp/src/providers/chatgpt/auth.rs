@@ -27,7 +27,7 @@ use crate::{
 };
 
 use super::{
-    auth_store::{AuthStore, Credentials, Registration, Revision, StoreError, now},
+    auth_store::{AuthStore, Credentials, Registration, StoreError, now},
     http::{Http, response_error},
 };
 
@@ -78,7 +78,22 @@ pub(crate) struct Auth {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AccountKey {
     pub registration: Uuid,
-    pub revision: Revision,
+    pub authorization_id: Uuid,
+    issuer: String,
+    subject: String,
+    client_id: String,
+}
+
+impl AccountKey {
+    fn for_registration(id: Uuid, registration: &Registration) -> Self {
+        Self {
+            registration: id,
+            authorization_id: registration.authorization_id,
+            issuer: registration.issuer.clone(),
+            subject: registration.subject.clone(),
+            client_id: registration.client_id.clone(),
+        }
+    }
 }
 
 pub(crate) struct Access {
@@ -151,10 +166,7 @@ impl Auth {
                 "ChatGPT plan use is disabled. Explicitly choose Enable ChatGPT plan use",
             ));
         }
-        Ok(AccountKey {
-            registration: id,
-            revision: snapshot.revision,
-        })
+        Ok(AccountKey::for_registration(id, registration))
     }
 
     async fn discovery(&self) -> Result<Metadata, Error> {
@@ -298,6 +310,7 @@ impl Auth {
             ));
         }
         let registration = Registration {
+            authorization_id: Uuid::new_v4(),
             issuer: claims.issuer().to_string(),
             subject: claims.subject().to_string(),
             email: claims
@@ -332,8 +345,15 @@ impl Auth {
         // Unchanged credentials are a read. Refresh rechecks under the writer lock.
         match self.store.snapshot() {
             Ok(Some(snapshot)) => {
-                if snapshot.revision != expected.revision
-                    || snapshot.state.active_registration != Some(expected.registration)
+                if snapshot.state.active_registration != Some(expected.registration)
+                    || snapshot
+                        .state
+                        .registrations
+                        .get(&expected.registration)
+                        .is_none_or(|registration| {
+                            AccountKey::for_registration(expected.registration, registration)
+                                != *expected
+                        })
                 {
                     return Err(account_changed());
                 }
@@ -363,12 +383,14 @@ impl Auth {
             .await
             .map_err(store_error)?
             .ok_or_else(account_changed)?;
-        let revision = locked
-            .revision()
-            .map_err(store_error)?
-            .ok_or_else(account_changed)?;
-        if revision != expected.revision
-            || locked.state.active_registration != Some(expected.registration)
+        if locked.state.active_registration != Some(expected.registration)
+            || locked
+                .state
+                .registrations
+                .get(&expected.registration)
+                .is_none_or(|registration| {
+                    AccountKey::for_registration(expected.registration, registration) != *expected
+                })
         {
             return Err(account_changed());
         }
@@ -384,7 +406,6 @@ impl Auth {
         if !previous.plan_enabled() {
             return Err(account_changed());
         }
-        let mut revision = revision;
         if previous.needs_refresh() {
             let metadata = self.discovery().await?;
             let client = CoreClient::from_provider_metadata(
@@ -454,7 +475,7 @@ impl Auth {
                 }
             }
             registration.credentials = Some(credentials(&response, Some(&previous))?);
-            revision = locked.save().map_err(store_error)?;
+            locked.save().map_err(store_error)?;
         }
         let credentials = locked.state.registrations[&expected.registration]
             .credentials
@@ -466,10 +487,7 @@ impl Auth {
             ));
         }
         Ok(Access {
-            key: AccountKey {
-                registration: expected.registration,
-                revision,
-            },
+            key: expected.clone(),
             credentials,
         })
     }
@@ -644,14 +662,18 @@ fn token_error(
 }
 
 pub(crate) fn store_error(error: StoreError) -> Error {
-    Error::failed(match error {
+    let message = match error {
         StoreError::Busy => "ChatGPT credentials are being updated by another process; retry later",
         StoreError::Permissions => {
             "ChatGPT credential storage must be a private directory (0700) with private files (0600)"
         }
         StoreError::Invalid => "ChatGPT credential storage is invalid",
         StoreError::Io => "Could not read or save the dedicated ChatGPT credentials",
-    })
+    };
+    Error {
+        kind: ErrorKind::Unavailable,
+        message: message.into(),
+    }
 }
 
 async fn wait_callback(
@@ -1007,7 +1029,7 @@ mod tests {
         let id = fixture.connected(&auth, 0).await;
         let old = auth.key().unwrap();
         let access = auth.access(&old).await.unwrap();
-        assert_ne!(access.key.revision, old.revision);
+        assert_eq!(access.key, old);
         assert_eq!(access.credentials.access_token, "synthetic-access-1");
         assert_eq!(access.credentials.refresh_token, "synthetic-refresh-1");
         assert_eq!(fixture.state.lock().unwrap().refreshes, 1);

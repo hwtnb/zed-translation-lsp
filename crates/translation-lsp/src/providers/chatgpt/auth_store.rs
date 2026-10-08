@@ -30,6 +30,8 @@ pub(crate) struct AuthState {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Registration {
+    #[serde(default)]
+    pub authorization_id: Uuid,
     pub issuer: String,
     pub subject: String,
     pub email: String,
@@ -91,7 +93,7 @@ impl Credentials {
 impl AuthState {
     fn new() -> Self {
         Self {
-            version: 1,
+            version: 2,
             ext_agent_host_id: Uuid::new_v4().urn().to_string(),
             active_registration: None,
             registrations: BTreeMap::new(),
@@ -99,7 +101,7 @@ impl AuthState {
     }
 
     fn validate(&self) -> Result<(), StoreError> {
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || !self.ext_agent_host_id.starts_with("urn:uuid:")
             || Uuid::parse_str(&self.ext_agent_host_id).is_err()
             || self
@@ -109,7 +111,8 @@ impl AuthState {
             return Err(StoreError::Invalid);
         }
         for registration in self.registrations.values() {
-            if registration.issuer.is_empty()
+            if (self.version == 2 && registration.authorization_id.is_nil())
+                || registration.issuer.is_empty()
                 || registration.subject.is_empty()
                 || registration.client_id.is_empty()
                 || registration.client_id == "dynamic_agent_client"
@@ -153,7 +156,29 @@ impl AuthStore {
             return Ok(None);
         };
         match lock.try_lock_shared() {
-            Ok(()) => self.read(),
+            Ok(()) => {
+                let snapshot = self.read()?;
+                if snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.state.version == 2)
+                {
+                    return Ok(snapshot);
+                }
+                lock.unlock().map_err(|_| StoreError::Io)?;
+                match lock.try_lock() {
+                    Ok(()) => (),
+                    Err(TryLockError::WouldBlock) => return Err(StoreError::Busy),
+                    Err(_) => return Err(StoreError::Io),
+                }
+                let state = self.read()?.ok_or(StoreError::Invalid)?.state;
+                let mut locked = LockedStore {
+                    lock,
+                    store: self.clone(),
+                    state,
+                };
+                locked.migrate()?;
+                self.read()
+            }
             Err(TryLockError::WouldBlock) => Err(StoreError::Busy),
             Err(_) => Err(StoreError::Io),
         }
@@ -192,11 +217,13 @@ impl AuthStore {
         let state = self
             .read()?
             .map_or_else(AuthState::new, |snapshot| snapshot.state);
-        Ok(Some(LockedStore {
+        let mut locked = LockedStore {
             lock,
             store: self.clone(),
             state,
-        }))
+        };
+        locked.migrate()?;
+        Ok(Some(locked))
     }
 
     fn open_lock(&self, create: bool) -> Result<Option<File>, StoreError> {
@@ -239,6 +266,33 @@ impl AuthStore {
 }
 
 impl LockedStore {
+    fn migrate(&mut self) -> Result<(), StoreError> {
+        if self.state.version == 2 {
+            return Ok(());
+        }
+        let backup = self
+            .store
+            .directory
+            .join(format!("auth-v1-{}.backup.json", Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(backup).map_err(|_| StoreError::Io)?;
+        let bytes = fs::read(self.store.directory.join("auth.json")).map_err(|_| StoreError::Io)?;
+        file.write_all(&bytes).map_err(|_| StoreError::Io)?;
+        file.sync_all().map_err(|_| StoreError::Io)?;
+        for registration in self.state.registrations.values_mut() {
+            registration.authorization_id = Uuid::new_v4();
+        }
+        self.state.version = 2;
+        self.save()?;
+        Ok(())
+    }
+
     pub fn revision(&self) -> Result<Option<Revision>, StoreError> {
         self.store
             .read()
@@ -246,6 +300,9 @@ impl LockedStore {
     }
     pub fn save(&self) -> Result<Revision, StoreError> {
         self.state.validate()?;
+        if self.state.version != 2 {
+            return Err(StoreError::Invalid);
+        }
         let bytes = serde_json::to_vec(&self.state).map_err(|_| StoreError::Invalid)?;
         if bytes.len() as u64 > MAX_AUTH_BYTES {
             return Err(StoreError::Invalid);
@@ -351,7 +408,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn read_only_access_translates_under_shared_lock_and_rejects_changed_revision() {
+    async fn read_only_access_preserves_rewrites_and_rejects_new_authorization() {
         use super::super::{ChatGptProvider, auth::Auth, http::Http, test_support::Fixture};
         use crate::providers::{TextKind, TranslationProvider, error::ErrorKind};
         let fixture = Fixture::new().await;
@@ -388,6 +445,17 @@ mod tests {
         assert!(provider.context().is_err());
         writer.save().unwrap();
         drop(writer);
+        assert_eq!(provider.context().unwrap(), context);
+        let mut writer = store.lock(false).await.unwrap().unwrap();
+        let id = writer.state.active_registration.unwrap();
+        writer
+            .state
+            .registrations
+            .get_mut(&id)
+            .unwrap()
+            .authorization_id = Uuid::new_v4();
+        writer.save().unwrap();
+        drop(writer);
         let stale = provider
             .translate(TextKind::Selection, "Stale source.", "ja", context)
             .await
@@ -405,6 +473,90 @@ mod tests {
                 .count(),
             1
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_store_migrates_once_under_lock_and_preserves_credentials() {
+        use super::super::{auth::Auth, http::Http, test_support::Fixture};
+        let fixture = Fixture::new().await;
+        let directory = std::env::temp_dir().join(format!("zed-auth-migrate-{}", Uuid::new_v4()));
+        let store = AuthStore::synthetic(directory.clone());
+        let auth = Auth::synthetic(
+            store.clone(),
+            Http::synthetic_revocation(&fixture.base),
+            fixture.base.clone(),
+        );
+        fixture.connected(&auth, 3600).await;
+        let writer = store.lock(false).await.unwrap().unwrap();
+        let mut legacy = serde_json::to_value(&writer.state).unwrap();
+        legacy["version"] = 1.into();
+        for registration in legacy["registrations"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            registration
+                .as_object_mut()
+                .unwrap()
+                .remove("authorization_id");
+        }
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(directory.join("auth.json"), &bytes).unwrap();
+        assert!(matches!(store.snapshot(), Err(StoreError::Busy)));
+        drop(writer);
+        let snapshot = store.snapshot().unwrap().unwrap();
+        assert_eq!(snapshot.state.version, 2);
+        let key = auth.key().unwrap();
+        assert!(!key.authorization_id.is_nil());
+        let mut migrated = serde_json::to_value(&snapshot.state).unwrap();
+        migrated["version"] = 1.into();
+        for registration in migrated["registrations"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            registration
+                .as_object_mut()
+                .unwrap()
+                .remove("authorization_id");
+        }
+        assert!(
+            migrated == legacy,
+            "Migration preserves all existing fields"
+        );
+        let writer = store.lock(false).await.unwrap().unwrap();
+        assert_eq!(writer.state.version, 2);
+        drop(writer);
+        assert_eq!(auth.key().unwrap(), key);
+        let backups: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".backup.json")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(fs::read(&backups[0]).unwrap() == bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let mut invalid = snapshot.state;
+        invalid
+            .registrations
+            .values_mut()
+            .next()
+            .unwrap()
+            .authorization_id = Uuid::nil();
+        assert!(matches!(invalid.validate(), Err(StoreError::Invalid)));
         fs::remove_dir_all(directory).unwrap();
     }
 

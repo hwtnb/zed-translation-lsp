@@ -37,6 +37,9 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
     fn context(&self) -> Result<Context, Error> {
         Ok(Context::Mock)
     }
+    fn admit(&self, _context: &Context, _explicit: bool) -> Result<(), Error> {
+        Ok(())
+    }
     fn auth_ui_state(&self) -> AuthUiState {
         AuthUiState::Unavailable
     }

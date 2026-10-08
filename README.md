@@ -149,6 +149,10 @@ Credentials are stored locally in this extension's OS-specific configuration dir
 
 The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
+Authentication data uses `auth.json` version 2. On first access, the server migrates version 1 under the credential-store lock and saves an `auth-v1-<UUID>.backup.json` beside it. Migration preserves tokens, registrations, and the selected account. Each registration receives an authorization ID: token refresh preserves it, while reconnecting replaces it. Refresh and temporary store locks preserve cached translations; the server checks authorization again before displaying them.
+
+Older binaries cannot read version 2. To downgrade, convert the current credentials to version 1 or sign in again. Restoring the backup alone may not work after refresh-token rotation.
+
 ## Reading translations
 
 Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. Adjacent line comments of the same kind and indentation are translated together; blank lines or code split the group. Each block comment is handled separately. Comment markers and one following ASCII space are removed from the text submitted for translation.
@@ -199,7 +203,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
 - Default input limits are 16 KiB for Hover previews and 1 MiB for documents; the default output limit is 4 MiB. Configure them with `translation_limits`. From translation admission, translations opened in a tab default to 180 seconds, manual selection Hover previews and background translation to 30 seconds, and each Hover request to 20 seconds. Worker queue time, API calls, credential refresh, and streaming count toward these deadlines. Selection debounce and waiting for capacity or management operations before admission do not count. Coalesced requests retain their individual deadlines. OAuth, connection, and management operations also have separate internal limits. If busy, retry after the current work finishes.
 - An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. Connection failures and interrupted streams are not automatically replayed.
-- Rate limits and account restrictions pause new translations and return an error. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant.
+- Usage limits, account restrictions, and configuration errors pause automatic translation and return an error. After resolving the cause, explicitly run a selection or document translation to retry; restarting or reconnecting is unnecessary. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant.
 - Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.
 
 ## Development
