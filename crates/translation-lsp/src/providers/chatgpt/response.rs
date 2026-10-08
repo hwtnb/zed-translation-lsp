@@ -4,7 +4,8 @@ use crate::providers::error::{TransportExceeded, TransportScope};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+mod output;
+use output::Output;
 
 #[derive(Default)]
 pub(super) struct RawLimit {
@@ -66,51 +67,6 @@ impl RawLimit {
     }
 }
 
-struct TextPart {
-    item_id: String,
-    text: String,
-    done: bool,
-}
-
-struct OutputItem {
-    id: Option<String>,
-    texts: Vec<String>,
-}
-
-fn output_item(value: &Value, output_limit: SizeLimit) -> Result<OutputItem, Error> {
-    let mut texts = Vec::new();
-    match value["type"].as_str() {
-        Some("reasoning") => (),
-        Some("message") => {
-            if value["status"] != "completed" || value["role"] != "assistant" {
-                return Err(Error::failed("OpenAI output message is incomplete"));
-            }
-            let content = value["content"]
-                .as_array()
-                .ok_or_else(|| Error::failed("OpenAI output content is invalid"))?;
-            let mut bytes = 0usize;
-            for part in content {
-                if part["type"] != "output_text" {
-                    return Err(Error::failed("ChatGPT did not return translation text"));
-                }
-                let text = part["text"]
-                    .as_str()
-                    .ok_or_else(|| Error::failed("OpenAI output text is invalid"))?;
-                bytes = bytes.saturating_add(text.len());
-                output_limit.check(bytes, SizeSetting::Output)?;
-                texts.push(text.to_owned());
-            }
-        }
-        _ => return Err(Error::failed("OpenAI returned unexpected output")),
-    }
-    let id = match value.get("id") {
-        None => None,
-        Some(Value::String(id)) if !id.is_empty() => Some(id.clone()),
-        _ => return Err(Error::failed("OpenAI output item ID is invalid")),
-    };
-    Ok(OutputItem { id, texts })
-}
-
 pub(super) async fn response_text(
     response: reqwest::Response,
     secrets: &[&str],
@@ -119,11 +75,7 @@ pub(super) async fn response_text(
     let status = response.status().as_u16();
     let request_id = http::request_id(response.headers()).map(str::to_owned);
     let mut raw = RawLimit::default();
-    let mut completed = None;
-    let mut parts = BTreeMap::<(u64, u64), TextPart>::new();
-    let mut done_items = BTreeMap::<u64, OutputItem>::new();
-    let mut streamed_bytes = 0usize;
-    let mut item_bytes = 0usize;
+    let mut output = Output::default();
     {
         // eventsource-stream reparses incomplete lines on every chunk. Feed whole
         // lines so large completed-output snapshots are parsed only once.
@@ -172,147 +124,6 @@ pub(super) async fn response_text(
                 ));
             }
             match kind {
-                "response.output_text.delta" | "response.output_text.done" => {
-                    let output_index = value["output_index"]
-                        .as_u64()
-                        .ok_or_else(|| Error::failed("OpenAI text output index is invalid"))?;
-                    let content_index = value["content_index"]
-                        .as_u64()
-                        .ok_or_else(|| Error::failed("OpenAI text content index is invalid"))?;
-                    let item_id = value["item_id"]
-                        .as_str()
-                        .filter(|id| !id.is_empty())
-                        .ok_or_else(|| Error::failed("OpenAI text item ID is invalid"))?;
-                    let done = kind == "response.output_text.done";
-                    let text = value
-                        .get(if done { "text" } else { "delta" })
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Error::failed("OpenAI streamed text is invalid"))?;
-                    if completed.is_some() || done_items.contains_key(&output_index) {
-                        return Err(Error::failed("OpenAI text follows completion"));
-                    }
-                    let key = (output_index, content_index);
-                    if let Some(part) = parts.get_mut(&key) {
-                        if part.item_id != item_id || part.done {
-                            return Err(Error::failed("OpenAI text item is inconsistent"));
-                        }
-                        if done {
-                            if part.text != text {
-                                return Err(Error::failed(
-                                    "OpenAI text completion is inconsistent",
-                                ));
-                            }
-                            part.done = true;
-                        } else {
-                            streamed_bytes = streamed_bytes.saturating_add(text.len());
-                            output_limit.check(streamed_bytes, SizeSetting::Output)?;
-                            part.text.push_str(text);
-                        }
-                    } else {
-                        streamed_bytes = streamed_bytes.saturating_add(text.len());
-                        output_limit.check(streamed_bytes, SizeSetting::Output)?;
-                        parts.insert(
-                            key,
-                            TextPart {
-                                item_id: item_id.into(),
-                                text: text.into(),
-                                done,
-                            },
-                        );
-                    }
-                }
-                "response.output_item.done" => {
-                    let index = value["output_index"]
-                        .as_u64()
-                        .ok_or_else(|| Error::failed("OpenAI output item index is invalid"))?;
-                    let item = output_item(&value["item"], output_limit)?;
-                    if completed.is_some() || done_items.contains_key(&index) || item.id.is_none() {
-                        return Err(Error::failed("OpenAI output item completion is invalid"));
-                    }
-                    item_bytes = item
-                        .texts
-                        .iter()
-                        .fold(item_bytes, |bytes, text| bytes.saturating_add(text.len()));
-                    output_limit.check(item_bytes, SizeSetting::Output)?;
-                    done_items.insert(index, item);
-                }
-                "response.completed" => {
-                    if completed.is_some()
-                        || value["response"]["status"] != "completed"
-                        || !value["response"]["error"].is_null()
-                    {
-                        return Err(Error::failed("OpenAI completion status is invalid"));
-                    }
-                    let output = value["response"]["output"]
-                        .as_array()
-                        .ok_or_else(|| Error::failed("OpenAI completion has no output"))?;
-                    let mut items = BTreeMap::new();
-                    for (index, value) in output.iter().enumerate() {
-                        items.insert(index as u64, output_item(value, output_limit)?);
-                    }
-                    for output in [&done_items, &items] {
-                        let mut ids = HashSet::new();
-                        for item in output.values() {
-                            if item.id.as_ref().is_some_and(|id| !ids.insert(id)) {
-                                return Err(Error::failed("OpenAI output item ID is duplicated"));
-                            }
-                        }
-                    }
-                    if items.is_empty() {
-                        items = std::mem::take(&mut done_items);
-                    } else {
-                        for (index, done) in &done_items {
-                            let Some(item) = items.get(index) else {
-                                return Err(Error::failed("OpenAI completed output omits an item"));
-                            };
-                            if item.texts != done.texts
-                                || item
-                                    .id
-                                    .as_ref()
-                                    .is_some_and(|id| Some(id) != done.id.as_ref())
-                            {
-                                return Err(Error::failed(
-                                    "OpenAI completed output is inconsistent",
-                                ));
-                            }
-                        }
-                    }
-                    for ((index, content_index), part) in &parts {
-                        let Some(item) = items.get(index) else {
-                            return Err(Error::failed(
-                                "OpenAI completed output omits streamed text",
-                            ));
-                        };
-                        let item_id = item
-                            .id
-                            .as_ref()
-                            .or_else(|| done_items.get(index).and_then(|done| done.id.as_ref()));
-                        if item_id.is_some_and(|id| id != &part.item_id)
-                            || usize::try_from(*content_index)
-                                .ok()
-                                .and_then(|index| item.texts.get(index))
-                                != Some(&part.text)
-                        {
-                            return Err(Error::failed(
-                                "OpenAI streamed text does not match its completed output",
-                            ));
-                        }
-                    }
-                    let mut text = String::new();
-                    for item in items.into_values() {
-                        for part in item.texts {
-                            output_limit.check(
-                                text.len().saturating_add(part.len()),
-                                SizeSetting::Output,
-                            )?;
-                            text.push_str(&part);
-                        }
-                    }
-                    if text.is_empty() {
-                        return Err(Error::failed("OpenAI completed without translation text"));
-                    }
-                    completed = Some(text);
-                }
                 "response.failed" | "error" => {
                     let error = if kind == "response.failed" {
                         json!({"error":value["response"]["error"]})
@@ -344,14 +155,14 @@ pub(super) async fn response_text(
                         "ChatGPT response is incomplete; no partial translation was saved",
                     ));
                 }
-                _ => (),
+                _ => output.accept(kind, &value, output_limit)?,
             }
         }
     }
     if raw.event != 0 {
         return Err(Error::failed("OpenAI SSE stream ended inside an event"));
     }
-    completed.ok_or_else(|| Error::failed("OpenAI stream ended without response.completed"))
+    output.finish()
 }
 
 fn error_keys(value: &Value, secrets: &[&str]) -> String {
