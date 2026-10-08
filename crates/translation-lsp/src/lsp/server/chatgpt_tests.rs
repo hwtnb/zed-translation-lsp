@@ -563,7 +563,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     )
     .unwrap();
     // Hold admission until the test owns the store lock, without delaying the worker.
-    let (held_sender, mut held_jobs) = mpsc::channel(MAX_JOBS);
+    let (held_sender, mut held_jobs) = queue::channel(MAX_JOBS);
     let worker_jobs = server.jobs.replace(held_sender).unwrap();
     let uri: Uri = "file:///activity-background.md".parse().unwrap();
     let range = Range::new(Position::new(0, 0), Position::new(0, 15));
@@ -597,7 +597,9 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     };
     assert_eq!(begin.params["value"]["message"], "Queued: 1");
     let locked = auth.store.lock(false).await.unwrap().unwrap();
-    worker_jobs.try_send(held_jobs.try_recv().unwrap()).unwrap();
+    worker_jobs
+        .try_send(held_jobs.recv().await.unwrap())
+        .unwrap();
     server.jobs = Some(worker_jobs);
     let events = completions.clone();
     let started =
@@ -2178,15 +2180,6 @@ async fn administration_reports_admission_worker_and_deadline_failures_but_not_c
         )
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
-    // Cancellation retires a queued job asynchronously. Wait for that slot so
-    // this case tests request cancellation, rather than queue-busy admission.
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while server.admin_jobs.as_ref().unwrap().capacity() == 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
     server
         .request(
             &connection,
@@ -4122,4 +4115,64 @@ async fn unrelated_hover_is_null_when_translation_authorization_is_unavailable()
         );
         assert_eq!(response_calls(&fixture), 0);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_running() {
+    let fixture = Fixture::new().await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    let uris = open_parallel(&mut server, &connection);
+    parallel_hover(&mut server, 1, &uris[0]);
+    wait_held(&tail, 1).await;
+    parallel_hover(&mut server, 2, &uris[1]);
+    wait_held(&tail, 2).await;
+    // Preserve this live queued request across repeated cancellation of another.
+    parallel_hover(&mut server, 3, &uris[2]);
+    for id in 4..14 {
+        parallel_hover(&mut server, id, &uris[3]);
+        assert_eq!(server.scheduler.translations.len(), 4);
+        server
+            .cancel(&connection, &id.into(), ErrorCode::RequestCanceled)
+            .unwrap();
+        let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected cancellation response")
+        };
+        assert_eq!(response.id, id.into());
+        assert_eq!(
+            response.response_result.unwrap_err().code,
+            ErrorCode::RequestCanceled as i32
+        );
+        assert_eq!(response_calls(&fixture), 2);
+    }
+    parallel_hover(&mut server, 14, &uris[3]);
+    fixture.state.lock().unwrap().stream_tail_gate = None;
+    tail.release.notify_waiters();
+    while !server.scheduler.translations.is_empty() {
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
+    assert_eq!(response_calls(&fixture), 4);
+    assert_eq!(client.receiver.try_iter().count(), 4);
+    assert!(
+        uris.iter()
+            .all(|uri| server.documents[uri].preview.is_some())
+    );
 }

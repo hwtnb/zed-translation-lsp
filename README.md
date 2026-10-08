@@ -159,6 +159,10 @@ Hover over a supported code comment, or place the cursor in it and run Zed's `ed
 
 Up to two translations in different documents run at once, with up to four admitted in total. Only one range per document can be in flight. Requests for the same range share one translation.
 
+Accepted requests retain their queue order. Canceled and expired queued requests are removed before admitting new work, even when both workers are occupied. A different range in a document that already has a translation in flight is rejected as busy rather than added to that document's queue. The admission limit and deadlines still apply.
+
+Changing or clearing the observed Markdown selection retires its automatic translation. An explicit translation of that range or another pending Hover can keep the shared work alive. Manual translation actions survive selection changes and ordinary menu operations; opening and dismissing `ChatGPT account…` also leaves translations running. Editing anywhere in the source document, closing it, changing authorization, canceling translation progress, or shutting down the server retires affected work. An editor cancellation of an individual Hover or pending selection command removes only that request; work continues while another request still needs it. Document-tab translation acknowledges admission immediately and continues independently of that command response. Queue time counts toward every translation deadline.
+
 While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Other language-server activity can take priority in this shared area.
 
 The spinner disappears when work ends, including cancellation and timeout. Hover over the original text to check the result. On clients that support server status, translation failures and timeouts leave a warning that clears on retry, editing, or closing the document. Clients without these display capabilities retain Hover and explicit-operation notifications.

@@ -41,8 +41,8 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         admin: admin.clone(),
         translation,
     };
-    let (jobs, received_jobs) = mpsc::channel(4);
-    let (administrations, received_admin) = mpsc::channel(2);
+    let (jobs, received_jobs) = queue::channel(4);
+    let (administrations, received_admin) = queue::channel(2);
     let (finished, completions) = bounded(MAX_JOBS);
     let (connection, _client) = Connection::memory();
     let ui = Ui::new(connection.sender.clone(), UiCapabilities::default());
@@ -65,12 +65,11 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         };
         let sender = if ticket < 4 { &jobs } else { &administrations };
         sender
-            .send(Job {
+            .try_send(Job {
                 ticket,
                 deadline,
                 task,
             })
-            .await
             .unwrap();
     }
     let exercise = async move {

@@ -1,10 +1,12 @@
 mod administration;
 mod lifecycle;
+mod queue;
 mod scheduler;
 mod selection;
 mod translation;
 mod worker;
 
+use queue::{JobReceiver, JobSender};
 use scheduler::{Pending, PendingReply, Scheduler, Translation, TranslationRequest};
 use selection::Selection;
 #[cfg(test)]
@@ -35,7 +37,7 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use crate::{
     config::{ProviderSettings, Settings},
@@ -95,9 +97,9 @@ struct Server<P: TranslationProvider> {
     selection: Option<Selection>,
     next_session: u64,
     next_ticket: u64,
-    jobs: Option<mpsc::Sender<Job>>,
+    jobs: Option<JobSender>,
     worker: Option<thread::JoinHandle<()>>,
-    admin_jobs: Option<mpsc::Sender<Job>>,
+    admin_jobs: Option<JobSender>,
 }
 
 pub fn run_stdio() -> ServerResult<()> {
@@ -311,8 +313,8 @@ impl<P: TranslationProvider> Server<P> {
         settings: Settings,
         ui: Ui,
     ) -> ServerResult<Self> {
-        let (sender, jobs) = mpsc::channel::<Job>(MAX_JOBS - 1);
-        let (admin_sender, admin_jobs) = mpsc::channel::<Job>(1);
+        let (sender, jobs) = queue::channel(MAX_JOBS);
+        let (admin_sender, admin_jobs) = queue::channel(1);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

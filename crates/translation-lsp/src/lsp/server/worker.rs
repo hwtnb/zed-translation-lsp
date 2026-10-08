@@ -42,8 +42,8 @@ pub(super) enum Outcome {
 }
 
 pub(super) async fn worker<P: TranslationProvider>(
-    jobs: mpsc::Receiver<Job>,
-    administrations: mpsc::Receiver<Job>,
+    jobs: JobReceiver,
+    administrations: JobReceiver,
     finished: Sender<WorkerEvent>,
     provider: P,
 ) {
@@ -59,7 +59,7 @@ pub(super) async fn worker<P: TranslationProvider>(
 }
 
 async fn run_jobs<P: TranslationProvider>(
-    jobs: mpsc::Receiver<Job>,
+    jobs: JobReceiver,
     finished: Sender<WorkerEvent>,
     provider: P,
     concurrency: usize,
