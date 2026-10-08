@@ -17,8 +17,7 @@ pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
     syntax::parse(
         &source,
         language.into(),
-        // Error recovery can expose apparent comments inside an unclosed block.
-        syntax::Recovery::StopAtError,
+        syntax::Recovery::StopAtLiteral,
         |node| {
             if node.kind() != "comment" {
                 return None;

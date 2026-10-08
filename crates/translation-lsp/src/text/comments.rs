@@ -261,6 +261,28 @@ mod tests {
     }
 
     #[test]
+    fn comments_after_macros_and_incomplete_expressions() {
+        let uri = "untitled:comment".parse().unwrap();
+        for (language, source) in [
+            (
+                "cpp",
+                "#define Q_OBJECT int meta;\nclass Foo { Q_OBJECT\npublic:\n// Real.\n};",
+            ),
+            (
+                "c",
+                "#define INLINE_API inline\nstatic INLINE_API int f(void) {\n// Real.\nreturn 0;\n}",
+            ),
+            ("c", "foo(\n// Real."),
+            ("cpp", "foo(\n// Real."),
+            ("python", "foo(\n# Real."),
+        ] {
+            let comments = Comments::parse(language, &uri, source);
+            assert_eq!(comments.0.len(), 1, "{language}: {source}");
+            assert_eq!(comments.body(source, 0..1), "Real.");
+        }
+    }
+
+    #[test]
     fn python_comments_and_docstrings_are_distinct_from_other_strings() {
         let source = concat!(
             "# Module comment.\n",
@@ -372,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn c_family_excludes_literals_and_stops_before_ambiguous_error_recovery() {
+    fn c_family_excludes_literals_and_stops_at_ambiguous_literal_recovery() {
         let uri = "untitled:comment".parse().unwrap();
         for language in ["c", "cpp"] {
             let source = "const char *s = \"// not /* comment */\";\nchar c = '/';\n#if ENABLED\n// Real.\n#endif\n";

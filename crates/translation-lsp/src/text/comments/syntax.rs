@@ -4,7 +4,7 @@ use super::Comment;
 
 pub(super) enum Recovery {
     SkipError,
-    StopAtError,
+    StopAtLiteral,
 }
 
 pub(super) fn parse(
@@ -25,7 +25,14 @@ pub(super) fn parse(
     loop {
         let node = cursor.node();
         if node.is_error() {
-            if matches!(recovery, Recovery::StopAtError) {
+            let fragment = &source[node.byte_range()];
+            // Recovery may place apparent comments after an unfinished literal.
+            // Without a trustworthy token boundary, keep only earlier comments.
+            if matches!(recovery, Recovery::StopAtLiteral)
+                && (fragment.contains(&b'"')
+                    || fragment.contains(&b'\'')
+                    || fragment.windows(2).any(|pair| pair == b"/*"))
+            {
                 return comments;
             }
         } else {

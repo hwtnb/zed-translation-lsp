@@ -14,7 +14,7 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
     syntax::parse(
         &source,
         tree_sitter_python::LANGUAGE.into(),
-        syntax::Recovery::StopAtError,
+        syntax::Recovery::StopAtLiteral,
         |node| {
             if node.kind() == "comment" {
                 if node.start_byte() == 0 && text.starts_with("#!") {
