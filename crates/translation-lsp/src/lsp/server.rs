@@ -2202,6 +2202,81 @@ mod chatgpt_tests {
     use serde_json::json;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() {
+        for language in ["rust", "plaintext", "markdown"] {
+            let fixture = Fixture::new().await;
+            let auth = fixture.auth();
+            fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth,
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let (connection, client) = Connection::memory();
+            let (finished, completions) = bounded(MAX_JOBS);
+            let mut server = Server::configured(
+                MockOptions::default(),
+                finished,
+                provider,
+                Settings::default(),
+                Ui::new(connection.sender.clone(), UiCapabilities::default()),
+            )
+            .unwrap();
+            let uri: Uri = "file:///selection.rs".parse().unwrap();
+            let source = "    // Translate this indented comment.";
+            let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
+            server.documents.insert(
+                uri.clone(),
+                Document::new(1, 1, language.into(), source.into()),
+            );
+            let actions = markdown_actions(&mut server, &uri, range);
+            assert!(
+                server.selection.is_none(),
+                "Indented Markdown must not auto-translate"
+            );
+            let command = actions
+                .into_iter()
+                .filter_map(|action| action.command)
+                .find(|command| command.command == COMMAND)
+                .unwrap();
+            server
+                .execute_command(
+                    &connection,
+                    1.into(),
+                    ExecuteCommandParams {
+                        command: command.command,
+                        arguments: command.arguments.unwrap(),
+                        work_done_progress_params: Default::default(),
+                    },
+                )
+                .unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            let document = &server.documents[&uri];
+            assert_eq!(document.text(), Some(source));
+            assert_eq!(
+                document.preview.as_ref().unwrap().translation,
+                format!("訳{source}")
+            );
+            let state = fixture.state.lock().unwrap();
+            let requests: Vec<_> = state
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .collect();
+            assert_eq!(requests.len(), 1);
+            let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+            assert_eq!(request["input"][0]["content"], source);
+            assert!(client.receiver.try_iter().any(|message| match message {
+                Message::Response(response) =>
+                    response.id == 1.into() && response.response_result.is_ok(),
+                _ => false,
+            }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn hover_limits_control_actions_background_and_manual_admission() {
         let fixture = Fixture::new().await;
         let auth = fixture.auth();

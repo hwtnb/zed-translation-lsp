@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use crate::{
     config::{ReasoningEffort, limits::SizeLimit},
     lsp::ui::Ui,
-    text::markdown::prose_ranges,
 };
 
 use super::{
@@ -123,18 +122,11 @@ impl ChatGptProvider {
 
     async fn request(
         &self,
-        kind: TextKind,
         body: &str,
         target: &str,
         expected: &AccountKey,
     ) -> Result<Translated, Error> {
         self.allowed(expected)?;
-        if kind == TextKind::Selection && prose_ranges(body).map_err(Error::failed)?.is_empty() {
-            return Ok(Translated {
-                text: body.into(),
-                context: Context::ChatGpt(expected.clone()),
-            });
-        }
         let access = match self.auth.access(expected).await {
             Ok(access) => access,
             Err(error) => {
@@ -234,7 +226,7 @@ impl TranslationProvider for ChatGptProvider {
 
     async fn translate(
         &self,
-        kind: TextKind,
+        _kind: TextKind,
         text: &str,
         target: &str,
         context: Context,
@@ -242,7 +234,7 @@ impl TranslationProvider for ChatGptProvider {
         let Context::ChatGpt(key) = context else {
             return Err(account_changed());
         };
-        self.request(kind, text, target, &key).await
+        self.request(text, target, &key).await
     }
 
     async fn administer(&self, command: &str, ui: &Ui) -> Result<String, Error> {
@@ -1399,7 +1391,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn code_only_has_no_http_and_account_changes_drop_http_future() {
+    async fn manual_selections_reach_http_and_account_changes_drop_http_future() {
         let fixture = Fixture::new().await;
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
@@ -1408,17 +1400,27 @@ mod tests {
             format!("{}/v1", fixture.base),
             "synthetic-model".into(),
         );
-        let translated = provider
-            .translate(
-                TextKind::Selection,
-                "`code`",
-                "ja",
-                provider.context().unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(translated.text, "`code`");
-        assert!(fixture.state.lock().unwrap().records.is_empty());
+        for body in [
+            "`code`",
+            "    Example prose.",
+            "    // Translate this comment.",
+        ] {
+            let translated = provider
+                .translate(TextKind::Selection, body, "ja", provider.context().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(translated.text, format!("訳{body}"));
+            let mut state = fixture.state.lock().unwrap();
+            let requests: Vec<_> = state
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .collect();
+            assert_eq!(requests.len(), 1);
+            let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+            assert_eq!(request["input"][0]["content"], body);
+            state.records.clear();
+        }
         fixture.state.lock().unwrap().delay = Duration::from_secs(5);
         let key = provider.context().unwrap();
         let translation = provider.translate(TextKind::Selection, "Translate this.", "ja", key);

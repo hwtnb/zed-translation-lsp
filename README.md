@@ -175,6 +175,8 @@ Check error notifications for failed manual translation or management operations
 
 Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
 
+Explicit selection and document actions send the requested text even when it is indented or contains only code. The model is instructed to preserve code and identifiers. Markdown prose eligibility limits only automatic background translation; the extension does not report the original text as a successful translation without contacting the provider.
+
 The extension submits the extracted comment body, the selected text, or the whole document when you explicitly choose document translation. It does not submit conversation history or write translations back into the source document.
 
 The server keeps the last translated range for each document in memory. Editing or closing the document, changing accounts, or reconnecting discards it. Hover does not store text on disk. Opening a translation tab writes the completed translation to a temporary file as described above. Failures, interrupted streams, cancellation, and expired requests do not show partial translations.
