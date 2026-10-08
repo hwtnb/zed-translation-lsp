@@ -12,6 +12,10 @@ pub(crate) struct Http {
     revocation_fixture: Option<String>,
 }
 
+pub(super) fn request_id(headers: &reqwest::header::HeaderMap) -> Option<&str> {
+    headers.get("x-request-id").and_then(|id| id.to_str().ok())
+}
+
 pub(super) fn response_error(
     status: u16,
     body: &Value,
@@ -70,6 +74,11 @@ pub(super) fn response_error(
     if kind == ErrorKind::UsageLimit {
         message.push_str(
             ". New ChatGPT plan requests are paused; check https://chatgpt.com/settings/usage",
+        );
+    }
+    if kind == ErrorKind::RefreshUnusable {
+        message.push_str(
+            ". Choose Continue with ChatGPT / Choose account and reconnect the saved account.",
         );
     }
     Error { kind, message }
@@ -164,10 +173,7 @@ impl Http {
             return Err(response_error(
                 response.status().as_u16(),
                 &body,
-                response
-                    .headers()
-                    .get("x-request-id")
-                    .and_then(|id| id.to_str().ok()),
+                request_id(response.headers()),
                 &secrets,
             ));
         }
@@ -180,11 +186,7 @@ impl Http {
         secrets: &[&str],
     ) -> Result<Value, Error> {
         let status = response.status();
-        let request_id = response
-            .headers()
-            .get("x-request-id")
-            .and_then(|id| id.to_str().ok())
-            .map(str::to_owned);
+        let request_id = request_id(response.headers()).map(str::to_owned);
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| temporary_network())? {
             if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {

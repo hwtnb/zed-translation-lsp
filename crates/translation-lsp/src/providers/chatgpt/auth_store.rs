@@ -432,7 +432,13 @@ mod tests {
         reader.try_lock_shared().unwrap();
         let translated = tokio::time::timeout(
             Duration::from_secs(5),
-            provider.translate(TextKind::Selection, "Shared source.", "ja", context.clone()),
+            provider.translate(
+                crate::providers::Intent::Automatic,
+                TextKind::Selection,
+                "Shared source.",
+                "ja",
+                context.clone(),
+            ),
         )
         .await
         .expect("A valid read must not need an exclusive credential lock")
@@ -457,7 +463,13 @@ mod tests {
         writer.save().unwrap();
         drop(writer);
         let stale = provider
-            .translate(TextKind::Selection, "Stale source.", "ja", context)
+            .translate(
+                crate::providers::Intent::Automatic,
+                TextKind::Selection,
+                "Stale source.",
+                "ja",
+                context,
+            )
             .await
             .err()
             .unwrap();

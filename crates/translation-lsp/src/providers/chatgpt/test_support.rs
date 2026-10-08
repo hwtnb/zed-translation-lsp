@@ -84,6 +84,7 @@ pub(crate) struct FixtureState {
     pub retry_after: Option<String>,
     pub direct: bool,
     pub delay: Duration,
+    pub token_release: Option<Arc<tokio::sync::Notify>>,
     pub stream_tail_delay: Duration,
     pub stream_tail_gate: Option<Arc<StreamTailGate>>,
     pub refreshes: usize,
@@ -120,6 +121,7 @@ impl Fixture {
             retry_after: None,
             direct: true,
             delay: Duration::ZERO,
+            token_release: None,
             stream_tail_delay: Duration::ZERO,
             stream_tail_gate: None,
             refreshes: 0,
@@ -692,6 +694,12 @@ async fn endpoint(
     };
     if path == "/v1/responses" || path == "/token" {
         tokio::time::sleep(delay).await;
+    }
+    let token_release = (path == "/token")
+        .then(|| shared.lock().unwrap().token_release.clone())
+        .flatten();
+    if let Some(release) = token_release {
+        release.notified().await;
     }
     let mut state = shared.lock().unwrap();
     let (status, content_type, result) = match path.as_str() {

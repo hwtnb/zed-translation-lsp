@@ -9,7 +9,7 @@ use lsp_types::{ClientCapabilities, MessageType};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
-use crate::providers::error::Error;
+use crate::providers::{Interaction, error::Error};
 
 #[derive(Clone)]
 pub(crate) struct Ui {
@@ -88,40 +88,7 @@ impl Ui {
             .map_err(|_| Error::failed("The editor disconnected"))?;
         response
             .response_result
-            .map_err(|_| Error::failed("The editor declined the ChatGPT operation"))
-    }
-
-    pub async fn open(&self, uri: &str) -> Result<(), Error> {
-        if !self.capabilities.show_document {
-            return Err(Error::failed(
-                "The editor must support window/showDocument with external URLs",
-            ));
-        }
-        let result = self
-            .request(
-                "window/showDocument",
-                json!({"uri":uri,"external":true,"takeFocus":true}),
-            )
-            .await?;
-        if result["success"] != true {
-            return Err(Error::failed("The editor could not open the ChatGPT page"));
-        }
-        Ok(())
-    }
-
-    pub async fn choose(&self, message: &str, choices: &[String]) -> Result<Option<String>, Error> {
-        let actions: Vec<_> = choices.iter().map(|title| json!({"title":title})).collect();
-        let value = self
-            .request(
-                "window/showMessageRequest",
-                json!({"type":3,"message":message,"actions":actions}),
-            )
-            .await?;
-        Ok(value
-            .get("title")
-            .and_then(Value::as_str)
-            .filter(|title| choices.iter().any(|choice| choice == title))
-            .map(str::to_owned))
+            .map_err(|_| Error::failed("The editor declined the operation"))
     }
 
     pub fn inform(&self, message: &str) -> Result<(), Error> {
@@ -153,5 +120,42 @@ impl Drop for PendingUi {
                     .into(),
             );
         }
+    }
+}
+
+impl Interaction for Ui {
+    async fn open(&self, uri: &str) -> Result<(), Error> {
+        if !self.capabilities.show_document {
+            return Err(Error::failed(
+                "The editor must support window/showDocument with external URLs",
+            ));
+        }
+        let result = self
+            .request(
+                "window/showDocument",
+                json!({"uri":uri,"external":true,"takeFocus":true}),
+            )
+            .await?;
+        if result["success"] != true {
+            return Err(Error::failed(
+                "The editor could not open the requested page",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn choose(&self, message: &str, choices: &[String]) -> Result<Option<String>, Error> {
+        let actions: Vec<_> = choices.iter().map(|title| json!({"title":title})).collect();
+        let value = self
+            .request(
+                "window/showMessageRequest",
+                json!({"type":3,"message":message,"actions":actions}),
+            )
+            .await?;
+        Ok(value
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|title| choices.iter().any(|choice| choice == title))
+            .map(str::to_owned))
     }
 }

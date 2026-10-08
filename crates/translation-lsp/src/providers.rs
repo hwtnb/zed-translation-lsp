@@ -4,9 +4,31 @@ pub(crate) mod mock;
 
 use std::future::Future;
 
-use crate::lsp::ui::Ui;
 use chatgpt::auth::AccountKey;
 use error::Error;
+
+pub(crate) trait Interaction {
+    fn open(&self, uri: &str) -> impl Future<Output = Result<(), Error>>;
+    fn choose(
+        &self,
+        message: &str,
+        choices: &[String],
+    ) -> impl Future<Output = Result<Option<String>, Error>>;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProviderCommand {
+    pub command: &'static str,
+    pub title: &'static str,
+    pub changes_account: bool,
+}
+
+pub(crate) struct Capabilities {
+    pub server_name: &'static str,
+    pub automatic_selection: bool,
+    pub account_menu: Option<&'static str>,
+    pub commands: &'static [ProviderCommand],
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AuthUiState {
@@ -20,6 +42,12 @@ pub(crate) enum AuthUiState {
 pub(crate) enum Context {
     Mock,
     ChatGpt(AccountKey),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Intent {
+    Automatic,
+    Explicit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,26 +65,39 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
     fn context(&self) -> Result<Context, Error> {
         Ok(Context::Mock)
     }
-    fn admit(&self, _context: &Context, _explicit: bool) -> Result<(), Error> {
+    fn admit(&self, _context: &Context, _intent: Intent) -> Result<(), Error> {
         Ok(())
     }
     fn auth_ui_state(&self) -> AuthUiState {
-        AuthUiState::Unavailable
+        AuthUiState::Ready
     }
-    fn is_chatgpt(&self) -> bool {
-        false
+    fn capabilities() -> Capabilities {
+        Capabilities {
+            server_name: "Translation LSP",
+            automatic_selection: false,
+            account_menu: None,
+            commands: &[],
+        }
+    }
+    fn account_commands(&self) -> Vec<ProviderCommand> {
+        Self::capabilities().commands.to_vec()
     }
     fn translate(
         &self,
+        intent: Intent,
         kind: TextKind,
         text: &str,
         target_language: &str,
         context: Context,
     ) -> impl Future<Output = Result<Translated, Error>>;
-    fn administer(&self, _command: &str, _ui: &Ui) -> impl Future<Output = Result<String, Error>> {
+    fn administer(
+        &self,
+        _command: &str,
+        _ui: &impl Interaction,
+    ) -> impl Future<Output = Result<String, Error>> {
         async {
             Err(Error::failed(
-                "ChatGPT commands require provider.name=chatgpt",
+                "This provider does not support account commands",
             ))
         }
     }

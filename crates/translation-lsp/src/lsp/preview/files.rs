@@ -11,6 +11,8 @@ use serde_json::json;
 
 use crate::lsp::ui::Ui;
 
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 pub(in crate::lsp) struct PreviewFiles {
     files: Vec<PathBuf>,
@@ -54,8 +56,7 @@ impl PreviewFiles {
                 .into(),
             )
             .map_err(|_| failed("The editor disconnected"))?;
-        self.opening
-            .insert(id, Instant::now() + Duration::from_secs(10));
+        self.opening.insert(id, Instant::now() + OPEN_TIMEOUT);
         Ok(())
     }
 

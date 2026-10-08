@@ -1,0 +1,4025 @@
+use super::*;
+use crate::providers::chatgpt::test_support::{Fixture, StreamTailGate};
+use serde_json::json;
+
+#[tokio::test(flavor = "current_thread")]
+async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() {
+    for language in ["rust", "plaintext", "markdown"] {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uri: Uri = "file:///selection.rs".parse().unwrap();
+        let source = "    // Translate this indented comment.";
+        let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, language.into(), source.into()),
+        );
+        let actions = markdown_actions(&mut server, &uri, range);
+        assert!(
+            server.selection.is_none(),
+            "Indented Markdown must not auto-translate"
+        );
+        let command = actions
+            .into_iter()
+            .filter_map(|action| action.command)
+            .find(|command| command.command == COMMAND)
+            .unwrap();
+        server
+            .execute_command(
+                &connection,
+                1.into(),
+                ExecuteCommandParams {
+                    command: command.command,
+                    arguments: command.arguments.unwrap(),
+                    work_done_progress_params: Default::default(),
+                },
+            )
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let document = &server.documents[&uri];
+        assert_eq!(document.text(), Some(source));
+        assert_eq!(
+            document.preview.as_ref().unwrap().translation,
+            format!("訳{source}")
+        );
+        let state = fixture.state.lock().unwrap();
+        let requests: Vec<_> = state
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .collect();
+        assert_eq!(requests.len(), 1);
+        let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(request["input"][0]["content"], source);
+        assert!(client.receiver.try_iter().any(|message| match message {
+            Message::Response(response) =>
+                response.id == 1.into() && response.response_result.is_ok(),
+            _ => false,
+        }));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hover_limits_control_actions_background_and_manual_admission() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    for (kib, bytes) in [(1, 1024), (1, 1025), (64, 32 * 1024)] {
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let settings = Settings::from_options(Some(
+            json!({"translation_limits":{"input_kib":{"hover":kib}}}),
+        ))
+        .unwrap();
+        let (connection, _client) = Connection::memory();
+        let (finished, _completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            settings,
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uri: Uri = "file:///sized.md".parse().unwrap();
+        let source = format!("{}é", "a".repeat(bytes - 2));
+        let range = Range::new(Position::new(0, 0), Position::new(0, (bytes - 1) as u32));
+        server
+            .documents
+            .insert(uri.clone(), Document::new(1, 1, "markdown".into(), source));
+        let actions = markdown_actions(&mut server, &uri, range);
+        let accepted = bytes <= kib * 1024;
+        assert_eq!(
+            actions.iter().any(|action| action
+                .command
+                .as_ref()
+                .is_some_and(|command| command.command == COMMAND)),
+            accepted
+        );
+        assert_eq!(server.selection.is_some(), accepted);
+        let target = TranslationTarget {
+            uri,
+            version: 1,
+            session: 1,
+            range,
+            target_language: "ja".into(),
+        };
+        let result = server.queue_translation(
+            target,
+            TranslationRequest::Reply(1.into(), PendingReply::Command),
+        );
+        assert_eq!(result.is_ok(), accepted);
+        if !accepted {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("1025 bytes"));
+            assert!(error.message.contains("translation_limits.input_kib.hover"));
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn document_pipeline_opens_large_translation_and_does_not_publish_oversized_output() {
+    for (limit, output_bytes, success) in
+        [(4096, 96 * 1024, true), (1, 1024, true), (1, 1025, false)]
+    {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let translated = format!("{}é", "x".repeat(output_bytes - 2));
+        fixture.state.lock().unwrap().translation = Some(translated.clone());
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let settings =
+            Settings::from_options(Some(json!({"translation_limits":{"output_kib":limit}})))
+                .unwrap();
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            settings,
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///large-document.md".parse().unwrap();
+        let source = "Read this sentence. ".repeat(2000);
+        let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), source.clone()),
+        );
+        let target = TranslationTarget {
+            uri: uri.clone(),
+            version: 1,
+            session: 1,
+            range,
+            target_language: "ja".into(),
+        };
+        server
+            .queue_translation(target, TranslationRequest::Document)
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(server.documents[&uri].text(), Some(source.as_str()));
+        assert_eq!(server.documents[&uri].preview.is_some(), success);
+        let messages: Vec<_> = client.receiver.try_iter().collect();
+        if success {
+            let open = messages
+                .iter()
+                .find_map(|message| match message {
+                    Message::Request(request) if request.method == "window/showDocument" => {
+                        Some(request)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+                .unwrap()
+                .to_file_path()
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), translated);
+            drop(server);
+            assert!(!path.exists());
+        } else {
+            assert!(!messages.iter().any(|message| match message {
+                Message::Request(request) => request.method == "window/showDocument",
+                _ => false,
+            }));
+            assert!(messages.iter().any(|message| {
+                match message {
+                    Message::Notification(notification) => notification
+                        .params
+                        .to_string()
+                        .contains("translation_limits.output_kib"),
+                    _ => false,
+                }
+            }));
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn worker_deadline_and_cancellation_stop_overload_backoff() {
+    for cancel in [false, true] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().response_failures.push_back((
+            200,
+            json!({"type":"error", "code":"server_is_overloaded", "message":"Overloaded"}),
+        ));
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (stop, deadline) = watch::channel(Some(Instant::now() + Duration::from_secs(5)));
+        let (finished, events) = bounded(MAX_JOBS);
+        let job = Job {
+            ticket: 1,
+            deadline,
+            task: Task::Translation {
+                intent: crate::providers::Intent::Automatic,
+                kind: TextKind::Selection,
+                text: "Read this.".into(),
+                target_language: "ja".into(),
+                context: provider.context().unwrap(),
+            },
+        };
+        let running = run_job(job, &finished, &provider);
+        tokio::pin!(running);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut running)
+                .await
+                .is_err()
+        );
+        assert_eq!(response_calls(&fixture), 1);
+        stop.send_replace(if cancel { None } else { Some(Instant::now()) });
+        tokio::time::timeout(Duration::from_secs(1), &mut running)
+            .await
+            .unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            WorkerEvent::Started(1)
+        ));
+        if !cancel {
+            let WorkerEvent::Finished(completion) = events.try_recv().unwrap() else {
+                panic!("Expected deadline failure");
+            };
+            assert!(
+                completion
+                    .result
+                    .is_err_and(|error| error.message == "Translation timed out")
+            );
+        }
+        assert!(events.try_recv().is_err());
+        assert_eq!(response_calls(&fixture), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
+    for automatic in [false, true] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().translation = Some("Translated sentence.".into());
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let settings = Settings::from_options(Some(json!({
+            "target_language":"en", "markdown_auto_translate":automatic,
+            "hover_timeout_ms":1000, "selection_timeout_ms":1500, "selection_debounce_ms":100,
+            "provider":{"name":"chatgpt","model":"synthetic-model"}
+        })))
+        .unwrap();
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            settings,
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uri: Uri = "file:///configured-en.md".parse().unwrap();
+        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+        );
+        let actions = markdown_actions(&mut server, &uri, range);
+        assert_eq!(actions[0].title, "Translate selection to en");
+        assert_eq!(actions[1].title, "ChatGPT account…");
+        let command = actions[0].command.clone().unwrap();
+        assert_eq!(
+            command.arguments.as_ref().unwrap()[0]["targetLanguage"],
+            "en"
+        );
+        if automatic {
+            let due = server.selection.as_ref().unwrap().start.unwrap();
+            assert!(due <= Instant::now() + Duration::from_millis(100));
+            markdown_actions(&mut server, &uri, range);
+            assert_eq!(server.selection.as_ref().unwrap().start, Some(due));
+            server.expire(&connection).unwrap();
+            assert!(server.scheduler.translations.is_empty());
+            assert!(fixture.state.lock().unwrap().records.is_empty());
+            tokio::time::sleep(Duration::from_millis(110)).await;
+            server.expire(&connection).unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert!(
+                client.receiver.is_empty(),
+                "Background completion remains silent"
+            );
+            markdown_actions(&mut server, &uri, range);
+            server.expire(&connection).unwrap();
+            assert!(
+                server.scheduler.translations.is_empty(),
+                "Same selection cannot duplicate completed work"
+            );
+        } else {
+            assert!(server.selection.is_none());
+            tokio::time::sleep(Duration::from_millis(110)).await;
+            markdown_actions(&mut server, &uri, range);
+            server.expire(&connection).unwrap();
+            assert!(
+                fixture.state.lock().unwrap().records.is_empty(),
+                "Disabled automatic translation sends nothing"
+            );
+        }
+        server
+            .request(
+                &connection,
+                Request::new(
+                    1.into(),
+                    ExecuteCommand::METHOD.into(),
+                    json!({
+                        "command":command.command,"arguments":command.arguments.unwrap()
+                    }),
+                ),
+            )
+            .unwrap();
+        if !automatic {
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+        }
+        assert!(command_notice(&client, 1, 3).unwrap().is_null());
+        let markdown = server
+            .hover(
+                2.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            markdown["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .ends_with("```text\nTranslated sentence.\n```")
+        );
+        assert_eq!(server.documents[&uri].text(), Some("First sentence."));
+        let comment_uri: Uri = "file:///configured-en.rs".parse().unwrap();
+        server.documents.insert(
+            comment_uri.clone(),
+            Document::new(1, 2, "rust".into(), "// First sentence.".into()),
+        );
+        server
+            .request(
+                &connection,
+                Request::new(
+                    3.into(),
+                    HoverRequest::METHOD.into(),
+                    json!({
+                        "textDocument":{"uri":comment_uri},"position":{"line":0,"character":4}
+                    }),
+                ),
+            )
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let Message::Response(comment) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected comment Hover");
+        };
+        assert!(
+            comment.response_result.unwrap()["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("Translated sentence.")
+        );
+        assert_eq!(
+            server.documents[&comment_uri].text(),
+            Some("// First sentence.")
+        );
+        let records = fixture.state.lock().unwrap().records.clone();
+        let responses: Vec<_> = records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .collect();
+        assert_eq!(responses.len(), 2);
+        for response in responses {
+            let body: Value = serde_json::from_str(&response.body).unwrap();
+            assert!(
+                body["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Translate the text into en. Source language: auto.")
+            );
+        }
+        assert!(client.receiver.is_empty());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn activity_problem_survives_busy_store_and_clears_confirmed_external_invalidation() {
+    for plan_disabled in [false, true] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().failure = Some((
+            400,
+            serde_json::json!({"error":{"message":"Synthetic translation failure"}}),
+        ));
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    server_status: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///problem-account.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), "// Translate this.".into()),
+        );
+        server
+            .hover(
+                1.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                    .unwrap(),
+            )
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let Message::Response(failed) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected failure");
+        };
+        assert!(failed.response_result.is_err());
+        server.publish_activity();
+        let Message::Notification(problem) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected warning");
+        };
+        assert_eq!(problem.params["health"], "warning");
+        let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+        assert_eq!(auth.ui_state(), AuthUiState::Unavailable);
+        server.publish_activity();
+        assert!(
+            client.receiver.is_empty(),
+            "Busy is not a confirmed account change"
+        );
+        let id = locked.state.active_registration.unwrap();
+        let registration = locked.state.registrations.get_mut(&id).unwrap();
+        if plan_disabled {
+            registration.credentials.as_mut().unwrap().scopes.clear();
+        } else {
+            registration.credentials = None;
+        }
+        locked.save().unwrap();
+        drop(locked);
+        assert_eq!(
+            auth.ui_state(),
+            if plan_disabled {
+                AuthUiState::PlanDisabled
+            } else {
+                AuthUiState::SignedOut
+            }
+        );
+        server.publish_activity();
+        let Message::Notification(clear) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected clear");
+        };
+        assert_eq!(clear.params, json!({"health":"ok","quiescent":true}));
+        server.publish_activity();
+        assert!(client.receiver.is_empty());
+        assert_eq!(response_calls(&fixture), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_refresh() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().stream_tail_delay = Duration::from_millis(300);
+    let auth = fixture.auth();
+    fixture.connected(&auth, 0).await;
+    let token_release = std::sync::Arc::new(tokio::sync::Notify::new());
+    fixture.state.lock().unwrap().token_release = Some(token_release.clone());
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider.clone(),
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                work_done_progress: true,
+                server_status: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    // Hold admission until the test owns the store lock, without delaying the worker.
+    let (held_sender, mut held_jobs) = mpsc::channel(MAX_JOBS);
+    let worker_jobs = server.jobs.replace(held_sender).unwrap();
+    let uri: Uri = "file:///activity-background.md".parse().unwrap();
+    let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+    );
+    markdown_actions(&mut server, &uri, range);
+    server.selection.as_mut().unwrap().start = Some(Instant::now());
+    server.expire(&connection).unwrap();
+    server
+        .hover(
+            1.into(),
+            parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap(),
+        )
+        .unwrap();
+    let ticket = server.scheduler.pending[&1.into()].ticket;
+    let original_context = server.scheduler.translations[&ticket].context.clone();
+    server.publish_activity();
+    let Message::Request(create) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected create");
+    };
+    assert!(
+        server
+            .activity
+            .response(&Response::new_ok(create.id, Value::Null))
+    );
+    server.publish_activity();
+    let Message::Notification(begin) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected begin");
+    };
+    assert_eq!(begin.params["value"]["message"], "Queued: 1");
+    let locked = auth.store.lock(false).await.unwrap().unwrap();
+    worker_jobs.try_send(held_jobs.try_recv().unwrap()).unwrap();
+    server.jobs = Some(worker_jobs);
+    let events = completions.clone();
+    let started =
+        tokio::task::spawn_blocking(move || events.recv_timeout(Duration::from_secs(2)).unwrap())
+            .await
+            .unwrap();
+    let WorkerEvent::Started(started_ticket) = started else {
+        panic!("Expected worker Started");
+    };
+    assert_eq!(started_ticket, ticket);
+    server
+        .scheduler
+        .translations
+        .get_mut(&ticket)
+        .unwrap()
+        .phase = Phase::Running;
+    assert!(matches!(
+        auth.store.snapshot(),
+        Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+    ));
+    assert!(provider.context().is_err());
+    tokio::time::sleep(Duration::from_millis(160)).await;
+    server.publish_activity();
+    let Message::Notification(running) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected running report during store lock");
+    };
+    assert_eq!(running.params["value"]["kind"], "report");
+    assert_eq!(
+        running.params["value"]["message"],
+        "Translating: 1, queued: 0"
+    );
+    server
+        .scheduler
+        .pending
+        .get_mut(&1.into())
+        .unwrap()
+        .deadline = Instant::now();
+    server.expire(&connection).unwrap();
+    server.publish_activity();
+    let Message::Response(expired) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected expired Hover");
+    };
+    assert_eq!(
+        expired.response_result.unwrap_err().code,
+        ErrorCode::RequestFailed as i32
+    );
+    assert!(
+        server.scheduler.translations[&ticket]
+            .background_deadline
+            .is_some()
+    );
+    assert!(
+        client.receiver.is_empty(),
+        "Remaining background owner keeps progress alive"
+    );
+    drop(locked);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .any(|record| record.path == "/token")
+        {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        auth.store.snapshot(),
+        Err(crate::providers::chatgpt::auth_store::StoreError::Busy)
+    ));
+    server.publish_activity();
+    assert!(
+        client.receiver.is_empty(),
+        "HTTP refresh holding auth lock keeps progress alive"
+    );
+    token_release.notify_one();
+    let completion = next(&completions).await;
+    assert_eq!(provider.context().unwrap(), original_context);
+    assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+    server.publish_activity();
+    assert!(
+        client.receiver.is_empty(),
+        "Credential revision change must not end valid work"
+    );
+    server.finish(&connection, completion).unwrap();
+    server.publish_activity();
+    let Message::Notification(end) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected end");
+    };
+    assert_eq!(
+        end.params,
+        json!({"token":create.params["token"],"value":{"kind":"end"}})
+    );
+    assert!(server.documents[&uri].preview.is_some());
+    assert!(
+        client.receiver.is_empty(),
+        "Background completion adds no status or INFO"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().delay = Duration::from_secs(1);
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                work_done_progress: true,
+                server_status: true,
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///activity-picker.md".parse().unwrap();
+    let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+    );
+    markdown_actions(&mut server, &uri, range);
+    server.selection.as_mut().unwrap().start = Some(Instant::now());
+    server.expire(&connection).unwrap();
+    server.publish_activity();
+    let Message::Request(create) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected create");
+    };
+    server
+        .activity
+        .response(&Response::new_ok(create.id, Value::Null));
+    server.publish_activity();
+    let _begin = client.receiver.try_recv().unwrap();
+    server
+        .request(
+            &connection,
+            Request::new(
+                2.into(),
+                ExecuteCommand::METHOD.into(),
+                json!({"command":SETTINGS_COMMAND}),
+            ),
+        )
+        .unwrap();
+    let Message::Request(picker) = protocol_message(&client).await else {
+        panic!("Expected picker");
+    };
+    assert_eq!(picker.method, "window/showMessageRequest");
+    let deadline = server.administrations[&2.into()].deadline;
+    server
+        .notification(
+            &connection,
+            lsp_server::Notification::new(
+                "window/workDoneProgress/cancel".into(),
+                json!({"token":create.params["token"]}),
+            ),
+        )
+        .unwrap();
+    server.publish_activity();
+    assert!(server.scheduler.translations.is_empty());
+    assert!(server.selection.is_none());
+    assert_eq!(
+        *server.administrations[&2.into()].stop.borrow(),
+        Some(deadline)
+    );
+    let Message::Notification(end) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected end");
+    };
+    assert_eq!(end.params["value"]["kind"], "end");
+    assert!(client.receiver.is_empty(), "Picker must remain pending");
+    server.ui.response(Response::new_ok(picker.id, Value::Null));
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let Message::Response(dismissed) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected picker dismissal");
+    };
+    assert_eq!(dismissed.id, 2.into());
+    assert!(dismissed.response_result.unwrap().is_null());
+    assert!(client.receiver.is_empty());
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+}
+
+async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
+    let receiver = receiver.clone();
+    tokio::task::spawn_blocking(move || {
+        loop {
+            if let WorkerEvent::Finished(completion) =
+                receiver.recv_timeout(Duration::from_secs(3)).unwrap()
+            {
+                break completion;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_held(tail: &StreamTailGate, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while tail.held.load(std::sync::atomic::Ordering::SeqCst) != count {
+            tail.reached.notified().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "Expected {count} held HTTP responses; observed {}",
+            tail.held.load(std::sync::atomic::Ordering::SeqCst)
+        )
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn two_http_translations_run_while_other_documents_stay_queued() {
+    let fixture = Fixture::new().await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.response_mode = "delta_compact".into();
+        state.stream_tail_gate = Some(tail.clone());
+    }
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    let mut uris = Vec::new();
+    for index in 0..4 {
+        let uri: Uri = format!("file:///parallel-{index}.rs").parse().unwrap();
+        server
+            .notification(
+                &connection,
+                lsp_server::Notification::new(
+                    DidOpenTextDocument::METHOD.into(),
+                    json!({"textDocument":{"uri":uri,"languageId":"rust","version":1,
+                "text":format!("// Source {index}.\n\n// Other source.")}}),
+                ),
+            )
+            .unwrap();
+        uris.push(uri);
+    }
+    let request = |uri: &Uri, line| {
+        parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":4}})).unwrap()
+    };
+    assert!(
+        server
+            .hover(1.into(), request(&uris[0], 0))
+            .unwrap()
+            .is_none()
+    );
+    wait_held(&tail, 1).await;
+    assert!(
+        server
+            .hover(2.into(), request(&uris[1], 0))
+            .unwrap()
+            .is_none()
+    );
+    wait_held(&tail, 2).await;
+    assert!(server.hover(6.into(), request(&uris[0], 2)).is_err());
+    assert!(
+        server
+            .hover(3.into(), request(&uris[2], 0))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        server
+            .hover(4.into(), request(&uris[3], 0))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        server
+            .hover(5.into(), request(&uris[0], 0))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        server.scheduler.pending[&1.into()].ticket,
+        server.scheduler.pending[&5.into()].ticket
+    );
+    assert_eq!(server.scheduler.translations.len(), 4);
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count(),
+        2
+    );
+    assert!(
+        server
+            .documents
+            .values()
+            .all(|document| document.preview.is_none())
+    );
+    for _ in 0..4 {
+        tail.release.notify_one();
+        let completion = next(&completions).await;
+        assert!(completion.result.is_ok());
+        server.finish(&connection, completion).unwrap();
+        if server.scheduler.translations.len() >= 2 {
+            wait_held(&tail, 2).await;
+        }
+    }
+    assert!(server.scheduler.translations.is_empty() && server.scheduler.pending.is_empty());
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count(),
+        4
+    );
+    assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let replies: Vec<_> = client.receiver.try_iter().collect();
+    assert_eq!(replies.len(), 5);
+    assert!(replies.iter().all(
+        |message| matches!(message, Message::Response(response) if response.response_result.is_ok())
+    ));
+    drop(completions);
+    drop(server);
+    wait_held(&tail, 0).await;
+}
+
+fn response_calls(fixture: &Fixture) -> usize {
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .records
+        .iter()
+        .filter(|record| record.path == "/v1/responses")
+        .count()
+}
+
+fn open_parallel(server: &mut Server<ChatGptProvider>, connection: &Connection) -> Vec<Uri> {
+    (0..4)
+        .map(|index| {
+            let uri: Uri = format!("file:///parallel-{index}.rs").parse().unwrap();
+            server
+                .notification(
+                    connection,
+                    lsp_server::Notification::new(
+                        DidOpenTextDocument::METHOD.into(),
+                        json!({"textDocument":{"uri":uri,"languageId":"rust","version":1,
+                "text":format!("// Source {index}.\n\n// Other source.")}}),
+                    ),
+                )
+                .unwrap();
+            uri
+        })
+        .collect()
+}
+
+fn parallel_hover(server: &mut Server<ChatGptProvider>, id: i32, uri: &Uri) {
+    assert!(
+        server
+            .hover(
+                id.into(),
+                parse(json!({
+                    "textDocument":{"uri":uri}, "position":{"line":0,"character":4}
+                }))
+                .unwrap()
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_retirement_refills_slots_without_caching_retired_work() {
+    for operation in [
+        "cancel-active",
+        "cancel-queued",
+        "timeout-active",
+        "timeout-queued",
+        "edit",
+        "reopen",
+    ] {
+        let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(tail.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uris = open_parallel(&mut server, &connection);
+        parallel_hover(&mut server, 1, &uris[0]);
+        wait_held(&tail, 1).await;
+        parallel_hover(&mut server, 2, &uris[1]);
+        wait_held(&tail, 2).await;
+        parallel_hover(&mut server, 3, &uris[2]);
+        assert_eq!(response_calls(&fixture), 2);
+        // Later HTTP requests finish independently of the held initial streams.
+        let following = std::sync::Arc::new(StreamTailGate::default());
+        fixture.state.lock().unwrap().stream_tail_gate = Some(following.clone());
+        let queued = operation.ends_with("queued");
+        let id = RequestId::from(if queued { 3 } else { 1 });
+        let ticket = server.scheduler.pending[&id].ticket;
+        let expected = match operation {
+            "timeout-active" => {
+                server.scheduler.translations[&ticket]
+                    .deadline
+                    .send_replace(Some(Instant::now()));
+                let completion = next(&completions).await;
+                assert_eq!(completion.ticket, ticket);
+                assert!(
+                    completion
+                        .result
+                        .as_ref()
+                        .is_err_and(|error| error.message.contains("timed out"))
+                );
+                server.finish(&connection, completion).unwrap();
+                ErrorCode::RequestFailed
+            }
+            "timeout-queued" => {
+                server.scheduler.pending.get_mut(&id).unwrap().deadline = Instant::now();
+                server.expire(&connection).unwrap();
+                ErrorCode::RequestFailed
+            }
+            "edit" => {
+                server
+                    .notification(
+                        &connection,
+                        lsp_server::Notification::new(
+                            DidChangeTextDocument::METHOD.into(),
+                            json!({"textDocument":{"uri":uris[0],"version":2},
+                        "contentChanges":[{"text":"// Changed source."}]}),
+                        ),
+                    )
+                    .unwrap();
+                ErrorCode::ContentModified
+            }
+            "reopen" => {
+                let session = server.documents[&uris[0]].session;
+                server
+                    .notification(
+                        &connection,
+                        lsp_server::Notification::new(
+                            DidCloseTextDocument::METHOD.into(),
+                            json!({"textDocument":{"uri":uris[0]}}),
+                        ),
+                    )
+                    .unwrap();
+                server
+                    .notification(
+                        &connection,
+                        lsp_server::Notification::new(
+                            DidOpenTextDocument::METHOD.into(),
+                            json!({"textDocument":{"uri":uris[0],"version":1,
+                        "languageId":"rust","text":"// Reopened source."}}),
+                        ),
+                    )
+                    .unwrap();
+                assert_ne!(server.documents[&uris[0]].session, session);
+                ErrorCode::ContentModified
+            }
+            _ => {
+                server
+                    .cancel(&connection, &id, ErrorCode::RequestCanceled)
+                    .unwrap();
+                ErrorCode::RequestCanceled
+            }
+        };
+        let Message::Response(retired) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected retired response");
+        };
+        assert_eq!(retired.id, id);
+        assert_eq!(retired.response_result.unwrap_err().code, expected as i32);
+        assert!(
+            server.documents[&uris[if queued { 2 } else { 0 }]]
+                .preview
+                .is_none()
+        );
+        if !queued {
+            // The queued HTTP starts while the other initial HTTP is still held.
+            wait_held(&following, 1).await;
+            assert_eq!(response_calls(&fixture), 3);
+        }
+        tail.release.notify_waiters();
+        following.release.notify_waiters();
+        while !server.scheduler.translations.is_empty() {
+            let completion = next(&completions).await;
+            assert!(
+                completion.result.is_ok(),
+                "{operation}: {}",
+                completion
+                    .result
+                    .as_ref()
+                    .err()
+                    .map(|e| e.message.as_str())
+                    .unwrap_or("")
+            );
+            server.finish(&connection, completion).unwrap();
+        }
+        assert!(server.scheduler.pending.is_empty());
+        assert_eq!(response_calls(&fixture), if queued { 2 } else { 3 });
+        let successful: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(successful.len(), 2);
+        assert!(successful.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{operation}: {successful:?}");
+        assert!(
+            server.documents[&uris[if queued { 2 } else { 0 }]]
+                .preview
+                .is_none()
+        );
+        if matches!(operation, "edit" | "reopen") {
+            fixture.state.lock().unwrap().stream_tail_gate = None;
+            parallel_hover(&mut server, 5, &uris[0]);
+            let completion = next(&completions).await;
+            assert!(completion.result.is_ok());
+            server.finish(&connection, completion).unwrap();
+            assert!(
+                server.documents[&uris[0]]
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .translation
+                    .contains(if operation == "edit" {
+                        "Changed source."
+                    } else {
+                        "Reopened source."
+                    })
+            );
+            assert_eq!(response_calls(&fixture), 4);
+        }
+        drop(completions);
+        drop(server);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_account_change_and_shutdown_retire_all_jobs() {
+    for operation in ["account-change", "shutdown"] {
+        let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(tail.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uris = open_parallel(&mut server, &connection);
+        parallel_hover(&mut server, 1, &uris[0]);
+        wait_held(&tail, 1).await;
+        parallel_hover(&mut server, 2, &uris[1]);
+        wait_held(&tail, 2).await;
+        parallel_hover(&mut server, 3, &uris[2]);
+        parallel_hover(&mut server, 4, &uris[3]);
+        let targets: Vec<_> = server
+            .scheduler
+            .translations
+            .values()
+            .map(|work| work.target.clone())
+            .collect();
+        for target in targets {
+            server
+                .queue_translation(target, TranslationRequest::Document)
+                .unwrap();
+        }
+        if operation == "account-change" {
+            fixture.connected(&auth, 3600).await;
+            for _ in 0..4 {
+                let completion = next(&completions).await;
+                assert!(completion.result.is_err());
+                server.finish(&connection, completion).unwrap();
+            }
+        } else {
+            server.cancel_all(&connection).unwrap();
+        }
+        assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
+        assert!(
+            server
+                .documents
+                .values()
+                .all(|document| document.preview.is_none())
+        );
+        assert_eq!(response_calls(&fixture), 2);
+        let replies: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(replies.len(), 4);
+        assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if
+            response.response_result.as_ref().is_err_and(|error| error.code == if operation == "shutdown" {
+                ErrorCode::RequestCanceled as i32
+            } else {ErrorCode::ContentModified as i32}))));
+        if operation == "account-change" {
+            fixture.state.lock().unwrap().stream_tail_gate = None;
+            parallel_hover(&mut server, 5, &uris[0]);
+            let completion = next(&completions).await;
+            assert!(
+                completion.result.is_ok(),
+                "{operation}: {}",
+                completion
+                    .result
+                    .as_ref()
+                    .err()
+                    .map(|e| e.message.as_str())
+                    .unwrap_or("")
+            );
+            server.finish(&connection, completion).unwrap();
+            assert!(server.documents[&uris[0]].preview.is_some());
+            assert_eq!(response_calls(&fixture), 3);
+        }
+        let started = Instant::now();
+        drop(completions);
+        drop(server);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // These are synthetic server-side response bodies, not occupied client slots.
+        tail.release.notify_waiters();
+        wait_held(&tail, 0).await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cached_translation_survives_store_lock_but_not_reauthorization() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    let registration = fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider.clone(),
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    let uri: Uri = "file:///cached.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), "// Read this.\n".into()),
+    );
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    assert!(server.hover(1.into(), hover()).unwrap().is_none());
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    client.receiver.try_recv().unwrap();
+    assert!(server.documents[&uri].preview.is_some());
+    let mut writer = auth.store.lock(false).await.unwrap().unwrap();
+    assert!(server.hover(2.into(), hover()).is_err());
+    assert!(server.documents[&uri].preview.is_some());
+    writer.save().unwrap();
+    drop(writer);
+    assert!(server.hover(3.into(), hover()).unwrap().is_some());
+    assert_eq!(response_calls(&fixture), 1);
+    writer = auth.store.lock(false).await.unwrap().unwrap();
+    writer
+        .state
+        .registrations
+        .get_mut(&registration)
+        .unwrap()
+        .authorization_id = uuid::Uuid::new_v4();
+    writer.save().unwrap();
+    drop(writer);
+    server.check_cache().unwrap();
+    assert!(server.documents[&uri].preview.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_refresh_preserves_authorization_and_completes_both_requests() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+    let auth = fixture.auth();
+    fixture.connected(&auth, 0).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let context = provider.context().unwrap();
+    let (first, second) = tokio::join!(
+        provider.translate(
+            crate::providers::Intent::Automatic,
+            TextKind::Selection,
+            "First source.",
+            "ja",
+            context.clone()
+        ),
+        provider.translate(
+            crate::providers::Intent::Automatic,
+            TextKind::Selection,
+            "Second source.",
+            "ja",
+            context
+        ),
+    );
+    let mut successes = 0;
+    for result in [first, second] {
+        match result {
+            Ok(translated) => {
+                successes += 1;
+                assert_eq!(translated.context, provider.context().unwrap());
+            }
+            Err(error) => assert_eq!(error.kind, ErrorKind::Modified),
+        }
+    }
+    assert_eq!(successes, 2);
+    assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+    assert_eq!(response_calls(&fixture), 2);
+    let retry = provider
+        .translate(
+            crate::providers::Intent::Automatic,
+            TextKind::Selection,
+            "Retry source.",
+            "ja",
+            provider.context().unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(retry.text.contains("Retry source."));
+    assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+    assert_eq!(response_calls(&fixture), 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failures() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    for round in 0..10 {
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider.clone(),
+            Settings::default(),
+            Ui::new(connection.sender.clone(), UiCapabilities::default()),
+        )
+        .unwrap();
+        let uris = open_parallel(&mut server, &connection);
+        parallel_hover(&mut server, 1, &uris[0]);
+        wait_held(&tail, 1).await;
+        parallel_hover(&mut server, 2, &uris[1]);
+        parallel_hover(&mut server, 3, &uris[2]);
+        parallel_hover(&mut server, 4, &uris[3]);
+        fixture.state.lock().unwrap().stream_tail_gate = None;
+        tail.release.notify_waiters();
+        // Finish and admit while the worker starts and completes following HTTPs.
+        let completion = next(&completions).await;
+        assert!(completion.result.is_ok());
+        server.finish(&connection, completion).unwrap();
+        let uri: Uri = "file:///new-admission.rs".parse().unwrap();
+        server
+            .notification(
+                &connection,
+                lsp_server::Notification::new(
+                    DidOpenTextDocument::METHOD.into(),
+                    json!({"textDocument":{"uri":uri,"version":1,
+                "languageId":"rust","text":"// New source."}}),
+                ),
+            )
+            .unwrap();
+        parallel_hover(&mut server, 5, &uri);
+        while !server.scheduler.translations.is_empty() {
+            let completion = next(&completions).await;
+            assert!(completion.result.is_ok());
+            server.finish(&connection, completion).unwrap();
+        }
+        assert_eq!(response_calls(&fixture), (round + 1) * 5);
+        assert!(server.scheduler.pending.is_empty());
+        assert_eq!(
+            server
+                .documents
+                .values()
+                .filter(|d| d.preview.is_some())
+                .count(),
+            5
+        );
+        let replies: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(replies.len(), 5);
+        assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{replies:?}");
+        drop(completions);
+        drop(server);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
+    let fixture = Fixture::new().await;
+    let invalid = std::sync::Arc::new(StreamTailGate::default());
+    let following = std::sync::Arc::new(StreamTailGate::default());
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.response_mode = "item_without_completed".into();
+        state.stream_tail_gate = Some(invalid.clone());
+    }
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    let uris = open_parallel(&mut server, &connection);
+    parallel_hover(&mut server, 1, &uris[0]);
+    wait_held(&invalid, 1).await;
+    parallel_hover(&mut server, 2, &uris[1]);
+    wait_held(&invalid, 2).await;
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.response_mode = "delta_compact".into();
+        state.stream_tail_gate = Some(following.clone());
+    }
+    parallel_hover(&mut server, 3, &uris[2]);
+    parallel_hover(&mut server, 4, &uris[3]);
+    assert_eq!(response_calls(&fixture), 2);
+    assert!(server.documents.values().all(|d| d.preview.is_none()));
+    invalid.release.notify_waiters();
+    for _ in 0..2 {
+        let completion = next(&completions).await;
+        assert!(completion.result.as_ref().is_err_and(|e| {
+            e.message
+                .contains("OpenAI stream ended without response.completed")
+        }));
+        server.finish(&connection, completion).unwrap();
+    }
+    wait_held(&following, 2).await;
+    assert_eq!(response_calls(&fixture), 4);
+    following.release.notify_waiters();
+    for _ in 0..2 {
+        let completion = next(&completions).await;
+        assert!(completion.result.is_ok());
+        server.finish(&connection, completion).unwrap();
+    }
+    assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
+    for (index, uri) in uris.iter().enumerate() {
+        assert_eq!(server.documents[uri].preview.is_some(), index >= 2);
+    }
+    let replies: Vec<_> = client.receiver.try_iter().collect();
+    assert_eq!(replies.len(), 4);
+    for message in replies {
+        let Message::Response(response) = message else {
+            panic!("Expected Hover reply");
+        };
+        if response.id == RequestId::from(1) || response.id == RequestId::from(2) {
+            assert_eq!(
+                response.response_result.unwrap_err().code,
+                ErrorCode::RequestFailed as i32
+            );
+        } else {
+            assert!(response.response_result.is_ok());
+        }
+    }
+    drop(completions);
+    drop(server);
+}
+
+fn command_notice(client: &Connection, id: i32, level: u64) -> RequestResult<Value> {
+    let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected command notification");
+    };
+    assert_eq!(notification.method, "window/showMessage");
+    assert_eq!(notification.params["type"], level);
+    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected command response");
+    };
+    assert_eq!(response.id, RequestId::from(id));
+    match &response.response_result {
+        Ok(value) => assert!(value.is_null()),
+        Err(error) => assert_eq!(notification.params["message"], error.message),
+    }
+    assert!(
+        client.receiver.try_recv().is_err(),
+        "Duplicate command notification"
+    );
+    response.response_result
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn documentation_comments_reach_http_and_return_translated_hover() {
+    for (language, source, body, translated) in [
+        (
+            "csharp",
+            "/// <summary>Retry safely.</summary>\nclass Example {}",
+            "<summary>Retry safely.</summary>",
+            "<summary>安全に再試行します。</summary>",
+        ),
+        (
+            "python",
+            "\"\"\"Retry safely.\"\"\"",
+            "Retry safely.",
+            "安全に再試行します。",
+        ),
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().translation = Some(translated.into());
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::new_with_provider(finished, provider).unwrap();
+        let uri: Uri = "file:///Example.cs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, language.into(), source.into()),
+        );
+        assert!(
+            server
+                .hover(
+                    1.into(),
+                    parse(json!({
+                        "textDocument":{"uri":uri}, "position":{"line":0,"character":15}
+                    }))
+                    .unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let state = fixture.state.lock().unwrap();
+        let requests: Vec<_> = state
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .collect();
+        assert_eq!(requests.len(), 1);
+        let request: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(request["input"][0]["content"], body);
+        let Message::Response(reply) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected Hover response");
+        };
+        let hover = reply.response_result.unwrap();
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains(translated)
+        );
+        assert_eq!(server.documents[&uri].text(), Some(source));
+        assert!(client.receiver.try_recv().is_err());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn document_deadline_is_independent_when_http_work_is_shared() {
+    assert_eq!(Settings::default().document_timeout_ms, 180_000);
+    for document_expires in [false, true] {
+        let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(tail.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings {
+                hover_timeout_ms: if document_expires { 2_000 } else { 200 },
+                selection_timeout_ms: 200,
+                document_timeout_ms: if document_expires { 200 } else { 2_000 },
+                ..Default::default()
+            },
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///shared.md".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), "Translate this.".into()),
+        );
+        let target = TranslationTarget {
+            uri: uri.clone(),
+            version: 1,
+            session: 1,
+            range: Range::new(Position::new(0, 0), Position::new(0, 15)),
+            target_language: "ja".into(),
+        };
+        server
+            .queue(
+                1.into(),
+                target.clone(),
+                PendingReply::Hover(Position::new(0, 4)),
+            )
+            .unwrap();
+        let admitted = Instant::now();
+        server
+            .queue_translation(target.clone(), TranslationRequest::Document)
+            .unwrap();
+        let ticket = server.scheduler.pending[&1.into()].ticket;
+        let document_deadline = server.scheduler.translations[&ticket]
+            .document_deadline
+            .unwrap();
+        assert!(
+            document_deadline
+                >= admitted + Duration::from_millis(server.settings.document_timeout_ms)
+        );
+        server
+            .queue_translation(target.clone(), TranslationRequest::Selection)
+            .unwrap();
+        server.selection = Some(Selection {
+            target: target.clone(),
+            context: Some(server.provider.context().unwrap()),
+            start: None,
+        });
+        server.retire_selection();
+        assert_eq!(
+            server.scheduler.translations[&ticket].document_deadline,
+            Some(document_deadline)
+        );
+        // Repeated commands keep the first deadline and open a single completed result.
+        server
+            .queue_translation(target, TranslationRequest::Document)
+            .unwrap();
+        assert_eq!(
+            server.scheduler.translations[&ticket].document_deadline,
+            Some(document_deadline)
+        );
+        wait_held(&tail, 1).await;
+        tokio::time::sleep(Duration::from_millis(220)).await;
+        server.expire(&connection).unwrap();
+        assert!(server.documents[&uri].preview.is_none());
+        assert_eq!(server.scheduler.translations.len(), 1);
+        let messages: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(messages.len(), 1);
+        if document_expires {
+            assert!(matches!(&messages[0], Message::Notification(notice)
+                if notice.method == "window/showMessage" && notice.params["message"] == "Translation timed out"));
+            assert!(
+                server.scheduler.translations[&ticket]
+                    .document_deadline
+                    .is_none()
+            );
+        } else {
+            assert!(matches!(&messages[0], Message::Response(reply)
+                if reply.id == RequestId::from(1) && reply.response_result.is_err()));
+            assert!(server.scheduler.pending.is_empty());
+        }
+        tail.release.notify_one();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(response_calls(&fixture), 1);
+        let messages: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(messages.len(), 1);
+        if document_expires {
+            assert!(matches!(&messages[0], Message::Response(reply)
+                if reply.id == RequestId::from(1) && reply.response_result.is_ok()));
+        } else {
+            let Message::Request(open) = &messages[0] else {
+                panic!("Expected completed document");
+            };
+            assert_eq!(open.method, "window/showDocument");
+            assert!(server.preview_files.response(
+                &server.ui,
+                &Response::new_ok(open.id.clone(), json!({"success":true}))
+            ));
+        }
+        assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
+        assert!(client.receiver.try_recv().is_err());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_deadlines_keep_one_http_operation_and_start_at_each_admission() {
+    let defaults = Settings::default();
+    assert_eq!(defaults.hover_timeout_ms, 20_000);
+    assert_eq!(defaults.selection_timeout_ms, 30_000);
+    for mode in [
+        "manual",
+        "hover",
+        "hover-first",
+        "manual-first",
+        "late-hover",
+        "late-manual",
+    ] {
+        let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_gate = Some(tail.clone());
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings {
+                hover_timeout_ms: 200,
+                selection_timeout_ms: 600,
+                ..Default::default()
+            },
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///deadline.rs".parse().unwrap();
+        let source = "// Translate this.\n";
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), source.into()),
+        );
+        let target = || TranslationTarget {
+            uri: uri.clone(),
+            version: 1,
+            session: 1,
+            range: Range::new(Position::new(0, 0), Position::new(0, 18)),
+            target_language: "ja".into(),
+        };
+        let first_hover = mode == "hover" || mode == "hover-first";
+        let first_before = Instant::now();
+        server
+            .queue(
+                1.into(),
+                target(),
+                if first_hover {
+                    PendingReply::Hover(Position::new(0, 4))
+                } else {
+                    PendingReply::Command
+                },
+            )
+            .unwrap();
+        let first_after = Instant::now();
+        let first_deadline = server.scheduler.pending[&1.into()].deadline;
+        let first_window = Duration::from_millis(if first_hover { 200 } else { 600 });
+        assert!(first_deadline >= first_before + first_window);
+        assert!(first_deadline <= first_after + first_window);
+        let admit_second = |server: &mut Server<ChatGptProvider>| {
+            let before = Instant::now();
+            server
+                .queue(
+                    2.into(),
+                    target(),
+                    if first_hover || mode == "late-manual" {
+                        PendingReply::Command
+                    } else {
+                        PendingReply::Hover(Position::new(0, 4))
+                    },
+                )
+                .unwrap();
+            let after = Instant::now();
+            let second = &server.scheduler.pending[&2.into()];
+            let window = Duration::from_millis(if first_hover || mode == "late-manual" {
+                600
+            } else {
+                200
+            });
+            assert!(second.deadline >= before + window);
+            assert!(second.deadline <= after + window);
+            assert_eq!(second.ticket, server.scheduler.pending[&1.into()].ticket);
+            assert_eq!(server.scheduler.translations.len(), 1);
+            assert_eq!(
+                *server.scheduler.translations[&second.ticket]
+                    .deadline
+                    .borrow(),
+                Some(first_deadline.max(second.deadline))
+            );
+        };
+        if matches!(mode, "hover-first" | "manual-first") {
+            admit_second(&mut server);
+        }
+        tokio::time::timeout(Duration::from_secs(1), tail.reached.notified())
+            .await
+            .expect("HTTP body must reach the held EOF");
+        if matches!(mode, "late-hover" | "late-manual") {
+            admit_second(&mut server);
+        }
+        let expired_hover = if first_hover {
+            Some(RequestId::from(1))
+        } else if mode == "manual-first" {
+            Some(RequestId::from(2))
+        } else {
+            None
+        };
+        if let Some(id) = expired_hover {
+            let deadline = server.scheduler.pending[&id].deadline;
+            tokio::time::sleep_until((deadline + Duration::from_millis(20)).into()).await;
+            server.expire(&connection).unwrap();
+            let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected expired Hover");
+            };
+            assert_eq!(response.id, id);
+            assert_eq!(
+                response.response_result.unwrap_err().code,
+                ErrorCode::RequestFailed as i32
+            );
+            assert!(
+                client.receiver.try_recv().is_err(),
+                "Automatic Hover must stay silent"
+            );
+            assert!(server.documents[&uri].preview.is_none());
+        }
+        if mode == "late-manual" {
+            // Make only the older waiter due; keep the later admission's full window.
+            let pending = server.scheduler.pending.get_mut(&1.into()).unwrap();
+            pending.deadline = pending.deadline.min(Instant::now());
+            server.expire(&connection).unwrap();
+            let error = command_notice(&client, 1, 1).unwrap_err();
+            assert_eq!(error.code, ErrorCode::RequestFailed as i32);
+            assert!(server.documents[&uri].preview.is_none());
+            assert_eq!(server.scheduler.pending.len(), 1);
+            assert!(server.scheduler.pending.contains_key(&2.into()));
+            let remaining = &server.scheduler.pending[&2.into()];
+            assert_eq!(
+                *server.scheduler.translations[&remaining.ticket]
+                    .deadline
+                    .borrow(),
+                Some(remaining.deadline)
+            );
+        }
+        tail.release.notify_one();
+        if mode == "hover" {
+            assert!(server.scheduler.translations.is_empty());
+            assert!(server.scheduler.pending.is_empty());
+        } else {
+            let completion = next(&completions).await;
+            assert!(
+                completion.result.is_ok(),
+                "{mode}: operation was restarted or timed out"
+            );
+            server.finish(&connection, completion).unwrap();
+            assert!(server.documents[&uri].preview.is_some());
+            let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected one ready notification");
+            };
+            assert_eq!(
+                notification.params,
+                json!({"type":3,"message":TRANSLATION_READY})
+            );
+            let count = if mode == "late-hover" { 2 } else { 1 };
+            for _ in 0..count {
+                let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                    panic!("Expected successful waiter");
+                };
+                assert!(response.response_result.is_ok(), "{mode}");
+            }
+            assert!(client.receiver.try_recv().is_err());
+            assert!(server.scheduler.pending.is_empty());
+            assert!(server.scheduler.translations.is_empty());
+        }
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|r| r.path == "/v1/responses")
+                .count(),
+            1,
+            "{mode}: HTTP must not restart on deadline update"
+        );
+        assert_eq!(server.documents[&uri].text(), Some(source));
+        drop(completions);
+        let before = Instant::now();
+        drop(server);
+        assert!(before.elapsed() < Duration::from_millis(200));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_preview_reports_admission_refresh_and_stream_failures() {
+    let source = "Private source sentence.";
+    for mode in ["admission", "refresh", "stream", "wrapped-stream"] {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        if mode != "admission" {
+            fixture
+                .connected(&auth, if mode == "refresh" { 0 } else { 3600 })
+                .await;
+        }
+        if mode == "refresh" {
+            fixture.state.lock().unwrap().refresh_failure = Some((
+                400,
+                json!({"error":"invalid_grant","error_description":"synthetic refresh invalid"}),
+            ));
+        } else if mode == "stream" {
+            fixture.state.lock().unwrap().stream_error = Some(
+                json!({"type":"error","code":"unsupported_value","param":"reasoning.effort","message":format!("unsupported: {source} synthetic-access-0")}),
+            );
+        } else if mode == "wrapped-stream" {
+            fixture.state.lock().unwrap().stream_error =
+                Some(json!({"type":"error","sequence_number":1,"error":{
+                    "code":"unsupported_value","param":"reasoning.effort",
+                    "message":format!("unsupported: {source} synthetic-access-0")}}));
+        }
+        let before = auth.store.snapshot().unwrap();
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///command-failure.md".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), source.into()),
+        );
+        let range =
+            json!({"start":{"line":0,"character":0},"end":{"line":0,"character":source.len()}});
+        let action = json!({"command":COMMAND,"arguments":[{"uri":uri,"version":1,"session":1,"range":range,"targetLanguage":"ja"}]});
+        server
+            .request(
+                &connection,
+                Request::new(1.into(), ExecuteCommand::METHOD.into(), action),
+            )
+            .unwrap();
+        if mode != "admission" {
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+        }
+        let error = command_notice(&client, 1, 1).unwrap_err();
+        assert_eq!(error.code, ErrorCode::RequestFailed as i32);
+        assert!(!error.message.contains(source));
+        assert!(!error.message.contains("synthetic-access-0"));
+        assert!(server.documents[&uri].preview.is_none());
+        assert_eq!(server.documents[&uri].text(), Some(source));
+        if mode == "refresh" {
+            assert!(error.message.contains("code=invalid_grant"));
+            assert!(error.message.contains("request_id=req-synthetic"));
+            assert!(error.message.contains("reconnect the saved account"));
+            let before = before.unwrap().state;
+            let after = auth.store.snapshot().unwrap().unwrap().state;
+            let id = before.active_registration.unwrap();
+            assert_eq!(after.active_registration, Some(id));
+            assert_eq!(after.ext_agent_host_id, before.ext_agent_host_id);
+            assert_eq!(
+                after.registrations[&id].client_id,
+                before.registrations[&id].client_id
+            );
+            assert!(after.registrations[&id].credentials.is_none());
+        } else if matches!(mode, "stream" | "wrapped-stream") {
+            assert!(error.message.contains("event=error"));
+            assert!(error.message.contains("code=unsupported_value"));
+            assert!(error.message.contains("param=reasoning.effort"));
+            assert!(error.message.contains("request_id=req-synthetic"));
+            assert!(!error.message.contains("event_keys="));
+            assert!(error.message.contains("[redacted]"));
+        }
+        let records = fixture.state.lock().unwrap().records.len();
+        server
+            .request(
+                &connection,
+                Request::new(
+                    2.into(),
+                    CodeActionRequest::METHOD.into(),
+                    json!({"textDocument":{"uri":uri},"range":range,"context":{"diagnostics":[]}}),
+                ),
+            )
+            .unwrap();
+        let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected local candidates");
+        };
+        assert_eq!(
+            response.response_result.unwrap().as_array().unwrap().len(),
+            if mode == "admission" || mode == "refresh" {
+                1
+            } else {
+                3
+            }
+        );
+        assert!(client.receiver.try_recv().is_err());
+        assert_eq!(fixture.state.lock().unwrap().records.len(), records);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn administration_reports_admission_worker_and_deadline_failures_but_not_cancel() {
+    let fixture = Fixture::new().await;
+    let provider = ChatGptProvider::synthetic(
+        fixture.auth(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    server
+        .request(
+            &connection,
+            Request::new(
+                1.into(),
+                ExecuteCommand::METHOD.into(),
+                json!({"command":"translation-lsp.connect","arguments":["unexpected"]}),
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        command_notice(&client, 1, 1).unwrap_err().code,
+        ErrorCode::InvalidParams as i32
+    );
+    let usage = json!({"command":"translation-lsp.usage"});
+    server
+        .request(
+            &connection,
+            Request::new(2.into(), ExecuteCommand::METHOD.into(), usage.clone()),
+        )
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(
+        command_notice(&client, 2, 1)
+            .unwrap_err()
+            .message
+            .contains("window/showDocument")
+    );
+    server
+        .request(
+            &connection,
+            Request::new(3.into(), ExecuteCommand::METHOD.into(), usage.clone()),
+        )
+        .unwrap();
+    let work = server.administrations.get_mut(&3.into()).unwrap();
+    let ticket = work.ticket;
+    work.deadline = Instant::now();
+    server.expire(&connection).unwrap();
+    let error = command_notice(&client, 3, 1).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RequestFailed as i32);
+    assert!(error.message.contains("timed out"));
+    server
+        .finish(
+            &connection,
+            Finished {
+                ticket,
+                result: Err(ProviderError::failed("late completion")),
+            },
+        )
+        .unwrap();
+    assert!(client.receiver.try_recv().is_err());
+    // Cancellation retires a queued job asynchronously. Wait for that slot so
+    // this case tests request cancellation, rather than queue-busy admission.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while server.admin_jobs.as_ref().unwrap().capacity() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    server
+        .request(
+            &connection,
+            Request::new(4.into(), ExecuteCommand::METHOD.into(), usage),
+        )
+        .unwrap();
+    server
+        .cancel(&connection, &4.into(), ErrorCode::RequestCanceled)
+        .unwrap();
+    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected cancellation response");
+    };
+    assert_eq!(
+        response.response_result.unwrap_err().code,
+        ErrorCode::RequestCanceled as i32
+    );
+    assert!(client.receiver.try_recv().is_err());
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chatgpt_worker_coalesces_and_invalidates_completed_cache_on_account_changes() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+    let auth = fixture.auth();
+    fixture.connected(&auth, 0).await;
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///synthetic.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(
+            1,
+            1,
+            "rust".into(),
+            "// Translate this.\nlet value = 1;\n".into(),
+        ),
+    );
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    assert!(server.hover(RequestId::from(1), hover()).unwrap().is_none());
+    assert!(server.hover(RequestId::from(2), hover()).unwrap().is_none());
+    assert_eq!(server.scheduler.translations.len(), 1);
+    server
+        .cancel(&connection, &RequestId::from(1), ErrorCode::RequestCanceled)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.hover(RequestId::from(3), hover()).unwrap().is_some());
+    let records = fixture.state.lock().unwrap().records.clone();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count(),
+        1
+    );
+    assert!(
+        records
+            .iter()
+            .filter(|record| record.path.starts_with("/v1/"))
+            .all(|record| record.authorization == "Bearer synthetic-access-1")
+    );
+    let _ = client.receiver.try_recv().unwrap();
+    let _ = client.receiver.try_recv().unwrap();
+    // A second registration changes the key and starts a fresh inference.
+    fixture.connected(&auth, 3600).await;
+    assert!(server.hover(RequestId::from(4), hover()).unwrap().is_none());
+    assert!(server.documents[&uri].preview.is_none());
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/models")
+            .count(),
+        0
+    );
+    assert_eq!(
+        server.documents[&uri].text(),
+        Some("// Translate this.\nlet value = 1;\n")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chatgpt_worker_never_caches_failed_compact_streams() {
+    for mode in [
+        "empty_text",
+        "item_role",
+        "item_id_mismatch",
+        "text_done_mismatch",
+        "compact_truncated",
+        "compact_incomplete",
+        "compact_late_failed",
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().response_mode = mode.into();
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider.clone(),
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///failed-stream.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), "// Translate this.\n".into()),
+        );
+        let hover = || {
+            parse(json!({
+                "textDocument":{"uri":uri}, "position":{"line":0,"character":4}
+            }))
+            .unwrap()
+        };
+        assert!(server.hover(RequestId::from(1), hover()).unwrap().is_none());
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert!(server.documents[&uri].preview.is_none(), "SSE mode {mode}");
+        assert!(server.scheduler.pending.is_empty());
+        assert!(server.scheduler.translations.is_empty());
+        let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+            panic!("Expected failed Hover response");
+        };
+        assert!(response.response_result.is_err());
+        if mode == "compact_late_failed" {
+            assert!(
+                provider
+                    .admit(
+                        &provider.context().unwrap(),
+                        crate::providers::Intent::Automatic
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .records
+                    .iter()
+                    .filter(|record| record.path == "/v1/responses")
+                    .count(),
+                1
+            );
+        } else {
+            fixture.state.lock().unwrap().response_mode = "delta_compact".into();
+            assert!(server.hover(RequestId::from(2), hover()).unwrap().is_none());
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert!(server.documents[&uri].preview.is_some());
+            assert!(server.hover(RequestId::from(3), hover()).unwrap().is_some());
+            assert_eq!(
+                fixture
+                    .state
+                    .lock()
+                    .unwrap()
+                    .records
+                    .iter()
+                    .filter(|record| record.path == "/v1/responses")
+                    .count(),
+                2
+            );
+        }
+        assert_eq!(server.documents[&uri].text(), Some("// Translate this.\n"));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
+    for operation in ["cancel", "deadline", "edit", "shutdown"] {
+        let fixture = Fixture::new().await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.response_mode = "delta_compact".into();
+            state.stream_tail_delay = Duration::from_secs(5);
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings {
+                hover_timeout_ms: 250,
+                ..Default::default()
+            },
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///cancel-synthetic.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), "// Translate this.\n".into()),
+        );
+        server
+            .hover(
+                RequestId::from(1),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                    .unwrap(),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let target = TranslationTarget {
+            uri: uri.clone(),
+            version: 1,
+            session: 1,
+            range: Range::new(Position::new(0, 0), Position::new(0, 18)),
+            target_language: "ja".into(),
+        };
+        server
+            .queue(2.into(), target, PendingReply::Command)
+            .unwrap();
+        let ticket = server.scheduler.pending[&1.into()].ticket;
+        assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
+        assert_eq!(
+            *server.scheduler.translations[&ticket].deadline.borrow(),
+            Some(server.scheduler.pending[&2.into()].deadline)
+        );
+        assert!(
+            matches!(completions.try_recv().unwrap(), WorkerEvent::Started(started) if started == ticket)
+        );
+        assert!(
+            completions.is_empty(),
+            "Stream EOF has not completed the worker"
+        );
+        assert!(server.documents[&uri].preview.is_none());
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .count(),
+            1
+        );
+        match operation {
+            "deadline" => {
+                // Removing the extending waiter restores the remaining Hover's deadline.
+                server
+                    .cancel(&connection, &2.into(), ErrorCode::RequestCanceled)
+                    .unwrap();
+                assert_eq!(
+                    *server.scheduler.translations[&ticket].deadline.borrow(),
+                    Some(server.scheduler.pending[&1.into()].deadline)
+                );
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                server.expire(&connection).unwrap();
+            }
+            "edit" => {
+                server.notification(&connection,lsp_server::Notification::new("textDocument/didChange".into(),json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"// Changed source.\n"}]}))).unwrap();
+            }
+            _ => {
+                server.cancel_all(&connection).unwrap();
+            }
+        }
+        for _ in 0..2 {
+            let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected failed waiter without notification");
+            };
+            let expected = match operation {
+                "edit" => ErrorCode::ContentModified,
+                "deadline" if response.id == RequestId::from(1) => ErrorCode::RequestFailed,
+                _ => ErrorCode::RequestCanceled,
+            };
+            assert_eq!(response.response_result.unwrap_err().code, expected as i32);
+        }
+        assert!(client.receiver.try_recv().is_err());
+        assert!(server.scheduler.pending.is_empty());
+        assert!(server.scheduler.translations.is_empty());
+        assert!(server.documents[&uri].preview.is_none());
+        let start = Instant::now();
+        drop(completions);
+        drop(server);
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+}
+
+fn markdown_actions(
+    server: &mut Server<ChatGptProvider>,
+    uri: &Uri,
+    range: Range,
+) -> Vec<CodeAction> {
+    server
+        .code_actions(
+            parse(json!({
+                "textDocument": {"uri": uri}, "range": range, "context": {"diagnostics": []}
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn markdown_repeated_selections_report_failure_and_recover_manually() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                server_status: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///repeated.md".parse().unwrap();
+    let source = "First sentence.\nSecond sentence.";
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "Markdown".into(), source.into()),
+    );
+    let first = Range::new(Position::new(0, 0), Position::new(0, 15));
+    let second = Range::new(Position::new(1, 0), Position::new(1, 16));
+    for (range, mode) in [(first, ""), (second, "empty_text")] {
+        fixture.state.lock().unwrap().response_mode = mode.into();
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        if mode.is_empty() {
+            assert_eq!(
+                server.documents[&uri].preview.as_ref().unwrap().range,
+                first
+            );
+        }
+    }
+    assert!(server.documents[&uri].preview.is_none());
+    server.publish_activity();
+    let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected background failure status");
+    };
+    assert_eq!(status.method, "experimental/serverStatus");
+    let message = status.params["message"].as_str().unwrap();
+    assert!(message.contains("OpenAI completed without translation text"));
+    let target = server.selection.as_ref().unwrap().target.clone();
+    server
+        .queue(1.into(), target.clone(), PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(command_notice(&client, 1, 1).unwrap_err().message, message);
+    fixture.state.lock().unwrap().response_mode.clear();
+    server
+        .queue(2.into(), target, PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    command_notice(&client, 2, 3).unwrap();
+    assert_eq!(
+        server.documents[&uri].preview.as_ref().unwrap().range,
+        second
+    );
+    for range in [first, second] {
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(
+            server.documents[&uri].preview.as_ref().unwrap().range,
+            range
+        );
+    }
+    server.publish_activity();
+    let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected cleared failure status");
+    };
+    assert_eq!(status.params["health"], "ok");
+    assert_eq!(server.documents[&uri].text().unwrap(), source);
+    assert!(server.scheduler.pending.is_empty());
+    assert!(server.scheduler.translations.is_empty());
+    assert_eq!(response_calls(&fixture), 6);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_owners_share_one_http_and_keep_waiter_deadlines_independent() {
+    for mode in [
+        "deselect",
+        "auto-disabled",
+        "cancel-clients",
+        "background-expiry",
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().stream_tail_delay =
+            Duration::from_millis(if mode == "background-expiry" {
+                900
+            } else {
+                550
+            });
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings {
+                hover_timeout_ms: 400,
+                selection_timeout_ms: 800,
+                ..Default::default()
+            },
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///background.md".parse().unwrap();
+        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "markdown".into(), "First sentence.".into()),
+        );
+        assert_eq!(markdown_actions(&mut server, &uri, range).len(), 3);
+        assert!(server.scheduler.translations.is_empty());
+        let due = server.selection.as_ref().unwrap().start.unwrap();
+        assert!(due > Instant::now() + Duration::from_millis(400));
+        markdown_actions(&mut server, &uri, range);
+        assert_eq!(
+            server.selection.as_ref().unwrap().start,
+            Some(due),
+            "Same range must not reset stability"
+        );
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        let ticket = *server.scheduler.translations.keys().next().unwrap();
+        let target = server.selection.as_ref().unwrap().target.clone();
+        if mode == "background-expiry" {
+            tokio::time::sleep(Duration::from_millis(650)).await;
+        }
+        server
+            .hover(
+                1.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(server.scheduler.pending[&1.into()].ticket, ticket);
+        if mode == "background-expiry" {
+            tokio::time::sleep(Duration::from_millis(170)).await;
+            server.expire(&connection).unwrap();
+            assert!(
+                server.scheduler.translations[&ticket]
+                    .background_deadline
+                    .is_none()
+            );
+            assert!(client.receiver.try_recv().is_err());
+        } else {
+            server
+                .queue(2.into(), target, PendingReply::Command)
+                .unwrap();
+            assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
+            if matches!(mode, "deselect" | "auto-disabled") {
+                if mode == "auto-disabled" {
+                    // Exercise retirement with an existing owner; public settings apply on restart.
+                    server.settings.markdown_auto_translate = false;
+                    markdown_actions(&mut server, &uri, range);
+                } else {
+                    markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
+                }
+                assert!(server.selection.is_none());
+                assert!(
+                    server.scheduler.translations[&ticket]
+                        .background_deadline
+                        .is_none()
+                );
+                tokio::time::sleep(Duration::from_millis(420)).await;
+                server.expire(&connection).unwrap();
+                let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                    panic!("Expected expired Hover");
+                };
+                assert_eq!(response.id, 1.into());
+                assert_eq!(
+                    response.response_result.unwrap_err().code,
+                    ErrorCode::RequestFailed as i32
+                );
+            } else {
+                for id in [1, 2] {
+                    server
+                        .cancel(&connection, &id.into(), ErrorCode::RequestCanceled)
+                        .unwrap();
+                    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                        panic!("Expected cancellation");
+                    };
+                    assert_eq!(
+                        response.response_result.unwrap_err().code,
+                        ErrorCode::RequestCanceled as i32
+                    );
+                }
+                assert!(
+                    server.scheduler.translations[&ticket]
+                        .background_deadline
+                        .is_some()
+                );
+            }
+            assert!(client.receiver.try_recv().is_err());
+        }
+        let completion = next(&completions).await;
+        assert!(
+            completion.result.is_ok(),
+            "{mode}: {:?}",
+            completion.result.as_ref().err()
+        );
+        server.finish(&connection, completion).unwrap();
+        assert!(server.documents[&uri].preview.is_some(), "{mode}");
+        if matches!(mode, "deselect" | "auto-disabled") {
+            command_notice(&client, 2, 3).unwrap();
+        } else if mode == "background-expiry" {
+            let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+                panic!("Expected Hover result");
+            };
+            assert!(response.response_result.is_ok());
+        }
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "Background success must be silent"
+        );
+        assert_eq!(
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .filter(|record| record.path == "/v1/responses")
+                .count(),
+            1
+        );
+        assert_eq!(server.documents[&uri].text(), Some("First sentence."));
+        drop(completions);
+        drop(server);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_selection_changes_cancel_silently_and_failures_do_not_retry() {
+    for mode in [
+        "new-range",
+        "empty",
+        "edit",
+        "close",
+        "account",
+        "shutdown",
+        "failure",
+    ] {
+        let fixture = Fixture::new().await;
+        if mode == "failure" {
+            fixture.state.lock().unwrap().failure = Some((
+                400,
+                json!({"error":{"code":"synthetic_failure","message":"synthetic failure"}}),
+            ));
+        } else if mode != "new-range" {
+            fixture.state.lock().unwrap().stream_tail_delay = Duration::from_secs(5);
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///changes.md".parse().unwrap();
+        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(
+                1,
+                1,
+                "Markdown".into(),
+                "First sentence.\nSecond sentence.".into(),
+            ),
+        );
+        markdown_actions(&mut server, &uri, range);
+        if mode == "new-range" {
+            let second = Range::new(Position::new(1, 0), Position::new(1, 16));
+            markdown_actions(&mut server, &uri, second);
+            server.selection.as_mut().unwrap().start = Some(Instant::now());
+            server.expire(&connection).unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            assert_eq!(
+                server.documents[&uri].preview.as_ref().unwrap().range,
+                second
+            );
+            let records = fixture.state.lock().unwrap().records.clone();
+            let body = &records
+                .iter()
+                .find(|record| record.path == "/v1/responses")
+                .unwrap()
+                .body;
+            assert!(body.contains("Second sentence."));
+            assert!(!body.contains("First sentence."));
+        } else {
+            server.selection.as_mut().unwrap().start = Some(Instant::now());
+            server.expire(&connection).unwrap();
+            if mode == "failure" {
+                server
+                    .finish(&connection, next(&completions).await)
+                    .unwrap();
+                fixture.state.lock().unwrap().failure = None;
+                for _ in 0..2 {
+                    markdown_actions(&mut server, &uri, range);
+                    server.expire(&connection).unwrap();
+                    assert!(server.selection.as_ref().unwrap().start.is_none());
+                }
+                assert!(server.documents[&uri].preview.is_none());
+                let target = server.selection.as_ref().unwrap().target.clone();
+                server
+                    .queue(1.into(), target, PendingReply::Command)
+                    .unwrap();
+                server
+                    .finish(&connection, next(&completions).await)
+                    .unwrap();
+                command_notice(&client, 1, 3).unwrap();
+                assert!(server.documents[&uri].preview.is_some());
+                assert_eq!(
+                    fixture
+                        .state
+                        .lock()
+                        .unwrap()
+                        .records
+                        .iter()
+                        .filter(|record| record.path == "/v1/responses")
+                        .count(),
+                    2
+                );
+            } else {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    loop {
+                        if fixture
+                            .state
+                            .lock()
+                            .unwrap()
+                            .records
+                            .iter()
+                            .any(|record| record.path == "/v1/responses")
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                match mode {
+                    "empty" => {
+                        markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
+                    }
+                    "edit" => {
+                        server
+                            .notification(
+                                &connection,
+                                lsp_server::Notification::new(
+                                    "textDocument/didChange".into(),
+                                    json!({
+                                        "textDocument": {"uri": uri, "version": 2},
+                                        "contentChanges": [{"text": "Changed sentence."}]
+                                    }),
+                                ),
+                            )
+                            .unwrap();
+                    }
+                    "close" => {
+                        server
+                            .notification(
+                                &connection,
+                                lsp_server::Notification::new(
+                                    "textDocument/didClose".into(),
+                                    json!({"textDocument":{"uri":uri}}),
+                                ),
+                            )
+                            .unwrap();
+                    }
+                    "account" => {
+                        fixture.connected(&auth, 3600).await;
+                        let completion = next(&completions).await;
+                        assert!(
+                            matches!(&completion.result,Err(error) if error.kind == ErrorKind::Modified)
+                        );
+                        server.finish(&connection, completion).unwrap();
+                    }
+                    _ => {
+                        server.cancel_all(&connection).unwrap();
+                    }
+                }
+                assert!(server.scheduler.translations.is_empty());
+                assert!(server.scheduler.pending.is_empty());
+                assert!(
+                    server
+                        .documents
+                        .get(&uri)
+                        .is_none_or(|doc| doc.preview.is_none())
+                );
+            }
+        }
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "Background outcome/cancellation must be silent"
+        );
+        drop(completions);
+        let before = Instant::now();
+        drop(server);
+        assert!(before.elapsed() < Duration::from_millis(500));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_selection_excludes_code_whitespace_non_markdown_and_ineligible_auth() {
+    for (mode, language, text) in [
+        ("code", "markdown", "`code`"),
+        ("space", "markdown", " "),
+        ("large", "markdown", "sentence"),
+        ("rust", "rust", "sentence"),
+        ("signed-out", "markdown", "sentence"),
+        ("disabled", "markdown", "sentence"),
+    ] {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        if mode != "signed-out" {
+            let id = fixture.connected(&auth, 3600).await;
+            if mode == "disabled" {
+                let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+                locked
+                    .state
+                    .registrations
+                    .get_mut(&id)
+                    .unwrap()
+                    .credentials
+                    .as_mut()
+                    .unwrap()
+                    .scopes
+                    .clear();
+                locked.save().unwrap();
+            }
+        }
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///excluded.md".parse().unwrap();
+        let text = if mode == "large" {
+            "a".repeat(16 * 1024 + 1)
+        } else {
+            text.into()
+        };
+        let range = Range::new(Position::new(0, 0), Position::new(0, text.len() as u32));
+        server
+            .documents
+            .insert(uri.clone(), Document::new(1, 1, language.into(), text));
+        markdown_actions(&mut server, &uri, range);
+        server.expire(&connection).unwrap();
+        assert!(server.selection.is_none());
+        assert!(server.scheduler.translations.is_empty());
+        assert!(fixture.state.lock().unwrap().records.is_empty());
+        assert!(client.receiver.try_recv().is_err());
+        if mode == "signed-out" {
+            assert!(auth.store.snapshot().unwrap().is_none());
+        }
+        drop(completions);
+        drop(server);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_selection_uses_document_code_context_and_sends_only_selected_bytes() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///context.md".parse().unwrap();
+    for (index, (text, selected, prose)) in [
+        (
+            "```rust\nlet retry_count = 3;\n```\n",
+            "let retry_count = 3;",
+            false,
+        ),
+        ("```rust\nlet retry_count = 3;\n```\n", "retry_count", false),
+        (
+            "```rust\nlet retry_count = 3;\n```\n",
+            "```rust\nlet retry_count = 3;\n```",
+            false,
+        ),
+        ("Keep `retry_count` unchanged.", "`retry_count`", false),
+        ("Keep `retry_count` unchanged.", "retry_count", false),
+        (
+            "Read [the guide](https://example.test/path).",
+            "https://example.test/path",
+            false,
+        ),
+        (
+            "Read [the guide](https://example.test/path).",
+            "example.test",
+            false,
+        ),
+        (
+            "Read <https://example.test/path>.",
+            "https://example.test/path",
+            false,
+        ),
+        (
+            "    let retry_count = 3;\n",
+            "    let retry_count = 3;",
+            false,
+        ),
+        ("    let retry_count = 3;\n", "retry_count", false),
+        ("<div>\nhidden text\n</div>\n", "hidden text", false),
+        (
+            "Do not send the entire document. First sentence. Keep this too.",
+            "First sentence.",
+            true,
+        ),
+        (
+            "Read [the guide](https://example.test/path).",
+            "the guide",
+            true,
+        ),
+        (
+            "Outside. Keep `retry_count` unchanged. Outside.",
+            "Keep `retry_count` unchanged.",
+            true,
+        ),
+        (
+            "Outside. Read [the guide](https://example.test/path). Outside.",
+            "Read [the guide](https://example.test/path).",
+            true,
+        ),
+        (
+            "Outside.\n\n```rust\nlet retry_count = 3;\n```\n\nFirst sentence.\nOutside.",
+            "let retry_count = 3;\n```\n\nFirst sentence.",
+            false,
+        ),
+        (
+            "Outside.\n\n```rust\nlet retry_count = 3;\n```\n\nFirst sentence.\nOutside.",
+            "```rust\nlet retry_count = 3;\n```\n\nFirst sentence.",
+            true,
+        ),
+        (
+            "Keep `retry_count` unchanged.",
+            "retry_count` unchanged.",
+            false,
+        ),
+        (
+            "Read [the guide](https://example.test/path). First sentence.",
+            "example.test/path). First sentence.",
+            false,
+        ),
+        (
+            "First sentence. Keep `retry_count` unchanged.",
+            "First sentence. Keep `retry",
+            false,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = text.find(selected).unwrap();
+        let position = |offset: usize| {
+            let prefix = &text[..offset];
+            Position::new(
+                prefix.bytes().filter(|&byte| byte == b'\n').count() as u32,
+                prefix.rsplit('\n').next().unwrap().encode_utf16().count() as u32,
+            )
+        };
+        let range = Range::new(position(start), position(start + selected.len()));
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, index as u64, "markdown".into(), text.into()),
+        );
+        let before = fixture.state.lock().unwrap().records.len();
+        markdown_actions(&mut server, &uri, range);
+        if prose {
+            assert!(server.selection.is_some(), "{selected:?}");
+            server.selection.as_mut().unwrap().start = Some(Instant::now());
+            server.expire(&connection).unwrap();
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+            let state = fixture.state.lock().unwrap();
+            assert_eq!(state.records.len(), before + 1, "{selected:?}");
+            let body: Value = serde_json::from_str(&state.records.last().unwrap().body).unwrap();
+            let sent = body["input"][0]["content"].as_str().unwrap();
+            assert_eq!(sent, selected);
+            for literal in ["retry_count", "https://example.test/path"] {
+                if selected.contains(literal) {
+                    assert!(
+                        server.documents[&uri]
+                            .preview
+                            .as_ref()
+                            .unwrap()
+                            .translation
+                            .contains(literal)
+                    );
+                }
+            }
+        } else {
+            assert!(server.selection.is_none(), "{selected:?}");
+            server.expire(&connection).unwrap();
+            assert!(server.scheduler.translations.is_empty());
+            assert_eq!(fixture.state.lock().unwrap().records.len(), before);
+        }
+        assert_eq!(server.documents[&uri].text(), Some(text));
+        assert!(client.receiver.try_recv().is_err());
+    }
+    drop(completions);
+    drop(server);
+}
+
+async fn protocol_message(client: &Connection) -> Message {
+    let receiver = client.receiver.clone();
+    tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_loop_starts_after_stability_and_settings_dismissal_preserves_background() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().unwrap().stream_tail_delay = Duration::from_millis(800);
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let before = auth.store.snapshot().unwrap().unwrap().revision;
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let server = thread::spawn(move || {
+        let ui = Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        );
+        serve_initialized(
+            &connection,
+            Settings::from_options(Some(json!({"selection_debounce_ms":700}))).unwrap(),
+            ui,
+            provider,
+        )
+        .unwrap();
+    });
+    let uri: Uri = "file:///loop.md".parse().unwrap();
+    client
+        .sender
+        .send(
+            lsp_server::Notification::new(
+                "textDocument/didOpen".into(),
+                json!({
+                    "textDocument": {
+                        "uri": uri, "languageId": "markdown", "version": 1,
+                        "text": "First sentence."
+                    }
+                }),
+            )
+            .into(),
+        )
+        .unwrap();
+    let params = json!({
+        "textDocument": {"uri": uri},
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 15}},
+        "context": {"diagnostics": []}
+    });
+    let started = Instant::now();
+    client
+        .sender
+        .send(Request::new(1.into(), CodeActionRequest::METHOD.into(), params.clone()).into())
+        .unwrap();
+    let Message::Response(response) = protocol_message(&client).await else {
+        panic!("Expected candidates");
+    };
+    assert_eq!(
+        response.response_result.unwrap().as_array().unwrap().len(),
+        3
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if fixture
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .iter()
+                .any(|record| record.path == "/v1/responses")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(690));
+    let picker = Instant::now();
+    client
+        .sender
+        .send(
+            Request::new(
+                2.into(),
+                ExecuteCommand::METHOD.into(),
+                json!({"command":SETTINGS_COMMAND}),
+            )
+            .into(),
+        )
+        .unwrap();
+    let Message::Request(request) = protocol_message(&client).await else {
+        panic!("Expected picker");
+    };
+    assert_eq!(request.method, "window/showMessageRequest");
+    assert!(
+        picker.elapsed() < Duration::from_millis(400),
+        "Picker must not wait for translation EOF"
+    );
+    assert_eq!(
+        request.params["actions"],
+        json!([
+            {"title": "Change ChatGPT account"},
+            {"title": "Sign out of ChatGPT"},
+            {"title": "ChatGPT Usage"}
+        ])
+    );
+    assert_eq!(request.params["message"], "");
+    client
+        .sender
+        .send(
+            Response {
+                id: request.id,
+                response_result: Ok(Value::Null),
+            }
+            .into(),
+        )
+        .unwrap();
+    let Message::Response(response) = protocol_message(&client).await else {
+        panic!("Expected dismissal");
+    };
+    assert_eq!(response.id, 2.into());
+    assert!(response.response_result.unwrap().is_null());
+    client
+        .sender
+        .send(
+            Request::new(
+                3.into(),
+                HoverRequest::METHOD.into(),
+                json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}),
+            )
+            .into(),
+        )
+        .unwrap();
+    let Message::Response(response) = protocol_message(&client).await else {
+        panic!("Expected completed Hover");
+    };
+    assert_eq!(response.id, 3.into());
+    assert!(
+        response.response_result.unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("訳First sentence.")
+    );
+    assert_eq!(auth.store.snapshot().unwrap().unwrap().revision, before);
+    client
+        .sender
+        .send(Request::new(4.into(), CodeActionRequest::METHOD.into(), params).into())
+        .unwrap();
+    let Message::Response(response) = protocol_message(&client).await else {
+        panic!("Expected cached candidates");
+    };
+    assert_eq!(response.id, 4.into());
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.path == "/v1/responses")
+            .count(),
+        1
+    );
+    assert!(client.receiver.try_recv().is_err());
+    client
+        .sender
+        .send(Request::new(99.into(), Shutdown::METHOD.into(), Value::Null).into())
+        .unwrap();
+    client
+        .sender
+        .send(lsp_server::Notification::new(Exit::METHOD.into(), Value::Null).into())
+        .unwrap();
+    let Message::Response(response) = protocol_message(&client).await else {
+        panic!("Expected shutdown");
+    };
+    assert_eq!(response.id, 99.into());
+    tokio::task::spawn_blocking(move || server.join().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn account_picker_filters_states_and_closing_it_has_no_effects() {
+    for mode in ["signed-out", "disabled", "ready", "unavailable"] {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        if mode != "signed-out" {
+            let id = fixture.connected(&auth, 3600).await;
+            if mode == "disabled" {
+                let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+                locked
+                    .state
+                    .registrations
+                    .get_mut(&id)
+                    .unwrap()
+                    .credentials
+                    .as_mut()
+                    .unwrap()
+                    .scopes
+                    .clear();
+                locked.save().unwrap();
+            }
+        }
+        let before = auth
+            .store
+            .snapshot()
+            .unwrap()
+            .map(|snapshot| snapshot.revision);
+        let locked = if mode == "unavailable" {
+            auth.store.lock(false).await.unwrap()
+        } else {
+            None
+        };
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let (connection, client) = Connection::memory();
+        let (finished, completions) = bounded(MAX_JOBS);
+        let mut server = Server::configured(
+            finished,
+            provider,
+            Settings::default(),
+            Ui::new(
+                connection.sender.clone(),
+                UiCapabilities {
+                    show_document: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        let uri: Uri = "file:///picker.rs".parse().unwrap();
+        server.documents.insert(
+            uri.clone(),
+            Document::new(1, 1, "rust".into(), "// sentence".into()),
+        );
+        server.documents.get_mut(&uri).unwrap().preview = Some(Preview {
+            context: Context::Mock,
+            range: Range::new(Position::new(0, 0), Position::new(0, 11)),
+            translation: "cached".into(),
+            is_comment: true,
+        });
+        let state = server.provider.auth_ui_state();
+        server
+            .execute_command(
+                &connection,
+                7.into(),
+                parse(json!({"command":SETTINGS_COMMAND})).unwrap(),
+            )
+            .unwrap();
+        let Message::Request(request) = protocol_message(&client).await else {
+            panic!("Expected management picker");
+        };
+        assert_eq!(request.method, "window/showMessageRequest");
+        let expected: Vec<_> = crate::providers::chatgpt::management_commands(state)
+            .iter()
+            .map(|command| json!({"title":command.title}))
+            .collect();
+        assert_eq!(request.params["actions"], json!(expected));
+        server.ui.response(Response {
+            id: request.id,
+            response_result: Ok(Value::Null),
+        });
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let Message::Response(response) = protocol_message(&client).await else {
+            panic!("Expected silent dismissal");
+        };
+        assert_eq!(response.id, 7.into());
+        assert!(response.response_result.unwrap().is_null());
+        assert!(client.receiver.try_recv().is_err());
+        assert_eq!(
+            server.documents[&uri].preview.as_ref().unwrap().translation,
+            "cached"
+        );
+        drop(locked);
+        assert_eq!(
+            auth.store
+                .snapshot()
+                .unwrap()
+                .map(|snapshot| snapshot.revision),
+            before
+        );
+        assert!(fixture.state.lock().unwrap().records.is_empty());
+        drop(completions);
+        drop(server);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn account_picker_dispatches_only_the_selected_command() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let before = auth.store.snapshot().unwrap().unwrap().revision;
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let commands = serde_json::to_value(capabilities::<ChatGptProvider>()).unwrap()["capabilities"]
+        ["executeCommandProvider"]["commands"]
+        .clone();
+    for command in std::iter::once(COMMAND)
+        .chain(
+            ChatGptProvider::capabilities()
+                .commands
+                .iter()
+                .map(|command| command.command),
+        )
+        .chain(std::iter::once(SETTINGS_COMMAND))
+    {
+        assert!(commands.as_array().unwrap().contains(&json!(command)));
+    }
+    server
+        .execute_command(
+            &connection,
+            1.into(),
+            parse(json!({"command":SETTINGS_COMMAND})).unwrap(),
+        )
+        .unwrap();
+    let Message::Request(request) = protocol_message(&client).await else {
+        panic!("Expected picker");
+    };
+    assert_eq!(request.params["message"], "");
+    assert_eq!(
+        request.params["actions"],
+        json!([
+            {"title": "Change ChatGPT account"},
+            {"title": "Sign out of ChatGPT"},
+            {"title": "ChatGPT Usage"}
+        ])
+    );
+    server.ui.response(Response {
+        id: request.id,
+        response_result: Ok(json!({"title":"ChatGPT Usage"})),
+    });
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(
+        server.administrations[&1.into()].command,
+        "translation-lsp.usage"
+    );
+    let Message::Request(request) = protocol_message(&client).await else {
+        panic!("Expected chosen usage UI");
+    };
+    assert_eq!(request.method, "window/showDocument");
+    assert_eq!(request.params["uri"], "https://chatgpt.com/settings/usage");
+    server.ui.response(Response {
+        id: request.id,
+        response_result: Ok(json!({"success":true})),
+    });
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    command_notice(&client, 1, 3).unwrap();
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    assert_eq!(auth.store.snapshot().unwrap().unwrap().revision, before);
+    drop(completions);
+    drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
+    use crate::providers::chatgpt::{
+        auth::Auth,
+        auth_store::{AuthStore, DIRECT_SCOPE},
+        http::Http,
+    };
+    let fixture = Fixture::new().await;
+    let directory =
+        std::env::temp_dir().join(format!("zed-actions-synthetic-{}", uuid::Uuid::new_v4()));
+    let auth = Auth::synthetic(
+        AuthStore::synthetic(directory.clone()),
+        Http::synthetic_revocation(&fixture.base),
+        fixture.base.clone(),
+    );
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///state-actions.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), "// Translate this.\n".into()),
+    );
+    let actions = |server: &Server<ChatGptProvider>| -> Vec<(String, String)> {
+        server
+            .provider
+            .account_commands()
+            .into_iter()
+            .map(|command| (command.command.to_owned(), command.title.to_owned()))
+            .collect()
+    };
+    let connect = (
+        "translation-lsp.connect".into(),
+        "Continue with ChatGPT / Choose account".into(),
+    );
+    let usage = ("translation-lsp.usage".into(), "ChatGPT Usage".into());
+    let signed_out = vec![connect.clone(), usage.clone()];
+    let unknown = vec![
+        (
+            "translation-lsp.connect".into(),
+            "Check ChatGPT connection…".into(),
+        ),
+        usage.clone(),
+    ];
+    assert_eq!(actions(&server), signed_out);
+    assert!(
+        !directory.exists(),
+        "Candidate discovery must not create auth/lock files"
+    );
+    let id = fixture.connected(&auth, 3600).await;
+    let ready = vec![
+        (
+            "translation-lsp.connect".into(),
+            "Change ChatGPT account".into(),
+        ),
+        (
+            "translation-lsp.sign-out".into(),
+            "Sign out of ChatGPT".into(),
+        ),
+        usage.clone(),
+    ];
+    let before = auth.store.snapshot().unwrap().unwrap().revision;
+    assert_eq!(actions(&server), ready);
+    assert_eq!(auth.store.snapshot().unwrap().unwrap().revision, before);
+    // No token expiry probing or refresh happens in discovery.
+    {
+        let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+        let credentials = locked
+            .state
+            .registrations
+            .get_mut(&id)
+            .unwrap()
+            .credentials
+            .as_mut()
+            .unwrap();
+        credentials.expires_in = 0;
+        locked.save().unwrap();
+    }
+    assert_eq!(actions(&server), ready);
+    {
+        let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+        locked
+            .state
+            .registrations
+            .get_mut(&id)
+            .unwrap()
+            .credentials
+            .as_mut()
+            .unwrap()
+            .scopes
+            .retain(|scope| scope != DIRECT_SCOPE);
+        locked.save().unwrap();
+    }
+    assert_eq!(
+        actions(&server),
+        vec![
+            connect.clone(),
+            (
+                "translation-lsp.enable".into(),
+                "Enable ChatGPT plan use".into()
+            ),
+            (
+                "translation-lsp.sign-out".into(),
+                "Sign out of ChatGPT".into()
+            ),
+            usage.clone()
+        ]
+    );
+    assert!(
+        auth.key()
+            .unwrap_err()
+            .message
+            .contains("Enable ChatGPT plan use")
+    );
+    {
+        let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+        // While another process owns the store, use a non-assertive recovery title.
+        assert_eq!(actions(&server), unknown);
+        let before = locked.revision().unwrap();
+        server
+            .request(
+                &connection,
+                Request::new(
+                    9.into(),
+                    ExecuteCommand::METHOD.into(),
+                    json!({"command":"translation-lsp.connect"}),
+                ),
+            )
+            .unwrap();
+        assert!(
+            server
+                .code_actions(
+                    parse(json!({
+                        "textDocument": {"uri": uri},
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 18}
+                        },
+                        "context": {"diagnostics": []}
+                    }))
+                    .unwrap()
+                )
+                .unwrap()
+                .is_empty()
+        );
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(
+            command_notice(&client, 9, 1).unwrap_err().code,
+            ErrorCode::RequestFailed as i32
+        );
+        assert_eq!(locked.revision().unwrap(), before);
+        assert!(fixture.state.lock().unwrap().records.is_empty());
+        locked.state.registrations.get_mut(&id).unwrap().credentials = None;
+        locked.save().unwrap();
+    }
+    assert_eq!(actions(&server), signed_out);
+    let error = auth.key().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Continue with ChatGPT / Choose account")
+    );
+    assert!(!error.message.contains("Enable"));
+    fixture.connected(&auth, 3600).await;
+    assert_eq!(actions(&server), ready);
+    // An invalid local snapshot also retains the explicit recovery entry.
+    let path = directory.join("auth.json");
+    let saved = std::fs::read(&path).unwrap();
+    std::fs::write(&path, b"{").unwrap();
+    assert_eq!(actions(&server), unknown);
+    server
+        .request(
+            &connection,
+            Request::new(
+                10.into(),
+                ExecuteCommand::METHOD.into(),
+                json!({"command":"translation-lsp.connect"}),
+            ),
+        )
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let error = command_notice(&client, 10, 1).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RequestFailed as i32);
+    assert!(!error.message.contains("synthetic-access"));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"{",
+        "Explicit failed recovery must not rewrite the store"
+    );
+    std::fs::write(&path, saved).unwrap();
+    assert_eq!(actions(&server), ready);
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    let mut files: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![
+            std::ffi::OsString::from("auth.json"),
+            std::ffi::OsString::from("auth.lock")
+        ]
+    );
+    drop(completions);
+    drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn candidates_are_local_and_explicit_commands_use_standard_lsp_ui() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    let provider = ChatGptProvider::synthetic(
+        auth.clone(),
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        Settings::default(),
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///actions.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), "// Translate this.\n".into()),
+    );
+    let actions = server.code_actions(parse(json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"context":{"diagnostics":[]}})).unwrap()).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].title, "ChatGPT account…");
+    assert_eq!(
+        actions[0].command.as_ref().unwrap().command,
+        SETTINGS_COMMAND
+    );
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    assert!(auth.store.snapshot().unwrap().is_none());
+    server
+        .execute_command(
+            &connection,
+            RequestId::from(1),
+            parse(json!({"command":"translation-lsp.connect"})).unwrap(),
+        )
+        .unwrap();
+    let receiver = client.receiver.clone();
+    let Message::Request(request) =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
+            .await
+            .unwrap()
+    else {
+        panic!("Expected account picker");
+    };
+    assert_eq!(request.method, "window/showMessageRequest");
+    server
+        .ui
+        .response(Response::new_ok(request.id, Value::Null));
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(auth.store.snapshot().unwrap().is_none());
+    command_notice(&client, 1, 3).unwrap();
+    fixture.connected(&auth, 3600).await;
+    let before = auth.store.snapshot().unwrap().unwrap().revision;
+    let commands = capabilities::<ChatGptProvider>()
+        .capabilities
+        .execute_command_provider
+        .unwrap()
+        .commands;
+    assert!(commands.iter().any(|command| command == SETTINGS_COMMAND));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| command == "translation-lsp.models")
+    );
+    let error = server
+        .execute_command(
+            &connection,
+            RequestId::from(2),
+            parse(json!({"command":"translation-lsp.models"})).unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams as i32);
+    assert!(client.receiver.try_recv().is_err());
+    assert!(server.administrations.is_empty());
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    assert_eq!(auth.store.snapshot().unwrap().unwrap().revision, before);
+    server
+        .execute_command(
+            &connection,
+            RequestId::from(3),
+            parse(json!({"command":"translation-lsp.usage"})).unwrap(),
+        )
+        .unwrap();
+    let receiver = client.receiver.clone();
+    let Message::Request(request) =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
+            .await
+            .unwrap()
+    else {
+        panic!("Expected usage URL");
+    };
+    assert_eq!(request.method, "window/showDocument");
+    assert_eq!(request.params["uri"], "https://chatgpt.com/settings/usage");
+    server
+        .ui
+        .response(Response::new_ok(request.id, json!({"success":true})));
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    command_notice(&client, 3, 3).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_translation_recovers_from_usage_pause_through_worker() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    fixture.state.lock().unwrap().failure = Some((
+        429,
+        json!({
+            "error":{"code":"subscription_sharing_usage_limit_exceeded","message":"Limit reached"}
+        }),
+    ));
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider.clone(),
+        Settings::default(),
+        Ui::new(connection.sender.clone(), UiCapabilities::default()),
+    )
+    .unwrap();
+    let uri: Uri = "file:///retry.rs".parse().unwrap();
+    let source = "// Read this.";
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), source.into()),
+    );
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    assert!(server.hover(1.into(), hover()).unwrap().is_none());
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.documents[&uri].preview.is_none());
+    client.receiver.try_recv().unwrap();
+    assert!(server.hover(2.into(), hover()).is_err());
+    assert_eq!(response_calls(&fixture), 1);
+    fixture.state.lock().unwrap().failure = None;
+    let target = TranslationTarget {
+        uri: uri.clone(),
+        version: 1,
+        session: 1,
+        range: Range::new(Position::new(0, 0), Position::new(0, source.len() as u32)),
+        target_language: "ja".into(),
+    };
+    server
+        .queue(3.into(), target, PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.documents[&uri].preview.is_some());
+    assert_eq!(response_calls(&fixture), 2);
+    provider
+        .admit(
+            &provider.context().unwrap(),
+            crate::providers::Intent::Automatic,
+        )
+        .unwrap();
+    assert!(server.hover(4.into(), hover()).unwrap().is_some());
+    assert_eq!(response_calls(&fixture), 2);
+}

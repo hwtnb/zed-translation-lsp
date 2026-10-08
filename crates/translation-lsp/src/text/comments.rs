@@ -1,10 +1,11 @@
-use std::{borrow::Cow, ops::Range};
+mod javascript;
+mod rust;
+#[cfg(test)]
+use javascript::source_type;
+use std::ops::Range;
 
 use lsp_types::Uri;
-use oxc_allocator::Allocator;
-use oxc_parser::Parser;
-use oxc_span::SourceType;
-use rust_lexer::{DocStyle, FrontmatterAllowed, TokenKind};
+use rust_lexer::DocStyle;
 
 mod c_family;
 mod csharp;
@@ -47,66 +48,10 @@ impl Comments {
             return Self(csharp::parse(text));
         }
         if language_id == "rust" {
-            // rustc's lexer terminates line comments at LF. Preserve all byte
-            // offsets when accepting the editor's standalone CR and CRLF lines.
-            let source = if text.contains('\r') {
-                Cow::Owned(text.replace('\r', "\n"))
-            } else {
-                Cow::Borrowed(text)
-            };
-            let mut start = rust_lexer::strip_shebang(&source).unwrap_or(0);
-            let mut comments = Vec::new();
-            for token in rust_lexer::tokenize(&source[start..], FrontmatterAllowed::Yes) {
-                let end = start + token.len as usize;
-                let kind = match token.kind {
-                    TokenKind::LineComment { doc_style } => {
-                        Some(Kind::Line(LineKind::Rust(doc_style)))
-                    }
-                    TokenKind::BlockComment {
-                        doc_style,
-                        terminated,
-                    } => Some(Kind::Block {
-                        opening: if doc_style.is_some() { 3 } else { 2 },
-                        closed: terminated,
-                    }),
-                    _ => None,
-                };
-                if let Some(kind) = kind {
-                    comments.push(Comment {
-                        range: start..end,
-                        kind,
-                    });
-                }
-                start = end;
-            }
-            return Self(comments);
+            return Self(rust::parse(text));
         }
 
-        let Some(source_type) = source_type(language_id, uri) else {
-            return Self(Vec::new());
-        };
-        let allocator = Allocator::default();
-        let parsed = Parser::new(&allocator, text, source_type).parse();
-        Self(
-            parsed
-                .program
-                .comments
-                .iter()
-                .map(|comment| Comment {
-                    range: comment.span.start as usize..comment.span.end as usize,
-                    kind: if comment.is_line() {
-                        Kind::Line(LineKind::JavaScript(
-                            (comment.content_span().start - comment.span.start) as u8,
-                        ))
-                    } else {
-                        Kind::Block {
-                            opening: if comment.is_jsdoc() { 3 } else { 2 },
-                            closed: true,
-                        }
-                    },
-                })
-                .collect(),
-        )
+        Self(javascript::parse(language_id, uri, text))
     }
 
     // A group is a range of comment indices, not a copy of the source or body.
@@ -226,24 +171,6 @@ fn newline_len(text: &str) -> Option<usize> {
             })
             .map(char::len_utf8)
     }
-}
-
-fn source_type(language_id: &str, uri: &Uri) -> Option<SourceType> {
-    let (typescript, jsx) = match language_id {
-        "javascript" | "javascriptreact" => (false, true),
-        "typescript" => (true, false),
-        "typescriptreact" => (true, true),
-        _ => return None,
-    };
-    // Zed's JavaScript grammar accepts JSX, including in .js files. Oxc supplies
-    // the URI's module/declaration rules, including .mjs/.cjs/.mts/.cts/.d.ts.
-    let source = SourceType::from_path(uri.path().as_str()).unwrap_or_default();
-    Some(
-        source
-            .with_typescript(typescript && !source.is_typescript())
-            .with_javascript(!typescript)
-            .with_jsx(jsx),
-    )
 }
 
 #[cfg(test)]
