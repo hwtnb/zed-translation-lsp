@@ -53,6 +53,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         let task = if ticket < 4 {
             Task::Translation {
                 intent: crate::providers::Intent::Automatic,
+                generation: 0,
                 text: format!("source {ticket}"),
                 target_language: "ja".into(),
                 context: Context::Mock,
@@ -91,7 +92,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
     };
     tokio::time::timeout(Duration::from_secs(2), async {
         tokio::join!(
-            worker(received_jobs, received_admin, finished, provider),
+            worker(received_jobs, received_admin, finished, provider, 2),
             exercise
         );
     })
@@ -271,7 +272,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
         )
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
-    assert!(server.documents[&uri].preview.is_none());
+    assert!(server.cache.latest(&uri).is_none());
     assert_eq!(server.scheduler.pending[&id].ticket, new_ticket);
     server
         .finish(
@@ -351,6 +352,8 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         [
             COMMAND,
             DOCUMENT_COMMAND,
+            CANCEL_COMMAND,
+            CANCEL_ALL_COMMAND,
             "synthetic.inspect",
             SETTINGS_COMMAND
         ]

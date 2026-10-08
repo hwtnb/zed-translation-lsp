@@ -46,8 +46,15 @@ relative to the repository root.
   generated translation. Markdown parsing only determines input eligibility.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
-  Coalesced requests retain independent cancellation and deadlines, including
-  queue waiting time.
+  Hover waiters retain independent cancellation and deadlines, including queue
+  waiting time. Accepted distinct ranges and explicit selection/tab translations
+  survive selection changes and request cancellation. Only the immediately preceding
+  overlapping automatic selection may be superseded by a stable adjustment; other
+  owners keep shared work alive. Execution deadlines start at dispatch and never restart
+  on joins; promotion uses the original start. Bound admission and preserve FIFO,
+  except that range work may bypass a tab waiting for the tab concurrency limit.
+  Release execution slots only on worker termination. Ship retained work together
+  with range cancellation and per-range failure state.
 - Keep blocking network work off the LSP request loop. Preserve bounded
   concurrency and credential-store locking and revision checks.
 - Keep stdout exclusively for LSP messages. Do not log credentials or document

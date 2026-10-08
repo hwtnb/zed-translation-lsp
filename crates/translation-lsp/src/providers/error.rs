@@ -1,6 +1,8 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
     Failed,
+    Cancelled,
+    Paused,
     Modified,
     Unavailable,
     Storage,
@@ -26,6 +28,12 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
+    pub fn cancelled() -> Self {
+        Self {
+            kind: ErrorKind::Cancelled,
+            message: "Translation canceled".into(),
+        }
+    }
     pub fn failed(message: &str) -> Self {
         Self {
             kind: ErrorKind::Failed,

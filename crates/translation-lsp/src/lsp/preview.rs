@@ -1,7 +1,9 @@
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 
+pub(super) mod cache;
 pub(super) mod files;
 
+#[derive(Clone)]
 pub(crate) struct Preview {
     pub context: crate::providers::Context,
     pub range: Range,
@@ -12,7 +14,7 @@ pub(crate) struct Preview {
 impl Preview {
     pub fn hover(&self, position: Position) -> Option<Hover> {
         // Zed keyboard hover uses the selection head, including the exclusive end.
-        // Only this document's last translated range can match; no nearest-range fallback.
+        // Cached ranges match their own positions; there is no nearest-range fallback.
         if position < self.range.start || position > self.range.end {
             return None;
         }

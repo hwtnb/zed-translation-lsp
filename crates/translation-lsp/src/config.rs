@@ -69,6 +69,7 @@ impl Settings {
             Some(options) => serde_json::from_value(options)
                 .map_err(|_| "Invalid translation settings: check field names and value types")?,
         };
+        settings.translation_limits.validate()?;
         if !(1_000..=120_000).contains(&settings.hover_timeout_ms) {
             return Err("hover_timeout_ms must be between 1000 and 120000 milliseconds");
         }

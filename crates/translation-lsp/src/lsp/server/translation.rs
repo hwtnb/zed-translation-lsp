@@ -1,6 +1,14 @@
 use super::*;
 
 impl<P: TranslationProvider> Server<P> {
+    pub(super) fn dispatch(&mut self) -> RequestResult<()> {
+        if let Some(jobs) = &self.jobs {
+            self.scheduler
+                .dispatch(jobs, &self.settings, Instant::now())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn queue(
         &mut self,
         id: RequestId,
@@ -15,12 +23,6 @@ impl<P: TranslationProvider> Server<P> {
         target: TranslationTarget,
         request: TranslationRequest,
     ) -> RequestResult<Option<Value>> {
-        let timeout = match &request {
-            TranslationRequest::Reply(_, PendingReply::Hover(_)) => self.settings.hover_timeout_ms,
-            TranslationRequest::Document => self.settings.document_timeout_ms,
-            _ => self.settings.selection_timeout_ms,
-        };
-        let deadline = Instant::now() + Duration::from_millis(timeout);
         let context = self.check_cache()?;
         let document = self
             .documents
@@ -34,25 +36,31 @@ impl<P: TranslationProvider> Server<P> {
         }
         let original = document
             .selection(target.range)
-            .map_err(|message| failure(ErrorCode::InvalidParams, message))?;
-        let (input_limit, setting) = match request {
-            TranslationRequest::Document => (
+            .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
+        let tab = matches!(request, TranslationRequest::Document);
+        let (limit, setting) = if tab {
+            (
                 self.settings.translation_limits.input_kib.document,
                 "translation_limits.input_kib.document",
-            ),
-            _ => (
+            )
+        } else {
+            (
                 self.settings.translation_limits.input_kib.hover,
                 "translation_limits.input_kib.hover",
-            ),
+            )
         };
-        input_limit
+        limit
             .check(original.len(), setting)
-            .map_err(|message| failure(ErrorCode::InvalidParams, &message))?;
-        if let Some(preview) = document
-            .preview
-            .as_ref()
-            .filter(|preview| preview.range == target.range)
-        {
+            .map_err(|m| failure(ErrorCode::InvalidParams, &m))?;
+        if let Some(preview) = self.cache.exact(&target.uri, target.range, tab) {
+            self.next_ticket += 1;
+            self.cache.insert(
+                target.uri.clone(),
+                self.next_ticket,
+                preview.clone(),
+                tab,
+                false,
+            );
             return match request {
                 TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
                     to_value(preview.hover(position)).map(Some)
@@ -65,93 +73,83 @@ impl<P: TranslationProvider> Server<P> {
                     )?;
                     Ok(None)
                 }
-                _ => Ok(Some(Value::Null)),
+                TranslationRequest::Reply(_, PendingReply::Command) => {
+                    self.ui
+                        .inform(&format!("{}: {TRANSLATION_READY}", location(&target)))
+                        .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
+                    Ok(Some(Value::Null))
+                }
+                _ => Ok(None),
             };
         }
-        if self.scheduler.owner_count() >= MAX_PENDING {
-            return Err(failure(
-                ErrorCode::RequestFailed,
-                "Too many pending translation requests",
-            ));
-        }
+        let immediate = matches!(request, TranslationRequest::Reply(_, PendingReply::Command));
         if let Some(ticket) = self.scheduler.ticket(&target) {
-            self.scheduler.join(ticket, request, deadline)?;
-            return Ok(None);
+            let generation = if request.explicit() {
+                Some(
+                    self.provider
+                        .admit(&context, crate::providers::Intent::Explicit)
+                        .map_err(provider_failure)?,
+                )
+            } else {
+                None
+            };
+            self.scheduler
+                .join(ticket, request, &self.settings, Instant::now())?;
+            if let Some(fresh) = generation
+                && let Some(Task::Translation { generation, .. }) = self
+                    .scheduler
+                    .translations
+                    .get_mut(&ticket)
+                    .and_then(|work| work.task.as_mut())
+            {
+                *generation = fresh;
+            }
+            return Ok(immediate.then_some(Value::Null));
         }
-        if self.scheduler.translations.len() >= MAX_JOBS
-            || self
-                .scheduler
-                .translations
-                .values()
-                .any(|work| work.target.uri == target.uri)
-        {
+        if !self.scheduler.available(
+            &self.settings,
+            matches!(request, TranslationRequest::Selection),
+        ) {
             return Err(failure(
                 ErrorCode::RequestFailed,
-                "Translation is busy; retry after completion",
+                "Translation queue is full; this range was not accepted",
             ));
         }
-        let intent = if matches!(
-            request,
-            TranslationRequest::Document | TranslationRequest::Reply(_, PendingReply::Command)
-        ) {
+        let intent = if request.explicit() {
             crate::providers::Intent::Explicit
         } else {
             crate::providers::Intent::Automatic
         };
-        self.provider
+        let generation = self
+            .provider
             .admit(&context, intent)
             .map_err(provider_failure)?;
         let input = document
             .translation_input(&target.uri, target.range)
-            .map_err(|message| failure(ErrorCode::InvalidParams, message))?;
-        let (deadline_sender, deadline_receiver) = watch::channel(Some(deadline));
-        self.next_ticket += 1;
-        let ticket = self.next_ticket;
-        let job = Job {
-            ticket,
-            deadline: deadline_receiver,
-            task: Task::Translation {
-                intent,
-                text: input.text,
-                target_language: target.target_language.clone(),
-                context: context.clone(),
-            },
+            .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
+        let task = Task::Translation {
+            intent,
+            text: input.text,
+            target_language: target.target_language.clone(),
+            context: context.clone(),
+            generation,
         };
-        self.jobs.as_ref().unwrap().try_send(job).map_err(|_| {
-            failure(
-                ErrorCode::RequestFailed,
-                "Translation queue is full; retry later",
-            )
-        })?;
-        document.preview = None;
-        self.activity.clear_problem();
-        self.problem_target = None;
-        self.scheduler.translations.insert(
-            ticket,
-            Translation {
-                context,
-                phase: Phase::Queued,
+        self.next_ticket += 1;
+        self.scheduler.insert(
+            self.next_ticket,
+            scheduler::PreparedTranslation {
                 target,
+                context,
                 is_comment: input.is_comment,
-                deadline: deadline_sender,
-                failure_notified: false,
-                background_deadline: matches!(request, TranslationRequest::Selection)
-                    .then_some(deadline),
-                document_deadline: matches!(request, TranslationRequest::Document)
-                    .then_some(deadline),
+                task,
             },
-        );
-        if let TranslationRequest::Reply(id, reply) = request {
-            self.scheduler.pending.insert(
-                id,
-                Pending {
-                    ticket,
-                    deadline,
-                    reply,
-                },
-            );
-        }
-        Ok(None)
+            request,
+            &self.settings,
+            Instant::now(),
+        )?;
+        self.clear_problem();
+        self.dispatch()?;
+        Ok(immediate.then_some(Value::Null))
     }
 
     pub(super) fn finish(
@@ -159,6 +157,7 @@ impl<P: TranslationProvider> Server<P> {
         connection: &Connection,
         completion: Finished,
     ) -> ServerResult<()> {
+        self.scheduler.terminated(completion.ticket);
         self.expire(connection)?;
         if let Some(id) = self
             .administrations
@@ -219,19 +218,17 @@ impl<P: TranslationProvider> Server<P> {
             }
             return respond(connection, id, result);
         }
-        let Some(work) = self.scheduler.translations.remove(&completion.ticket) else {
+
+        let Some(work) = self.scheduler.remove(completion.ticket) else {
             return Ok(());
         };
-        let target = &work.target;
+        let silent = completion
+            .result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.kind == ErrorKind::Paused);
         let result = (|| {
-            let document = self
-                .documents
-                .get_mut(&target.uri)
-                .ok_or_else(|| failure(ErrorCode::ContentModified, "Document was closed"))?;
-            if document.version != target.version
-                || document.session != target.session
-                || document.text().is_none()
-            {
+            if !self.target_is_current(&work.target) {
                 return Err(failure(
                     ErrorCode::ContentModified,
                     "Document changed during translation",
@@ -256,28 +253,17 @@ impl<P: TranslationProvider> Server<P> {
                 .translation_limits
                 .output_kib
                 .check(translation.text.len(), "translation_limits.output_kib")
-                .map_err(|message| failure(ErrorCode::RequestFailed, &message))?;
-            document.preview = Some(Preview {
-                range: target.range,
+                .map_err(|m| failure(ErrorCode::RequestFailed, &m))?;
+            Ok(Preview {
+                range: work.target.range,
                 translation: translation.text,
                 context: translation.context,
                 is_comment: work.is_comment,
-            });
-            Ok(())
+            })
         })();
-        if let Err(error) = &result
-            && error.code != ErrorCode::ContentModified as i32
-            && error.code != ErrorCode::RequestCanceled as i32
-        {
-            self.record_problem(&work, Problem::Failed(error.message.clone()));
-        } else if self
-            .problem_target
-            .as_ref()
-            .is_some_and(|(target, _)| target == &work.target)
-        {
-            self.clear_problem();
-        }
-        self.complete(connection, completion.ticket, &work, result)
+        self.complete(connection, completion.ticket, &work, result, silent)?;
+        self.dispatch().map_err(|e| e.message)?;
+        Ok(())
     }
 
     pub(super) fn complete(
@@ -285,61 +271,100 @@ impl<P: TranslationProvider> Server<P> {
         connection: &Connection,
         ticket: u64,
         work: &Translation,
-        result: RequestResult<()>,
+        result: RequestResult<Preview>,
+        silent: bool,
     ) -> ServerResult<()> {
         match &result {
-            Ok(())
-                if self.scheduler.pending.values().any(|pending| {
-                    pending.ticket == ticket && matches!(pending.reply, PendingReply::Command)
-                }) =>
-            {
-                self.ui.inform(TRANSLATION_READY)?
+            Ok(preview) => {
+                let has_hover = self.scheduler.pending.values().any(|p| p.ticket == ticket);
+                if work.automatic || work.manual || has_hover {
+                    self.cache.insert(
+                        work.target.uri.clone(),
+                        ticket,
+                        preview.clone(),
+                        false,
+                        false,
+                    );
+                }
+                if work.manual {
+                    self.ui
+                        .inform(&format!("{}: {TRANSLATION_READY}", location(&work.target)))?;
+                }
+                if work.document {
+                    self.cache.insert(
+                        work.target.uri.clone(),
+                        ticket,
+                        preview.clone(),
+                        true,
+                        false,
+                    );
+                    let markdown = self.documents[&work.target.uri].language_id == "markdown";
+                    if let Err(error) =
+                        self.preview_files
+                            .open(&self.ui, &preview.translation, markdown)
+                    {
+                        self.command_failure(&failure(
+                            ErrorCode::RequestFailed,
+                            &format!("{}: {}", location(&work.target), error.message),
+                        ))?;
+                    }
+                }
             }
             Err(error)
-                if !work.failure_notified
-                    && (work.document_deadline.is_some()
-                        || self.scheduler.pending.values().any(|pending| {
-                            pending.ticket == ticket
-                                && !matches!(pending.reply, PendingReply::Hover(_))
-                        })) =>
+                if error.code != ErrorCode::ContentModified as i32
+                    && error.code != ErrorCode::RequestCanceled as i32 =>
             {
-                self.command_failure(error)?
+                self.record_problem(work, Problem::Failed(error.message.clone()));
+                if work.automatic || work.manual {
+                    let preview = Preview {
+                        range: work.target.range,
+                        context: work.context.clone(),
+                        translation: error.message.chars().take(2048).collect(),
+                        is_comment: false,
+                    };
+                    self.cache.insert(
+                        work.target.uri.clone(),
+                        ticket,
+                        preview.clone(),
+                        false,
+                        true,
+                    );
+                }
+                if (work.manual || work.document) && !silent {
+                    self.command_failure(&failure(
+                        ErrorCode::RequestFailed,
+                        &format!("{}: {}", location(&work.target), error.message),
+                    ))?;
+                }
             }
             _ => (),
-        }
-        if result.is_ok() && work.document_deadline.is_some() {
-            let document = &self.documents[&work.target.uri];
-            if let Err(error) = self.preview_files.open(
-                &self.ui,
-                &document.preview.as_ref().unwrap().translation,
-                document.language_id == "markdown",
-            ) {
-                self.command_failure(&error)?;
-            }
         }
         let ids: Vec<_> = self
             .scheduler
             .pending
             .iter()
-            .filter(|(_, pending)| pending.ticket == ticket)
+            .filter(|(_, p)| p.ticket == ticket)
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {
             let pending = self.scheduler.pending.remove(&id).unwrap();
             let response = match &result {
                 Err(error) => Err(error.clone()),
-                Ok(()) => match pending.reply {
-                    PendingReply::Command => Ok(Value::Null),
-                    PendingReply::Hover(position) => to_value(
-                        self.documents
-                            .get(&work.target.uri)
-                            .and_then(|document| document.preview.as_ref())
-                            .and_then(|preview| preview.hover(position)),
-                    ),
-                },
+                Ok(preview) => to_value(preview.hover(pending.position)),
             };
             respond(connection, id, response)?;
         }
         Ok(())
     }
+}
+
+fn location(target: &TranslationTarget) -> String {
+    let path = target.uri.as_str().split(['?', '#']).next().unwrap_or("");
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    format!(
+        "{}:{}-{}",
+        filename,
+        target.range.start.line + 1,
+        target.range.end.line + 1
+    )
 }

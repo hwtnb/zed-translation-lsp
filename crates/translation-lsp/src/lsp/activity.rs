@@ -28,15 +28,15 @@ impl Work {
     }
 
     fn message(self) -> String {
-        if self.running > 0 {
-            format!(
-                "Translating: {}, queued: {}",
-                self.running,
-                self.queued + usize::from(self.waiting)
-            )
+        let mut message = if self.running > 0 {
+            format!("Translating: {}, queued: {}", self.running, self.queued)
         } else {
-            format!("Queued: {}", self.queued + usize::from(self.waiting))
+            format!("Queued: {}", self.queued)
+        };
+        if self.waiting {
+            message.push_str("; selection not yet accepted");
         }
+        message
     }
 }
 
@@ -181,7 +181,7 @@ impl Activity {
                     if message != current && now >= sent_at + REPORT_INTERVAL {
                         self.notify(
                             "$/progress",
-                            json!({"token":token,"value":{"kind":"report","cancellable":false,"message":current}}),
+                            json!({"token":token,"value":{"kind":"report","cancellable":true,"message":current}}),
                         );
                         message = current;
                         sent_at = now;
@@ -240,7 +240,7 @@ impl Activity {
     }
 
     fn begin(&self, token: &ProgressToken, message: Option<&str>) {
-        let mut value = json!({"kind":"begin","title":"Translation LSP","cancellable":false});
+        let mut value = json!({"kind":"begin","title":"Translation LSP","cancellable":true});
         if let Some(message) = message {
             value["message"] = json!(message);
         }
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(
             begin["value"],
             json!({
-                "kind":"begin", "title":"Translation LSP", "cancellable":false,
+                "kind":"begin", "title":"Translation LSP", "cancellable":true,
                 "message":"Translating: 1, queued: 1"
             })
         );
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(
             report["value"],
             json!({
-                "kind":"report", "cancellable":false, "message":"Translating: 1, queued: 2"
+                "kind":"report", "cancellable":true, "message":"Translating: 1, queued: 2"
             })
         );
         activity.publish(
@@ -509,7 +509,7 @@ mod tests {
             if progress {
                 assert_eq!(
                     notification(&output, "$/progress")["value"]["message"],
-                    "Queued: 1"
+                    "Queued: 0; selection not yet accepted"
                 );
             }
             activity.shutdown();

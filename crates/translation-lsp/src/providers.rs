@@ -59,7 +59,10 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
     fn context(&self) -> Result<Context, Error> {
         Ok(Context::Mock)
     }
-    fn admit(&self, _context: &Context, _intent: Intent) -> Result<(), Error> {
+    fn admit(&self, _context: &Context, _intent: Intent) -> Result<u64, Error> {
+        Ok(0)
+    }
+    fn check_admission(&self, _context: &Context, _generation: u64) -> Result<(), Error> {
         Ok(())
     }
     fn auth_ui_state(&self) -> AuthUiState {

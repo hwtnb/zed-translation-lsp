@@ -140,7 +140,9 @@ impl Client {
             initialized["capabilities"]["executeCommandProvider"]["commands"],
             json!([
                 "translation-lsp.preview",
-                "translation-lsp.open-translation"
+                "translation-lsp.open-translation",
+                "translation-lsp.cancel-range",
+                "translation-lsp.cancel-all"
             ])
         );
         client.notify("initialized", json!({}));
@@ -229,6 +231,13 @@ impl Client {
         self.record(message);
     }
 
+    fn notice(&mut self) -> Value {
+        while self.notifications.is_empty() {
+            self.pump();
+        }
+        self.notifications.remove(0)
+    }
+
     fn create_progress(&mut self) -> Request {
         while self.creates.is_empty() {
             self.pump();
@@ -298,8 +307,12 @@ impl Client {
 
     fn action(&mut self, uri: &str, range: Value) -> Value {
         let actions = self.actions(uri, range);
-        assert_eq!(actions.as_array().unwrap().len(), 1);
-        let action = &actions[0];
+        let action = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["command"]["command"] == "translation-lsp.preview")
+            .unwrap();
         assert!(action.get("edit").is_none());
         assert_eq!(action["title"], "Translate selection to ja");
         assert_eq!(action["command"]["title"], action["title"]);
@@ -445,70 +458,48 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
 }
 
 #[test]
-fn public_deadlines_reach_waiters_and_explicit_mock_override_remains_separate() {
-    for hover_first in [true, false] {
-        let (hover_timeout, selection_timeout) = if hover_first {
-            (1000, 1800)
-        } else {
-            (1800, 1000)
-        };
-        let mut client = Client::configured(
-            &["--mock-delay-ms", "1400"],
-            false,
-            false,
-            json!({
-                "hover_timeout_ms":hover_timeout, "selection_timeout_ms":selection_timeout,
-                "markdown_auto_translate":false
-            }),
-        );
-        let uri = "file:///configured-deadline.rs";
-        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
-        let range = range_for(COMMENT_DOCUMENT, COMMENT);
-        let action = client.action(uri, range.clone());
-        let (first, second) = if hover_first {
-            let first = client.request_hover(uri, range["start"].clone());
-            (first, client.execute(action))
-        } else {
-            let first = client.execute(action);
-            (first, client.request_hover(uri, range["start"].clone()))
-        };
-        assert_error(client.receive(first, TIMEOUT), -32803);
-        let result = client.receive(second, TIMEOUT).unwrap();
-        if hover_first {
-            assert!(result.is_null());
-            assert_eq!(
-                client.notifications,
-                vec![json!({"type":3,"message":READY})]
-            );
-        } else {
-            assert_preview(&result, COMMENT, COMMENT_JA, &range);
-            assert_eq!(client.notifications.len(), 1);
-            assert_eq!(client.notifications[0]["type"], 1);
-        }
-        assert_preview(
-            &client.hover(uri, range["start"].clone()),
-            COMMENT,
-            COMMENT_JA,
-            &range,
-        );
-        client.finish(true);
-    }
+fn public_deadlines_separate_hover_waiting_from_retained_execution() {
+    let mut client = Client::configured(
+        &["--mock-delay-ms", "1400"],
+        false,
+        false,
+        json!({"hover_timeout_ms":1000,"selection_timeout_ms":1800,"markdown_auto_translate":false}),
+    );
+    let uri = "file:///configured-deadline.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let action = client.action(uri, range.clone());
+    let hover = client.request_hover(uri, range["start"].clone());
+    let command = client.execute(action);
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+    assert_error(client.receive(hover, TIMEOUT), -32803);
+    let notice = client.notice();
+    assert_eq!(notice["type"], 3);
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    client.finish(true);
     let mut client = Client::configured(
         &["--mock-delay-ms", "400", "--mock-timeout-ms", "80"],
         false,
         false,
         json!({"hover_timeout_ms":1000,"selection_timeout_ms":1800}),
     );
-    let uri = "file:///override.rs";
     client.open(uri, "rust", COMMENT_DOCUMENT, 1);
-    let range = range_for(COMMENT_DOCUMENT, COMMENT);
     let action = client.action(uri, range.clone());
-    let hover = client.request_hover(uri, range["start"].clone());
     let command = client.execute(action);
-    assert_error(client.receive(hover, TIMEOUT), -32803);
-    assert_error(client.receive(command, TIMEOUT), -32803);
-    assert_eq!(client.notifications.len(), 1);
-    assert_eq!(client.notifications[0]["type"], 1);
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+    assert_eq!(client.notice()["type"], 1);
+    let failed = client.hover(uri, range["start"].clone());
+    assert!(
+        failed["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("translation failed")
+    );
     client.finish(true);
 }
 
@@ -533,7 +524,7 @@ fn progress_registration_does_not_block_hover_or_coalesced_waiter_cancellation()
     assert_eq!(
         begin["value"],
         json!({
-            "kind":"begin", "title":"Translation LSP", "cancellable":false,
+            "kind":"begin", "title":"Translation LSP", "cancellable":true,
             "message":"Translating: 1, queued: 0"
         })
     );
@@ -764,10 +755,9 @@ fn comment_and_markdown_selection_preview_leave_source_unchanged() {
         let started = Instant::now();
         let execution = client.execute(action.clone());
         assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
-        assert_eq!(
-            client.notifications,
-            vec![json!({"type":3,"message":READY})]
-        );
+        let notice = client.notice();
+        assert_eq!(notice["type"], 3);
+        assert!(notice["message"].as_str().unwrap().ends_with(READY));
         client.notifications.clear();
         assert!(
             started.elapsed() >= Duration::from_millis(35),
@@ -794,17 +784,16 @@ fn comment_and_markdown_selection_preview_leave_source_unchanged() {
         assert_eq!(client.action(uri, range.clone()), action);
         let cached = client.execute(action);
         assert!(client.receive(cached, TIMEOUT).unwrap().is_null());
-        assert_eq!(
-            client.notifications,
-            vec![json!({"type":3,"message":READY})]
-        );
+        let notice = client.notice();
+        assert_eq!(notice["type"], 3);
+        assert!(notice["message"].as_str().unwrap().ends_with(READY));
         client.notifications.clear();
     }
     client.finish(true);
 }
 
 #[test]
-fn whole_line_whitespace_is_preserved_and_only_the_last_range_is_shown() {
+fn whole_line_whitespace_is_preserved_and_multiple_ranges_remain_readable() {
     let mut client = Client::new(&[]);
     let uri = "file:///two-selections.md";
     let comment = format!("    {}\r\n", COMMENT.replace('\n', "\r\n"));
@@ -832,7 +821,12 @@ fn whole_line_whitespace_is_preserved_and_only_the_last_range_is_shown() {
     );
     let execution = client.execute(action);
     client.receive(execution, TIMEOUT).unwrap();
-    assert!(client.hover(uri, first_range["end"].clone()).is_null());
+    assert_preview(
+        &client.hover(uri, first_range["end"].clone()),
+        &comment,
+        COMMENT_JA,
+        &first_range,
+    );
     assert_preview(
         &client.hover(uri, last_range["end"].clone()),
         &paragraph,
@@ -975,37 +969,31 @@ fn five_second_first_hover_returns_translation_without_blocking_sync() {
 }
 
 #[test]
-fn edits_and_close_cancel_work_and_reopen_rejects_old_actions() {
-    let mut client = Client::new(&["--mock-delay-ms", "200"]);
+fn edits_and_close_cancel_retained_work_and_reopen_rejects_old_actions() {
+    let mut client = Client::new(&["--mock-delay-ms", "300"]);
     let uri = "file:///changing.md";
     client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
     let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
-    let old_action = client.action(uri, range.clone());
-    let execution = client.execute(old_action.clone());
+    let old = client.action(uri, range.clone());
+    let command = client.execute(old.clone());
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+    client.change(uri, 2, json!([{"text":MARKDOWN_DOCUMENT}]));
     assert!(client.hover(uri, range["start"].clone()).is_null());
-    client.change(uri, 2, json!([{ "text": MARKDOWN_DOCUMENT }]));
-    assert_error(client.receive(execution, TIMEOUT), -32801);
-    assert!(client.hover(uri, range["start"].clone()).is_null());
-    let stale = client.execute(old_action);
-    assert_error(client.receive(stale, TIMEOUT), -32801);
-
+    let command = client.execute(old);
+    assert_error(client.receive(command, TIMEOUT), -32801);
     let action = client.action(uri, range.clone());
-    let execution = client.execute(action.clone());
-    assert!(client.hover(uri, range["start"].clone()).is_null());
+    let command = client.execute(action.clone());
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
     client.close(uri);
-    assert_error(client.receive(execution, TIMEOUT), -32801);
     client.open(uri, "markdown", MARKDOWN_DOCUMENT, 2);
-    let stale = client.execute(action);
-    assert_error(client.receive(stale, TIMEOUT), -32801);
-    thread::sleep(Duration::from_millis(300));
+    let command = client.execute(action);
+    assert_error(client.receive(command, TIMEOUT), -32801);
+    thread::sleep(Duration::from_millis(350));
     assert!(client.hover(uri, range["start"].clone()).is_null());
-    assert!(
-        client.notifications.is_empty(),
-        "Document changes should be silent"
-    );
+    assert!(client.notifications.is_empty());
     let action = client.action(uri, range.clone());
-    let execution = client.execute(action);
-    client.receive(execution, TIMEOUT).unwrap();
+    let command = client.execute(action);
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
     assert_preview(
         &client.hover(uri, range["start"].clone()),
         PARAGRAPH,
@@ -1018,25 +1006,33 @@ fn edits_and_close_cancel_work_and_reopen_rejects_old_actions() {
 }
 
 #[test]
-fn cancellation_accepts_string_ids_and_does_not_publish_a_result() {
-    let mut client = Client::new(&["--mock-delay-ms", "200"]);
+fn command_request_cancellation_preserves_work_and_range_action_cancels_it() {
+    let mut client = Client::new(&["--mock-delay-ms", "300"]);
     let uri = "file:///cancel.md";
     client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
     let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
     let action = client.action(uri, range.clone());
-    let id = RequestId::from("reuse-after-cancel".to_owned());
+    let id = RequestId::from("retained-command".to_owned());
     client.request_with_id(id.clone(), "workspace/executeCommand", action.clone());
-    assert!(client.hover(uri, range["start"].clone()).is_null());
-    client.notify("$/cancelRequest", json!({ "id": "reuse-after-cancel" }));
-    assert_error(client.receive(id.clone(), TIMEOUT), -32800);
-    thread::sleep(Duration::from_millis(300));
+    assert!(client.receive(id.clone(), TIMEOUT).unwrap().is_null());
+    client.notify("$/cancelRequest", json!({"id":"retained-command"}));
+    let actions = client.actions(uri, range.clone());
+    let cancel = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["command"]["command"] == "translation-lsp.cancel-range")
+        .unwrap()["command"]
+        .clone();
+    let request = client.execute(cancel.clone());
+    assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+    thread::sleep(Duration::from_millis(350));
     assert!(client.hover(uri, range["start"].clone()).is_null());
     client.request_with_id(id.clone(), "workspace/executeCommand", action);
-    assert!(
-        client.notifications.is_empty(),
-        "Expected cancellation should be silent"
-    );
-    client.receive(id, TIMEOUT).unwrap();
+    assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+    // Reusing an old cancellation action cannot cancel the new ticket.
+    let stale = client.execute(cancel);
+    assert!(client.receive(stale, TIMEOUT).unwrap().is_null());
     assert_preview(
         &client.hover(uri, range["start"].clone()),
         PARAGRAPH,
@@ -1047,46 +1043,37 @@ fn cancellation_accepts_string_ids_and_does_not_publish_a_result() {
 }
 
 #[test]
-fn simulated_failure_and_unsupported_samples_leave_no_cached_translation() {
-    let mut client = Client::new(&["--mock-fail"]);
-    let uri = "file:///failure.md";
-    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
-    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
-    let action = client.action(uri, range.clone());
-    let execution = client.execute(action);
-    let error = client.receive(execution, TIMEOUT).unwrap_err();
-    assert_eq!(error.code, -32803);
-    assert_eq!(
-        client.notifications,
-        vec![json!({"type":1,"message":error.message})]
-    );
-    assert!(client.hover(uri, range["start"].clone()).is_null());
-    client.finish(true);
-
-    let mut client = Client::new(&[]);
-    client.open(uri, "markdown", "Arbitrary text", 1);
-    let arbitrary_range = range_for("Arbitrary text", "Arbitrary text");
-    let action = client.action(uri, arbitrary_range.clone());
-    let execution = client.execute(action);
-    let error = client.receive(execution, TIMEOUT).unwrap_err();
-    assert_eq!(error.code, -32803);
-    assert!(error.message.contains("sample text"));
-    assert!(
-        client
-            .hover(uri, arbitrary_range["start"].clone())
-            .is_null()
-    );
-    client.change(uri, 2, json!([{ "text": MARKDOWN_DOCUMENT }]));
-    let action = client.action(uri, range.clone());
-    let execution = client.execute(action);
-    client.receive(execution, TIMEOUT).unwrap();
-    assert_preview(
-        &client.hover(uri, range["start"].clone()),
-        PARAGRAPH,
-        PARAGRAPH_JA,
-        &range,
-    );
-    client.finish(true);
+fn simulated_failures_are_visible_per_range_and_edits_clear_them() {
+    for (args, text, selected) in [
+        (vec!["--mock-fail"], MARKDOWN_DOCUMENT, PARAGRAPH),
+        (vec![], "Arbitrary text", "Arbitrary text"),
+    ] {
+        let mut client = Client::new(&args);
+        let uri = "file:///failure.md";
+        client.open(uri, "markdown", text, 1);
+        let range = range_for(text, selected);
+        let action = client.action(uri, range.clone());
+        let command = client.execute(action);
+        assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+        let notice = client.notice();
+        assert_eq!(notice["type"], 1);
+        let hover = client.hover(uri, range["start"].clone());
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("translation failed")
+        );
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("retry")
+        );
+        client.change(uri, 2, json!([{"text":MARKDOWN_DOCUMENT}]));
+        assert!(client.hover(uri, json!({"line":0,"character":0})).is_null());
+        client.finish(true);
+    }
 }
 
 #[test]
@@ -1146,54 +1133,46 @@ fn invalid_ranges_empty_selections_and_command_arguments_are_rejected() {
 }
 
 #[test]
-fn queue_and_same_document_concurrency_are_bounded_and_shutdown_cancels_work() {
-    let mut client = Client::new(&["--mock-delay-ms", "5000"]);
-    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
-    let mut executions = Vec::new();
-    for index in 0..4 {
-        let uri = format!("file:///queue-{index}.md");
+fn configurable_queue_accepts_multiple_ranges_and_shutdown_retires_retained_work() {
+    let mut client = Client::configured(
+        &["--mock-delay-ms", "5000"],
+        false,
+        false,
+        json!({"translation_limits":{"work":{"admitted":4,"automatic":2,"concurrent":1}}}),
+    );
+    let uri = "file:///queue.md";
+    let text = format!("{PARAGRAPH}\n\n{COMMENT}\n\n{PARAGRAPH}");
+    client.open(uri, "markdown", &text, 1);
+    let first = range_for(&text, PARAGRAPH);
+    let second = range_for(&text, COMMENT);
+    for range in [first.clone(), second] {
+        let action = client.action(uri, range);
+        let request = client.execute(action);
+        assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+    }
+    // An exact duplicate shares a job, rather than consuming another admission.
+    let action = client.action(uri, first);
+    let request = client.execute(action);
+    assert!(client.receive(request, TIMEOUT).unwrap().is_null());
+    for i in 0..2 {
+        let uri = format!("file:///queued-{i}.md");
         client.open(&uri, "markdown", MARKDOWN_DOCUMENT, 1);
-        let action = client.action(&uri, range.clone());
-        executions.push(client.execute(action.clone()));
-        assert!(client.hover(&uri, range["start"].clone()).is_null());
-        if index == 0 {
-            // Identical work is shared; a different range in the same document is bounded.
-            executions.push(client.execute(action));
-            let other_range = range_for(MARKDOWN_DOCUMENT, &format!("{PARAGRAPH}\n"));
-            let other_action = client.action(&uri, other_range);
-            let conflicting = client.execute(other_action);
-            assert_error(client.receive(conflicting, TIMEOUT), -32803);
-        }
+        let action = client.action(&uri, range_for(MARKDOWN_DOCUMENT, PARAGRAPH));
+        let request = client.execute(action);
+        assert!(client.receive(request, TIMEOUT).unwrap().is_null());
     }
-    let uri = "file:///queue-full.md";
+    let uri = "file:///overflow.md";
     client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
-    let action = client.action(uri, range.clone());
-    let rejected = client.execute(action);
-    let start = Instant::now();
-    assert_error(client.receive(rejected, TIMEOUT), -32803);
-    assert!(start.elapsed() < Duration::from_millis(500));
-    for execution in executions {
-        client.notify(
-            "$/cancelRequest",
-            json!({ "id": serde_json::to_value(&execution).unwrap() }),
-        );
-        assert_error(client.receive(execution, TIMEOUT), -32800);
-    }
-    let action = client.action(uri, range);
-    let execution = client.execute(action);
-    let shutdown = client.request("shutdown", Value::Null);
-    assert!(client.receive(shutdown, TIMEOUT).unwrap().is_null());
-    assert_error(client.receive(execution, TIMEOUT), -32800);
-    client.notify("exit", Value::Null);
-    let start = Instant::now();
-    while client.child.try_wait().unwrap().is_none() {
-        assert!(start.elapsed() < Duration::from_secs(2));
-        thread::sleep(Duration::from_millis(5));
-    }
-    client.reader.take().unwrap().join().unwrap();
-    assert!(client.messages.try_iter().next().is_none());
-    assert!(client.replies.is_empty());
-    assert!(client.stderr.take().unwrap().join().unwrap().is_empty());
+    let action = client.action(uri, range_for(MARKDOWN_DOCUMENT, PARAGRAPH));
+    let request = client.execute(action);
+    assert_error(client.receive(request, TIMEOUT), -32803);
+    assert!(
+        client.notifications.last().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("not accepted")
+    );
+    client.finish(true);
 }
 
 #[test]
@@ -1613,10 +1592,9 @@ fn coalesced_hovers_complete_once_and_one_cancellation_keeps_the_other_requests(
     );
     assert!(client.receive(command, TIMEOUT).unwrap().is_null());
     assert!(client.receive(second_command, TIMEOUT).unwrap().is_null());
-    assert_eq!(
-        client.notifications,
-        vec![json!({"type":3,"message":READY})]
-    );
+    let notice = client.notice();
+    assert_eq!(notice["type"], 3);
+    assert!(notice["message"].as_str().unwrap().ends_with(READY));
     assert!(started.elapsed() >= Duration::from_millis(290));
     assert!(
         started.elapsed() < Duration::from_millis(800),
@@ -1626,7 +1604,7 @@ fn coalesced_hovers_complete_once_and_one_cancellation_keeps_the_other_requests(
 }
 
 #[test]
-fn coalesced_command_failures_and_deadlines_notify_once_without_partial_hover() {
+fn coalesced_commands_acknowledge_once_and_report_one_failure_for_the_range() {
     for args in [
         vec!["--mock-delay-ms", "400", "--mock-fail"],
         vec!["--mock-delay-ms", "400", "--mock-timeout-ms", "100"],
@@ -1639,21 +1617,19 @@ fn coalesced_command_failures_and_deadlines_notify_once_without_partial_hover() 
         let hover = client.request_hover(uri, range["start"].clone());
         let first = client.execute(action.clone());
         let second = client.execute(action);
-        let error = client.receive(first, TIMEOUT).unwrap_err();
-        assert_eq!(error.code, -32803);
-        assert_eq!(
-            client.receive(second, TIMEOUT).unwrap_err().message,
-            error.message
-        );
-        assert_eq!(
-            client.receive(hover, TIMEOUT).unwrap_err().message,
-            error.message
-        );
-        assert_eq!(
-            client.notifications,
-            vec![json!({"type":1,"message":error.message})]
-        );
+        assert!(client.receive(first, TIMEOUT).unwrap().is_null());
+        assert!(client.receive(second, TIMEOUT).unwrap().is_null());
+        assert_error(client.receive(hover, TIMEOUT), -32803);
+        assert_eq!(client.notifications.len(), 1);
+        assert_eq!(client.notifications[0]["type"], 1);
         assert!(!client.notifications[0].to_string().contains(COMMENT));
+        let failed = client.hover(uri, range["start"].clone());
+        assert!(
+            failed["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("translation failed")
+        );
         client.change(uri, 2, json!([{"text":"fn main() {}"}]));
         assert!(client.hover(uri, range["start"].clone()).is_null());
         client.finish(true);
@@ -2110,7 +2086,7 @@ fn document_limits_accept_large_input_and_partial_settings_override_the_default(
 }
 
 #[test]
-fn document_deadline_includes_queue_waiting() {
+fn document_execution_deadline_starts_after_queue_waiting() {
     let mut client = Client::configured_documents(
         &["--mock-delay-ms", "1500"],
         false,
@@ -2141,18 +2117,27 @@ fn document_deadline_includes_queue_waiting() {
         uri,
         json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
     );
+    let admitted = Instant::now();
     let request = client.execute(action);
     assert!(client.receive(request, TIMEOUT).unwrap().is_null());
     for id in blockers {
         assert!(client.receive(id, TIMEOUT).unwrap().is_null());
     }
-    assert_eq!(
-        client
-            .notifications
-            .iter()
-            .filter(|notice| notice["type"] == 1 && notice["message"] == "Translation timed out")
-            .count(),
-        1
+    let failure = loop {
+        let notice = client.notice();
+        if notice["type"] == 1 {
+            break notice;
+        }
+    };
+    assert!(
+        failure["message"]
+            .as_str()
+            .unwrap()
+            .contains("Translation timed out")
+    );
+    assert!(
+        admitted.elapsed() >= Duration::from_millis(2300),
+        "Queue time must not consume the execution budget"
     );
     assert!(client.hover(uri, json!({"line":0,"character":4})).is_null());
     assert!(client.documents.is_empty());

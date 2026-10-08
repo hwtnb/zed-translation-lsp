@@ -4,8 +4,6 @@ use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
 
 use crate::text::{comments::Comments, markdown::prose_ranges};
 
-use super::preview::Preview;
-
 mod indexed_text;
 
 use indexed_text::IndexedText;
@@ -21,7 +19,6 @@ pub(crate) struct Document {
     pub session: u64,
     pub language_id: String,
     text: Option<IndexedText>,
-    pub preview: Option<Preview>,
     comments: Option<Comments>,
     markdown_prose: Option<Vec<ByteRange<usize>>>,
 }
@@ -33,7 +30,6 @@ impl Document {
             session,
             language_id,
             text: Some(IndexedText::new(text)),
-            preview: None,
             comments: None,
             markdown_prose: None,
         }
@@ -44,7 +40,6 @@ impl Document {
         version: i32,
         changes: Vec<TextDocumentContentChangeEvent>,
     ) -> Result<(), &'static str> {
-        self.preview = None;
         self.comments = None;
         self.markdown_prose = None;
         if version <= self.version {

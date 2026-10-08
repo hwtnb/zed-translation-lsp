@@ -1,13 +1,14 @@
 mod administration;
 mod lifecycle;
-mod queue;
 mod scheduler;
 mod selection;
 mod translation;
 mod worker;
 
-use queue::{JobReceiver, JobSender};
-use scheduler::{Pending, PendingReply, Scheduler, Translation, TranslationRequest};
+use tokio::sync::mpsc as queue;
+type JobSender = queue::Sender<Job>;
+type JobReceiver = queue::Receiver<Job>;
+use scheduler::{PendingReply, Scheduler, Translation, TranslationRequest};
 use selection::Selection;
 #[cfg(test)]
 use worker::run_job;
@@ -52,7 +53,11 @@ use crate::{
 use super::{
     activity::{Activity, Phase, Problem, Work},
     document::Document,
-    preview::{Preview, files::PreviewFiles},
+    preview::{
+        Preview,
+        cache::{Cache, overlaps},
+        files::PreviewFiles,
+    },
     ui::{Ui, UiCapabilities},
 };
 
@@ -64,8 +69,9 @@ const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
 const SETTINGS_COMMAND: &str = "translation-lsp.settings";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
-const MAX_JOBS: usize = 4;
-const MAX_PENDING: usize = 16;
+const MAX_JOBS: usize = 8;
+const CANCEL_COMMAND: &str = "translation-lsp.cancel-range";
+const CANCEL_ALL_COMMAND: &str = "translation-lsp.cancel-all";
 
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -90,11 +96,14 @@ struct Server<P: TranslationProvider> {
     ui: Ui,
     activity: Activity,
     preview_files: PreviewFiles,
+    cache: Cache,
     problem_target: Option<(TranslationTarget, Option<Context>)>,
     administrations: HashMap<RequestId, Administration>,
     documents: HashMap<Uri, Document>,
     scheduler: Scheduler,
     selection: Option<Selection>,
+    previous_selection: Option<TranslationTarget>,
+    adjusting_ticket: Option<u64>,
     next_session: u64,
     next_ticket: u64,
     jobs: Option<JobSender>,
@@ -177,16 +186,21 @@ pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
                 ..Default::default()
             })),
             execute_command_provider: Some(ExecuteCommandOptions {
-                commands: [COMMAND.to_owned(), DOCUMENT_COMMAND.to_owned()]
-                    .into_iter()
-                    .chain(
-                        provider
-                            .commands
-                            .iter()
-                            .map(|command| command.command.to_owned()),
-                    )
-                    .chain(provider.account_menu.map(|_| SETTINGS_COMMAND.to_owned()))
-                    .collect(),
+                commands: [
+                    COMMAND.to_owned(),
+                    DOCUMENT_COMMAND.to_owned(),
+                    CANCEL_COMMAND.to_owned(),
+                    CANCEL_ALL_COMMAND.to_owned(),
+                ]
+                .into_iter()
+                .chain(
+                    provider
+                        .commands
+                        .iter()
+                        .map(|command| command.command.to_owned()),
+                )
+                .chain(provider.account_menu.map(|_| SETTINGS_COMMAND.to_owned()))
+                .collect(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -220,7 +234,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         .scheduler
                         .translations
                         .values()
-                        .flat_map(Translation::detached_deadlines),
+                        .filter_map(Translation::execution_deadline),
                 )
                 .chain(server.activity.deadline())
                 .chain(server.preview_files.deadline())
@@ -261,15 +275,12 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                     },
                 },
                 recv(finished) -> event => match event? {
-                    WorkerEvent::Started(ticket) => {
-                        if let Some(work) = server.scheduler.translations.get_mut(&ticket) {
-                            work.phase = Phase::Running;
-                        }
-                    }
+                    WorkerEvent::Started(ticket) => { if let Some(work) = server.scheduler.translations.get_mut(&ticket) { work.phase = Phase::Running; } },
                     WorkerEvent::Finished(completion) => server.finish(connection, completion)?,
                 },
                 recv(deadline) -> _ => server.expire(connection)?,
             }
+            server.dispatch().map_err(|e| e.message)?;
             server.publish_activity();
         }
         Ok(())
@@ -313,18 +324,28 @@ impl<P: TranslationProvider> Server<P> {
         settings: Settings,
         ui: Ui,
     ) -> ServerResult<Self> {
-        let (sender, jobs) = queue::channel(MAX_JOBS);
+        let (sender, jobs) = queue::channel(settings.translation_limits.work.concurrent);
         let (admin_sender, admin_jobs) = queue::channel(1);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         let worker_provider = provider.clone();
+        let concurrency = settings.translation_limits.work.concurrent;
         let worker = thread::Builder::new()
             .name("translation-worker".into())
-            .spawn(move || runtime.block_on(worker(jobs, admin_jobs, finished, worker_provider)))?;
+            .spawn(move || {
+                runtime.block_on(worker(
+                    jobs,
+                    admin_jobs,
+                    finished,
+                    worker_provider,
+                    concurrency,
+                ))
+            })?;
         let activity = Activity::new(ui.sender.clone(), ui.capabilities);
         Ok(Self {
             provider,
+            cache: Cache::new(settings.translation_limits),
             settings,
             ui,
             activity,
@@ -334,6 +355,8 @@ impl<P: TranslationProvider> Server<P> {
             documents: HashMap::new(),
             scheduler: Scheduler::default(),
             selection: None,
+            previous_selection: None,
+            adjusting_ticket: None,
             next_session: 0,
             next_ticket: 0,
             jobs: Some(sender),
@@ -380,9 +403,10 @@ impl<P: TranslationProvider> Server<P> {
         }
         let mut activity = Work::default();
         for work in self.scheduler.translations.values() {
-            match work.phase {
-                Phase::Queued => activity.queued += 1,
-                Phase::Running => activity.running += 1,
+            if work.phase == Phase::Running {
+                activity.running += 1;
+            } else {
+                activity.queued += 1;
             }
         }
         activity.waiting = self.selection.as_ref().is_some_and(|selection| {
@@ -410,9 +434,7 @@ impl<P: TranslationProvider> Server<P> {
 
     fn clear_previews(&mut self) {
         self.clear_problem();
-        for document in self.documents.values_mut() {
-            document.preview = None;
-        }
+        self.cache.clear();
     }
 
     fn check_cache(&mut self) -> RequestResult<Context> {
@@ -431,22 +453,13 @@ impl<P: TranslationProvider> Server<P> {
                 return Err(provider_failure(error));
             }
         };
-        for document in self.documents.values_mut() {
-            if document
-                .preview
-                .as_ref()
-                .is_some_and(|preview| preview.context != context)
-            {
-                document.preview = None;
-            }
-        }
+        self.cache.retain_context(&context);
         Ok(context)
     }
 
     fn request(&mut self, connection: &Connection, request: Request) -> ServerResult<()> {
         self.expire(connection)?;
         let command = request.method == ExecuteCommand::METHOD;
-        let announce_ready = command && request.params["command"] != DOCUMENT_COMMAND;
         let id = request.id;
         if self.scheduler.pending.contains_key(&id) || self.administrations.contains_key(&id) {
             // A duplicate live ID is invalid. Retire it once, allowing later reuse
@@ -475,12 +488,7 @@ impl<P: TranslationProvider> Server<P> {
         };
         match result {
             Ok(None) => Ok(()),
-            Ok(Some(value)) => {
-                if announce_ready {
-                    self.ui.inform(TRANSLATION_READY)?;
-                }
-                respond(connection, id, Ok(value))
-            }
+            Ok(Some(value)) => respond(connection, id, Ok(value)),
             Err(error) => {
                 if command {
                     self.command_failure(&error)?;
@@ -518,9 +526,10 @@ impl<P: TranslationProvider> Server<P> {
             return Ok(Vec::new());
         }
         if !self.administrations.is_empty() {
-            return Ok(Vec::new());
+            return self.cancel_actions(&params);
         }
-        let actions = if let Some(title) = P::capabilities().account_menu {
+        let mut actions = self.cancel_actions(&params)?;
+        actions.extend(if let Some(title) = P::capabilities().account_menu {
             vec![CodeAction {
                 title: title.into(),
                 kind: Some(CodeActionKind::new(ACTION_KIND)),
@@ -533,7 +542,7 @@ impl<P: TranslationProvider> Server<P> {
             }]
         } else {
             Vec::new()
-        };
+        });
         if P::capabilities().account_menu.is_some() && state != AuthUiState::Ready {
             return Ok(actions);
         }
@@ -611,42 +620,32 @@ impl<P: TranslationProvider> Server<P> {
             .chars()
             .next()
             .is_none_or(char::is_whitespace);
-        let cached_is_comment = document
-            .preview
-            .as_ref()
-            .is_some_and(|preview| preview.is_comment);
-        let cached = document
-            .preview
-            .as_ref()
-            .and_then(|preview| preview.hover(position.position));
-        if let Some(hover) = &cached
-            && (!cached_is_comment
-                || !hover
-                    .range
-                    .is_some_and(|range| range.end == position.position))
-        {
+        let range = document.comment_range(&position.text_document.uri, offset);
+        let eligible = |preview: &Preview| {
+            !preview.is_comment
+                || preview.range.end != position.position
+                || (end_is_clear && !range.is_some_and(|range| range.start == position.position))
+        };
+        if let Some(hover) = self.cache.hover(
+            &position.text_document.uri,
+            position.position,
+            false,
+            eligible,
+        ) {
             authorization?;
             return to_value(hover).map(Some);
         }
-        if document.language_id.eq_ignore_ascii_case("markdown")
-            && let Some(selection) = self.selection.as_ref().filter(|selection| {
-                selection.target.uri == position.text_document.uri
-                    && selection.target.version == document.version
-                    && selection.target.session == document.session
-                    && position.position >= selection.target.range.start
-                    && position.position <= selection.target.range.end
-                    && self.scheduler.ticket(&selection.target).is_some()
-            })
+        if let Some(target) = self
+            .scheduler
+            .at(&position.text_document.uri, position.position)
         {
-            let target = selection.target.clone();
             return self.queue(id, target, PendingReply::Hover(position.position));
         }
-        // A parsed comment's end must not consume adjacent source. A native
-        // comment starting here wins; whitespace/EOF still permits the caret.
-        let range = document.comment_range(&position.text_document.uri, offset);
-        if let Some(hover) = cached
-            && end_is_clear
-            && !range.is_some_and(|range| range.start == position.position)
+        if let Some(hover) =
+            self.cache
+                .hover(&position.text_document.uri, position.position, true, |_| {
+                    true
+                })
         {
             authorization?;
             return to_value(hover).map(Some);
@@ -748,6 +747,8 @@ fn provider_failure(error: ProviderError) -> ResponseError {
     failure(
         if error.kind == ErrorKind::Modified {
             ErrorCode::ContentModified
+        } else if error.kind == ErrorKind::Cancelled {
+            ErrorCode::RequestCanceled
         } else {
             ErrorCode::RequestFailed
         },

@@ -1,6 +1,5 @@
 use super::*;
 
-const TRANSLATION_CONCURRENCY: usize = 2;
 const ADMIN_CONCURRENCY: usize = 1;
 
 pub(super) struct Job {
@@ -15,6 +14,7 @@ pub(super) enum Task {
     },
     Translation {
         intent: crate::providers::Intent,
+        generation: u64,
         text: String,
         target_language: String,
         context: Context,
@@ -46,6 +46,7 @@ pub(super) async fn worker<P: TranslationProvider>(
     administrations: JobReceiver,
     finished: Sender<WorkerEvent>,
     provider: P,
+    concurrency: usize,
 ) {
     tokio::join!(
         run_jobs(
@@ -54,7 +55,7 @@ pub(super) async fn worker<P: TranslationProvider>(
             provider.clone(),
             ADMIN_CONCURRENCY,
         ),
-        run_jobs(jobs, finished, provider, TRANSLATION_CONCURRENCY),
+        run_jobs(jobs, finished, provider, concurrency),
     );
 }
 
@@ -72,20 +73,31 @@ async fn run_jobs<P: TranslationProvider>(
 }
 
 pub(super) async fn run_job<P: TranslationProvider>(
-    mut job: Job,
+    job: Job,
     finished: &Sender<WorkerEvent>,
     provider: &P,
 ) {
+    let ticket = job.ticket;
+    let result = run_operation(job, finished, provider).await;
+    // Every dispatched job returns its slot, including cancellation before start.
+    let _ = finished.send(WorkerEvent::Finished(Finished { ticket, result }));
+}
+
+async fn run_operation<P: TranslationProvider>(
+    mut job: Job,
+    finished: &Sender<WorkerEvent>,
+    provider: &P,
+) -> Result<Outcome, ProviderError> {
     let Some(deadline) = *job.deadline.borrow_and_update() else {
-        return;
+        return Err(ProviderError::cancelled());
     };
     if deadline <= Instant::now() {
-        return;
+        return Err(ProviderError::cancelled());
     }
     if matches!(job.task, Task::Translation { .. })
         && finished.send(WorkerEvent::Started(job.ticket)).is_err()
     {
-        return;
+        return Err(ProviderError::cancelled());
     }
     let operation = async {
         match &job.task {
@@ -113,34 +125,34 @@ pub(super) async fn run_job<P: TranslationProvider>(
                 text,
                 target_language,
                 context,
-            } => provider
-                .translate(*intent, text, target_language, context.clone())
-                .await
-                .map(Outcome::Translation),
+                generation,
+            } => {
+                provider.check_admission(context, *generation)?;
+                provider
+                    .translate(*intent, text, target_language, context.clone())
+                    .await
+                    .map(Outcome::Translation)
+            }
         }
     };
     // Keep the same operation alive when a waiter extends or shortens its deadline.
     tokio::pin!(operation);
     let timer = tokio::time::sleep_until(deadline.into());
     tokio::pin!(timer);
-    let result = loop {
+    loop {
         tokio::select! {
             biased;
             changed = job.deadline.changed() => {
                 if changed.is_err() {
-                    return;
+                    return Err(ProviderError::cancelled());
                 }
                 let Some(deadline) = *job.deadline.borrow_and_update() else {
-                    return;
+                    return Err(ProviderError::cancelled());
                 };
                 timer.as_mut().reset(deadline.into());
             }
             _ = &mut timer => break Err(ProviderError::failed("Translation timed out")),
             result = &mut operation => break result,
         }
-    };
-    let _ = finished.send(WorkerEvent::Finished(Finished {
-        ticket: job.ticket,
-        result,
-    }));
+    }
 }

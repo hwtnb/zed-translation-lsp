@@ -94,6 +94,8 @@ pub(crate) struct ChatGptProvider {
 #[derive(Default)]
 struct ProviderState {
     paused: Option<(AccountKey, Error, Option<Instant>)>,
+    generation: u64,
+    last_stop: Option<(AccountKey, Error)>,
 }
 
 impl ChatGptProvider {
@@ -141,7 +143,7 @@ impl ChatGptProvider {
         Ok(())
     }
 
-    fn record_error(&self, key: &AccountKey, error: &mut Error) {
+    fn record_error(&self, key: &AccountKey, error: &mut Error, generation: u64) {
         let pause = match error.kind {
             ErrorKind::UsageLimit | ErrorKind::NotEligible | ErrorKind::Configuration => Some(None),
             ErrorKind::Temporary => Some(Some(Instant::now() + Duration::from_secs(2))),
@@ -151,7 +153,24 @@ impl ChatGptProvider {
             if until.is_none() && !error.message.ends_with(RETRY_GUIDANCE) {
                 error.message.push_str(RETRY_GUIDANCE);
             }
-            self.state.lock().unwrap().paused = Some((key.clone(), error.clone(), until));
+            let mut state = self.state.lock().unwrap();
+            if until.is_none() {
+                if generation < state.generation {
+                    error.kind = ErrorKind::Paused;
+                    return;
+                }
+                state.generation += 1;
+                state.last_stop = Some((key.clone(), error.clone()));
+            }
+            if until.is_some()
+                && state
+                    .paused
+                    .as_ref()
+                    .is_some_and(|(blocked, _, deadline)| blocked == key && deadline.is_none())
+            {
+                return;
+            }
+            state.paused = Some((key.clone(), error.clone(), until));
         }
     }
 
@@ -189,13 +208,14 @@ impl ChatGptProvider {
         expected: &AccountKey,
         intent: Intent,
     ) -> Result<Translated, Error> {
+        let generation = self.state.lock().unwrap().generation;
         if intent == Intent::Automatic {
             self.allowed(expected)?;
         }
         let access = match self.auth.access(expected).await {
             Ok(access) => access,
             Err(mut error) => {
-                self.record_error(expected, &mut error);
+                self.record_error(expected, &mut error, generation);
                 return Err(error);
             }
         };
@@ -276,13 +296,14 @@ impl ChatGptProvider {
             Ok(translated)
         }).await;
         if let Err(error) = &mut result {
-            self.record_error(key, error);
+            self.record_error(key, error, generation);
         } else if intent == Intent::Explicit {
             let mut state = self.state.lock().unwrap();
-            if state
-                .paused
-                .as_ref()
-                .is_some_and(|(blocked, _, _)| blocked == key)
+            if state.generation == generation
+                && state
+                    .paused
+                    .as_ref()
+                    .is_some_and(|(blocked, _, _)| blocked == key)
             {
                 state.paused = None;
             }
@@ -295,20 +316,37 @@ impl ChatGptProvider {
 }
 
 impl TranslationProvider for ChatGptProvider {
+    fn check_admission(&self, context: &Context, generation: u64) -> Result<(), Error> {
+        let state = self.state.lock().unwrap();
+        if generation < state.generation
+            && let Some((key, error)) = &state.last_stop
+            && context == &Context::ChatGpt(key.clone())
+        {
+            let mut error = error.clone();
+            error.kind = ErrorKind::Paused;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn context(&self) -> Result<Context, Error> {
         let key = self.auth.key()?;
         Ok(Context::ChatGpt(key))
     }
 
-    fn admit(&self, context: &Context, intent: Intent) -> Result<(), Error> {
+    fn admit(&self, context: &Context, intent: Intent) -> Result<u64, Error> {
         let Context::ChatGpt(key) = context else {
             return Err(account_changed());
         };
-        if intent == Intent::Explicit {
-            Ok(())
-        } else {
-            self.allowed(key)
+        let state = self.state.lock().unwrap();
+        if intent == Intent::Automatic
+            && let Some((blocked, error, until)) = &state.paused
+            && blocked == key
+            && until.is_none_or(|deadline| deadline > Instant::now())
+        {
+            return Err(error.clone());
         }
+        Ok(state.generation)
     }
 
     fn auth_ui_state(&self) -> AuthUiState {

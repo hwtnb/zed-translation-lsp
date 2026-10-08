@@ -21,31 +21,22 @@ impl<P: TranslationProvider> Server<P> {
             .scheduler
             .translations
             .iter()
-            .filter(|(_, work)| work.detached_deadlines().any(|deadline| deadline <= now))
+            .filter(|(_, work)| {
+                work.execution_deadline()
+                    .is_some_and(|deadline| deadline <= now)
+            })
             .map(|(&ticket, _)| ticket)
             .collect();
         for ticket in tickets {
-            let work = self.scheduler.translations.get_mut(&ticket).unwrap();
-            if work
-                .background_deadline
-                .is_some_and(|deadline| deadline <= now)
-            {
-                work.background_deadline = None;
-            }
-            if work
-                .document_deadline
-                .is_some_and(|deadline| deadline <= now)
-            {
-                work.document_deadline = None;
-                if !work.failure_notified {
-                    work.failure_notified = true;
-                    self.command_failure(&failure(
-                        ErrorCode::RequestFailed,
-                        "Translation timed out",
-                    ))?;
-                }
-            }
-            self.expire_owner(ticket);
+            let work = self.scheduler.remove(ticket).unwrap();
+            self.complete(
+                connection,
+                ticket,
+                &work,
+                Err(failure(ErrorCode::RequestFailed, "Translation timed out")),
+                false,
+            )?;
+            self.record_problem(&work, Problem::TimedOut);
         }
         let ids: Vec<_> = self
             .scheduler
@@ -57,54 +48,43 @@ impl<P: TranslationProvider> Server<P> {
         for id in ids {
             let pending = self.scheduler.pending.remove(&id).unwrap();
             let error = failure(ErrorCode::RequestFailed, "Translation timed out");
-            if matches!(pending.reply, PendingReply::Command) {
-                let work = self
-                    .scheduler
-                    .translations
-                    .get_mut(&pending.ticket)
-                    .unwrap();
-                if !work.failure_notified {
-                    work.failure_notified = true;
-                    self.command_failure(&error)?;
-                }
-            }
-            self.expire_owner(pending.ticket);
+            self.scheduler.update_deadline(pending.ticket);
             respond(connection, id, Err(error))?;
         }
-        if self.selection.as_ref().is_some_and(|selection| {
-            self.can_start_selection(selection) && selection.start.is_some_and(|start| start <= now)
-        }) {
-            let selection = self.selection.as_mut().unwrap();
-            selection.start = None;
-            let target = selection.target.clone();
-            let context = selection.context.clone();
-            if context.is_some() && self.provider.context().ok() == context {
-                let _ = self.queue_translation(target, TranslationRequest::Selection);
+        self.start_selection();
+        self.dispatch().map_err(|e| e.message)?;
+        Ok(())
+    }
+
+    pub(super) fn cancel_range(
+        &mut self,
+        connection: &Connection,
+        ticket: u64,
+        code: ErrorCode,
+    ) -> RequestResult<()> {
+        if let Some(work) = self.scheduler.remove(ticket) {
+            if let Some(selection) = &mut self.selection
+                && selection.target.uri == work.target.uri
+                && overlaps(selection.target.range, work.target.range)
+            {
+                selection.start = None;
+            }
+            let ids: Vec<_> = self
+                .scheduler
+                .pending
+                .iter()
+                .filter(|(_, p)| p.ticket == ticket)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in ids {
+                self.cancel(connection, &id, code)?;
             }
         }
         Ok(())
     }
 
-    pub(super) fn expire_owner(&mut self, ticket: u64) {
-        if let Some(work) = self.scheduler.translations.get(&ticket) {
-            let has_owner = work.detached_deadlines().next().is_some()
-                || self
-                    .scheduler
-                    .pending
-                    .values()
-                    .any(|pending| pending.ticket == ticket);
-            if !has_owner {
-                let work = self.scheduler.translations.remove(&ticket).unwrap();
-                work.deadline.send_replace(None);
-                self.record_problem(&work, Problem::TimedOut);
-                return;
-            }
-        }
-        self.scheduler.update_deadline(ticket);
-    }
-
     pub(super) fn cancel_activity(&mut self, connection: &Connection) -> RequestResult<()> {
-        self.retire_selection();
+        self.suppress_selection();
         self.clear_problem();
         let ids: Vec<_> = self.scheduler.pending.keys().cloned().collect();
         for id in ids {
@@ -117,6 +97,14 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     pub(super) fn invalidate(&mut self, connection: &Connection, uri: &Uri) -> RequestResult<()> {
+        self.cache.remove_document(uri);
+        if self
+            .previous_selection
+            .as_ref()
+            .is_some_and(|target| &target.uri == uri)
+        {
+            self.previous_selection = None;
+        }
         if self
             .problem_target
             .as_ref()

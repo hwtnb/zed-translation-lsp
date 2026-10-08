@@ -3,6 +3,55 @@ use super::*;
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(180);
 
 impl<P: TranslationProvider> Server<P> {
+    pub(super) fn cancel_actions(
+        &self,
+        params: &CodeActionParams,
+    ) -> RequestResult<Vec<CodeAction>> {
+        let mut actions = Vec::new();
+        let mut add = |title: String, command: &str, arguments: Vec<Value>| {
+            actions.push(CodeAction {
+                title: title.clone(),
+                kind: Some(CodeActionKind::new(ACTION_KIND)),
+                command: Some(Command {
+                    title,
+                    command: command.into(),
+                    arguments: Some(arguments),
+                }),
+                ..Default::default()
+            });
+        };
+        let mut ranges: Vec<_> = self
+            .scheduler
+            .translations
+            .iter()
+            .filter(|(_, work)| {
+                work.retained()
+                    && work.target.uri == params.text_document.uri
+                    && overlaps(work.target.range, params.range)
+            })
+            .collect();
+        ranges.sort_by_key(|(ticket, _)| *ticket);
+        for (&ticket, work) in ranges {
+            add(
+                format!(
+                    "Cancel translation of lines {}-{}",
+                    work.target.range.start.line + 1,
+                    work.target.range.end.line + 1
+                ),
+                CANCEL_COMMAND,
+                vec![to_value(ticket)?],
+            );
+        }
+        if !self.scheduler.translations.is_empty() {
+            add(
+                "Cancel all translations".into(),
+                CANCEL_ALL_COMMAND,
+                Vec::new(),
+            );
+        }
+        Ok(actions)
+    }
+
     pub(super) fn changes_account(command: &str) -> bool {
         P::capabilities()
             .commands
@@ -16,6 +65,27 @@ impl<P: TranslationProvider> Server<P> {
         id: RequestId,
         params: ExecuteCommandParams,
     ) -> RequestResult<Option<Value>> {
+        if params.command == CANCEL_ALL_COMMAND {
+            if !params.arguments.is_empty() {
+                return Err(failure(
+                    ErrorCode::InvalidParams,
+                    "Cancel all takes no arguments",
+                ));
+            }
+            self.cancel_activity(connection)?;
+            return Ok(Some(Value::Null));
+        }
+        if params.command == CANCEL_COMMAND {
+            if params.arguments.len() != 1 {
+                return Err(failure(
+                    ErrorCode::InvalidParams,
+                    "Expected one translation ticket",
+                ));
+            }
+            let ticket: u64 = parse(params.arguments.into_iter().next().unwrap())?;
+            self.cancel_range(connection, ticket, ErrorCode::RequestCanceled)?;
+            return Ok(Some(Value::Null));
+        }
         if P::capabilities().account_menu.is_some()
             && (params.command == SETTINGS_COMMAND
                 || P::capabilities()

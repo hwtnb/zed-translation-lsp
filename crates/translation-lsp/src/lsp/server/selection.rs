@@ -1,13 +1,21 @@
 use super::*;
 
 pub(super) struct Selection {
-    pub(super) target: TranslationTarget,
-    pub(super) context: Option<Context>,
-    pub(super) start: Option<Instant>,
+    pub target: TranslationTarget,
+    pub context: Option<Context>,
+    pub start: Option<Instant>,
 }
 
 impl<P: TranslationProvider> Server<P> {
     pub(super) fn observe_selection(&mut self, params: &CodeActionParams, state: AuthUiState) {
+        if self
+            .previous_selection
+            .as_ref()
+            .is_some_and(|target| target.uri != params.text_document.uri)
+        {
+            self.previous_selection = None;
+            self.adjusting_ticket = None;
+        }
         let target = self
             .documents
             .get_mut(&params.text_document.uri)
@@ -20,12 +28,10 @@ impl<P: TranslationProvider> Server<P> {
                     return None;
                 }
                 let source = document.selection(params.range).ok()?;
-                if source.len() > self.settings.translation_limits.input_kib.hover.bytes() {
-                    return None;
-                }
-                if !document
-                    .markdown_selection_is_translatable(params.range)
-                    .ok()?
+                if source.len() > self.settings.translation_limits.input_kib.hover.bytes()
+                    || !document
+                        .markdown_selection_is_translatable(params.range)
+                        .ok()?
                 {
                     return None;
                 }
@@ -38,53 +44,93 @@ impl<P: TranslationProvider> Server<P> {
                 })
             });
         let Some(target) = target else {
-            self.retire_selection();
+            // Empty/ineligible selections end the candidate, not an accepted job or adjustment chain.
+            self.selection = None;
             return;
         };
         let context = self.provider.context().ok();
-        if self.selection.as_ref().is_some_and(|selection| {
-            selection.target == target && (context.is_none() || selection.context == context)
-        }) {
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.target == target && (context.is_none() || s.context == context))
+        {
             return;
         }
-        self.retire_selection();
-        let start = context
-            .is_some()
-            .then(|| Instant::now() + Duration::from_millis(self.settings.selection_debounce_ms));
+        if !self.previous_selection.as_ref().is_some_and(|previous| {
+            previous.uri == target.uri && overlaps(previous.range, target.range)
+        }) {
+            self.adjusting_ticket = None;
+        }
+        self.previous_selection = Some(target.clone());
         self.selection = Some(Selection {
             target,
+            start: context.as_ref().map(|_| {
+                Instant::now() + Duration::from_millis(self.settings.selection_debounce_ms)
+            }),
             context,
-            start,
         });
     }
 
     pub(super) fn can_start_selection(&self, selection: &Selection) -> bool {
-        self.administrations.is_empty()
-            && self.scheduler.owner_count() < MAX_PENDING
-            && (self.scheduler.ticket(&selection.target).is_some()
-                || (self.scheduler.translations.len() < MAX_JOBS
-                    && !self
-                        .scheduler
-                        .translations
-                        .values()
-                        .any(|work| work.target.uri == selection.target.uri)))
+        if !self.administrations.is_empty() {
+            return false;
+        }
+        if self.scheduler.ticket(&selection.target).is_some() {
+            return true;
+        }
+        let replacing = self
+            .adjusting_ticket
+            .and_then(|t| self.scheduler.translations.get(&t))
+            .is_some_and(|w| w.automatic && !w.manual && !w.document);
+        self.scheduler.admitted() < self.settings.translation_limits.work.admitted
+            && (replacing
+                || self.scheduler.automatic_count()
+                    < self.settings.translation_limits.work.automatic)
+    }
+
+    pub(super) fn start_selection(&mut self) {
+        if !self.selection.as_ref().is_some_and(|s| {
+            self.can_start_selection(s) && s.start.is_some_and(|start| start <= Instant::now())
+        }) {
+            return;
+        }
+        let selection = self.selection.as_mut().unwrap();
+        selection.start = None;
+        let target = selection.target.clone();
+        let Some(context) = selection.context.clone() else {
+            return;
+        };
+        if self.provider.context().ok().as_ref() != Some(&context)
+            || self
+                .provider
+                .admit(&context, crate::providers::Intent::Automatic)
+                .is_err()
+        {
+            return;
+        }
+        if let Some(previous) = self.adjusting_ticket.take()
+            && self.scheduler.ticket(&target) != Some(previous)
+        {
+            self.scheduler.retire_automatic(previous);
+        }
+        if self
+            .queue_translation(target.clone(), TranslationRequest::Selection)
+            .is_ok()
+        {
+            self.adjusting_ticket = self.scheduler.ticket(&target);
+        }
     }
 
     pub(super) fn retire_selection(&mut self) {
-        if self.selection.is_some() {
-            self.clear_problem();
+        self.selection = None;
+        self.previous_selection = None;
+        self.adjusting_ticket = None;
+    }
+
+    pub(super) fn suppress_selection(&mut self) {
+        if let Some(selection) = &mut self.selection {
+            selection.start = None;
         }
-        let Some(selection) = self.selection.take() else {
-            return;
-        };
-        let ticket = self.scheduler.ticket(&selection.target);
-        if let Some(ticket) = ticket {
-            self.scheduler
-                .translations
-                .get_mut(&ticket)
-                .unwrap()
-                .background_deadline = None;
-            self.scheduler.update_deadline(ticket);
-        }
+        self.adjusting_ticket = None;
     }
 }

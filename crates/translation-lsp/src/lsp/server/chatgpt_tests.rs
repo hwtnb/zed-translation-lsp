@@ -56,7 +56,7 @@ async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() 
         let document = &server.documents[&uri];
         assert_eq!(document.text(), Some(source));
         assert_eq!(
-            document.preview.as_ref().unwrap().translation,
+            server.cache.latest(&uri).unwrap().translation,
             format!("訳{source}")
         );
         let state = fixture.state.lock().unwrap();
@@ -68,11 +68,8 @@ async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() 
         assert_eq!(requests.len(), 1);
         let request: Value = serde_json::from_str(&requests[0].body).unwrap();
         assert_eq!(request["input"][0]["content"], source);
-        assert!(client.receiver.try_iter().any(|message| match message {
-            Message::Response(response) =>
-                response.id == 1.into() && response.response_result.is_ok(),
-            _ => false,
-        }));
+        assert!(client.receiver.try_iter().any(|message| matches!(message,
+            Message::Notification(n) if n.params["message"].as_str().is_some_and(|m| m.contains("Translation ready")))));
     }
 }
 
@@ -190,7 +187,7 @@ async fn document_pipeline_opens_large_translation_and_does_not_publish_oversize
             .finish(&connection, next(&completions).await)
             .unwrap();
         assert_eq!(server.documents[&uri].text(), Some(source.as_str()));
-        assert_eq!(server.documents[&uri].preview.is_some(), success);
+        assert_eq!(server.cache.latest(&uri).is_some(), success);
         let messages: Vec<_> = client.receiver.try_iter().collect();
         if success {
             let open = messages
@@ -249,6 +246,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             deadline,
             task: Task::Translation {
                 intent: crate::providers::Intent::Automatic,
+                generation: 0,
                 text: "Read this.".into(),
                 target_language: "ja".into(),
                 context: provider.context().unwrap(),
@@ -278,6 +276,11 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
                 completion
                     .result
                     .is_err_and(|error| error.message == "Translation timed out")
+            );
+        }
+        if cancel {
+            assert!(
+                matches!(events.try_recv().unwrap(), WorkerEvent::Finished(f) if f.result.is_err())
             );
         }
         assert!(events.try_recv().is_err());
@@ -646,11 +649,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         expired.response_result.unwrap_err().code,
         ErrorCode::RequestFailed as i32
     );
-    assert!(
-        server.scheduler.translations[&ticket]
-            .background_deadline
-            .is_some()
-    );
+    assert!(server.scheduler.translations[&ticket].automatic);
     assert!(
         client.receiver.is_empty(),
         "Remaining background owner keeps progress alive"
@@ -697,7 +696,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         end.params,
         json!({"token":create.params["token"],"value":{"kind":"end"}})
     );
-    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.cache.latest(&uri).is_some());
     assert!(
         client.receiver.is_empty(),
         "Background completion adds no status or INFO"
@@ -786,7 +785,7 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         .unwrap();
     server.publish_activity();
     assert!(server.scheduler.translations.is_empty());
-    assert!(server.selection.is_none());
+    assert!(server.selection.as_ref().is_none_or(|s| s.start.is_none()));
     assert_eq!(
         *server.administrations[&2.into()].stop.borrow(),
         Some(deadline)
@@ -797,9 +796,11 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
     assert_eq!(end.params["value"]["kind"], "end");
     assert!(client.receiver.is_empty(), "Picker must remain pending");
     server.ui.response(Response::new_ok(picker.id, Value::Null));
-    server
-        .finish(&connection, next(&completions).await)
-        .unwrap();
+    while !server.administrations.is_empty() {
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
     let Message::Response(dismissed) = client.receiver.try_recv().unwrap() else {
         panic!("Expected picker dismissal");
     };
@@ -896,7 +897,12 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
             .is_none()
     );
     wait_held(&tail, 2).await;
-    assert!(server.hover(6.into(), request(&uris[0], 2)).is_err());
+    assert!(
+        server
+            .hover(6.into(), request(&uris[0], 2))
+            .unwrap()
+            .is_none()
+    );
     assert!(
         server
             .hover(3.into(), request(&uris[2], 0))
@@ -919,7 +925,7 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
         server.scheduler.pending[&1.into()].ticket,
         server.scheduler.pending[&5.into()].ticket
     );
-    assert_eq!(server.scheduler.translations.len(), 4);
+    assert_eq!(server.scheduler.translations.len(), 5);
     assert_eq!(
         fixture
             .state
@@ -931,13 +937,8 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
             .count(),
         2
     );
-    assert!(
-        server
-            .documents
-            .values()
-            .all(|document| document.preview.is_none())
-    );
-    for _ in 0..4 {
+    assert!((server.cache.successes() == 0));
+    for _ in 0..5 {
         tail.release.notify_one();
         let completion = next(&completions).await;
         assert!(completion.result.is_ok());
@@ -956,11 +957,11 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
             .iter()
             .filter(|record| record.path == "/v1/responses")
             .count(),
-        4
+        5
     );
     assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
     let replies: Vec<_> = client.receiver.try_iter().collect();
-    assert_eq!(replies.len(), 5);
+    assert_eq!(replies.len(), 6);
     assert!(replies.iter().all(
         |message| matches!(message, Message::Response(response) if response.response_result.is_ok())
     ));
@@ -1131,12 +1132,20 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         assert_eq!(retired.id, id);
         assert_eq!(retired.response_result.unwrap_err().code, expected as i32);
         assert!(
-            server.documents[&uris[if queued { 2 } else { 0 }]]
-                .preview
+            server
+                .cache
+                .latest(&uris[if queued { 2 } else { 0 }])
                 .is_none()
         );
         if !queued {
-            // The queued HTTP starts while the other initial HTTP is still held.
+            if operation != "timeout-active" {
+                let canceled = next(&completions).await;
+                assert!(
+                    matches!(&canceled.result, Err(error) if error.kind == ErrorKind::Cancelled)
+                );
+                server.finish(&connection, canceled).unwrap();
+            }
+            // The queued HTTP starts only after the canceled worker releases its slot.
             wait_held(&following, 1).await;
             assert_eq!(response_calls(&fixture), 3);
         }
@@ -1162,8 +1171,9 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         assert_eq!(successful.len(), 2);
         assert!(successful.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{operation}: {successful:?}");
         assert!(
-            server.documents[&uris[if queued { 2 } else { 0 }]]
-                .preview
+            server
+                .cache
+                .latest(&uris[if queued { 2 } else { 0 }])
                 .is_none()
         );
         if matches!(operation, "edit" | "reopen") {
@@ -1173,8 +1183,9 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             assert!(completion.result.is_ok());
             server.finish(&connection, completion).unwrap();
             assert!(
-                server.documents[&uris[0]]
-                    .preview
+                server
+                    .cache
+                    .latest(&uris[0])
                     .as_ref()
                     .unwrap()
                     .translation
@@ -1217,6 +1228,7 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
             Ui::new(connection.sender.clone(), UiCapabilities::default()),
         )
         .unwrap();
+        server.settings.translation_limits.work.documents = 2;
         let uris = open_parallel(&mut server, &connection);
         parallel_hover(&mut server, 1, &uris[0]);
         wait_held(&tail, 1).await;
@@ -1246,12 +1258,7 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
             server.cancel_all(&connection).unwrap();
         }
         assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
-        assert!(
-            server
-                .documents
-                .values()
-                .all(|document| document.preview.is_none())
-        );
+        assert!((server.cache.successes() == 0));
         assert_eq!(response_calls(&fixture), 2);
         let replies: Vec<_> = client.receiver.try_iter().collect();
         assert_eq!(replies.len(), 4);
@@ -1274,7 +1281,7 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
                     .unwrap_or("")
             );
             server.finish(&connection, completion).unwrap();
-            assert!(server.documents[&uris[0]].preview.is_some());
+            assert!(server.cache.latest(&uris[0]).is_some());
             assert_eq!(response_calls(&fixture), 3);
         }
         let started = Instant::now();
@@ -1318,10 +1325,10 @@ async fn cached_translation_survives_store_lock_but_not_reauthorization() {
         .finish(&connection, next(&completions).await)
         .unwrap();
     client.receiver.try_recv().unwrap();
-    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.cache.latest(&uri).is_some());
     let mut writer = auth.store.lock(false).await.unwrap().unwrap();
     assert!(server.hover(2.into(), hover()).is_err());
-    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.cache.latest(&uri).is_some());
     writer.save().unwrap();
     drop(writer);
     assert!(server.hover(3.into(), hover()).unwrap().is_some());
@@ -1337,12 +1344,12 @@ async fn cached_translation_survives_store_lock_but_not_reauthorization() {
     drop(writer);
     fixture.state.lock().unwrap().translation = Some("New authorization translation".into());
     assert!(server.hover(4.into(), hover()).unwrap().is_none());
-    assert!(server.documents[&uri].preview.is_none());
+    assert!(server.cache.latest(&uri).is_none());
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
     assert_eq!(
-        server.documents[&uri].preview.as_ref().unwrap().translation,
+        server.cache.latest(&uri).as_ref().unwrap().translation,
         "New authorization translation"
     );
     assert_eq!(response_calls(&fixture), 2);
@@ -1455,14 +1462,7 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         }
         assert_eq!(response_calls(&fixture), (round + 1) * 5);
         assert!(server.scheduler.pending.is_empty());
-        assert_eq!(
-            server
-                .documents
-                .values()
-                .filter(|d| d.preview.is_some())
-                .count(),
-            5
-        );
+        assert_eq!(server.cache.successes(), 5);
         let replies: Vec<_> = client.receiver.try_iter().collect();
         assert_eq!(replies.len(), 5);
         assert!(replies.iter().all(|message| matches!(message, Message::Response(response) if response.response_result.is_ok())), "{replies:?}");
@@ -1510,7 +1510,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     parallel_hover(&mut server, 3, &uris[2]);
     parallel_hover(&mut server, 4, &uris[3]);
     assert_eq!(response_calls(&fixture), 2);
-    assert!(server.documents.values().all(|d| d.preview.is_none()));
+    assert!((server.cache.successes() == 0));
     invalid.release.notify_waiters();
     for _ in 0..2 {
         let completion = next(&completions).await;
@@ -1530,7 +1530,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     }
     assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
     for (index, uri) in uris.iter().enumerate() {
-        assert_eq!(server.documents[uri].preview.is_some(), index >= 2);
+        assert_eq!(server.cache.latest(uri).is_some(), index >= 2);
     }
     let replies: Vec<_> = client.receiver.try_iter().collect();
     assert_eq!(replies.len(), 4);
@@ -1552,24 +1552,50 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
 }
 
 fn command_notice(client: &Connection, id: i32, level: u64) -> RequestResult<Value> {
-    let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
-        panic!("Expected command notification");
-    };
-    assert_eq!(notification.method, "window/showMessage");
-    assert_eq!(notification.params["type"], level);
-    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-        panic!("Expected command response");
-    };
-    assert_eq!(response.id, RequestId::from(id));
-    match &response.response_result {
-        Ok(value) => assert!(value.is_null()),
-        Err(error) => assert_eq!(notification.params["message"], error.message),
-    }
-    assert!(
-        client.receiver.try_recv().is_err(),
-        "Duplicate command notification"
+    let messages: Vec<_> = client.receiver.try_iter().collect();
+    assert_eq!(
+        messages.len(),
+        2,
+        "one acknowledgement and one notification: {messages:?}"
     );
-    response.response_result
+    let response = messages
+        .iter()
+        .find_map(|m| {
+            if let Message::Response(r) = m {
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let notice = messages
+        .iter()
+        .find_map(|m| {
+            if let Message::Notification(n) = m {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(response.id, RequestId::from(id));
+    assert_eq!(notice.method, "window/showMessage");
+    assert_eq!(notice.params["type"], level);
+    if let Err(error) = &response.response_result {
+        assert_eq!(notice.params["message"], error.message);
+    }
+    if level == 1
+        && let Ok(value) = &response.response_result
+    {
+        // An admitted command stays acknowledged even when its later operation fails.
+        assert!(value.is_null());
+        Err(failure(
+            ErrorCode::RequestFailed,
+            notice.params["message"].as_str().unwrap(),
+        ))
+    } else {
+        response.response_result.clone()
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1645,348 +1671,126 @@ async fn documentation_comments_reach_http_and_return_translated_hover() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn document_deadline_is_independent_when_http_work_is_shared() {
-    assert_eq!(Settings::default().document_timeout_ms, 180_000);
-    for document_expires in [false, true] {
-        let fixture = Fixture::new().await;
-        let tail = std::sync::Arc::new(StreamTailGate::default());
-        {
-            let mut state = fixture.state.lock().unwrap();
-            state.response_mode = "delta_compact".into();
-            state.stream_tail_gate = Some(tail.clone());
-        }
-        let auth = fixture.auth();
-        fixture.connected(&auth, 3600).await;
-        let provider = ChatGptProvider::synthetic(
-            auth,
-            format!("{}/v1", fixture.base),
-            "synthetic-model".into(),
-        );
-        let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
-        let mut server = Server::configured(
-            finished,
-            provider,
-            Settings {
-                hover_timeout_ms: if document_expires { 2_000 } else { 200 },
-                selection_timeout_ms: 200,
-                document_timeout_ms: if document_expires { 200 } else { 2_000 },
-                ..Default::default()
-            },
-            Ui::new(
-                connection.sender.clone(),
-                UiCapabilities {
-                    show_document: true,
-                    ..Default::default()
-                },
-            ),
+async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
+    let settings = Settings {
+        hover_timeout_ms: 80,
+        selection_timeout_ms: 150,
+        document_timeout_ms: 1000,
+        ..Default::default()
+    };
+    let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let target = range_target(&server, &uri, 0);
+    server
+        .queue(
+            1.into(),
+            target.clone(),
+            PendingReply::Hover(Position::new(0, 3)),
         )
         .unwrap();
-        let uri: Uri = "file:///shared.md".parse().unwrap();
-        server.documents.insert(
-            uri.clone(),
-            Document::new(1, 1, "markdown".into(), "Translate this.".into()),
-        );
-        let target = TranslationTarget {
-            uri: uri.clone(),
-            version: 1,
-            session: 1,
-            range: Range::new(Position::new(0, 0), Position::new(0, 15)),
-            target_language: "ja".into(),
-        };
+    let ticket = server.scheduler.pending[&1.into()].ticket;
+    let start = server.scheduler.translations[&ticket].started.unwrap();
+    wait_held(&tail, 1).await;
+    server
+        .queue_translation(target.clone(), TranslationRequest::Document)
+        .unwrap();
+    assert_eq!(
+        server.scheduler.translations[&ticket].execution_deadline(),
+        Some(start + Duration::from_millis(1000))
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    server.expire(&connection).unwrap();
+    assert!(server.scheduler.pending.is_empty());
+    assert!(server.scheduler.translations[&ticket].document);
+    server
+        .queue_translation(target, TranslationRequest::Document)
+        .unwrap();
+    assert_eq!(
+        server.scheduler.translations[&ticket].execution_deadline(),
+        Some(start + Duration::from_millis(1000))
+    );
+    tail.release.notify_one();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let messages: Vec<_> = client.receiver.try_iter().collect();
+    assert!(messages.iter().any(|m| matches!(m, Message::Response(r) if r.id == RequestId::from(1) && r.response_result.is_err())));
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| matches!(m, Message::Request(r) if r.method == "window/showDocument"))
+            .count(),
+        1
+    );
+    assert_eq!(response_calls(&fixture), 1);
+    assert!(
         server
-            .queue(
-                1.into(),
-                target.clone(),
-                PendingReply::Hover(Position::new(0, 4)),
-            )
-            .unwrap();
-        let admitted = Instant::now();
-        server
-            .queue_translation(target.clone(), TranslationRequest::Document)
-            .unwrap();
-        let ticket = server.scheduler.pending[&1.into()].ticket;
-        let document_deadline = server.scheduler.translations[&ticket]
-            .document_deadline
-            .unwrap();
-        assert!(
-            document_deadline
-                >= admitted + Duration::from_millis(server.settings.document_timeout_ms)
-        );
-        server
-            .queue_translation(target.clone(), TranslationRequest::Selection)
-            .unwrap();
-        server.selection = Some(Selection {
-            target: target.clone(),
-            context: Some(server.provider.context().unwrap()),
-            start: None,
-        });
-        server.retire_selection();
-        assert_eq!(
-            server.scheduler.translations[&ticket].document_deadline,
-            Some(document_deadline)
-        );
-        // Repeated commands keep the first deadline and open a single completed result.
-        server
-            .queue_translation(target, TranslationRequest::Document)
-            .unwrap();
-        assert_eq!(
-            server.scheduler.translations[&ticket].document_deadline,
-            Some(document_deadline)
-        );
-        wait_held(&tail, 1).await;
-        tokio::time::sleep(Duration::from_millis(220)).await;
-        server.expire(&connection).unwrap();
-        assert!(server.documents[&uri].preview.is_none());
-        assert_eq!(server.scheduler.translations.len(), 1);
-        let messages: Vec<_> = client.receiver.try_iter().collect();
-        assert_eq!(messages.len(), 1);
-        if document_expires {
-            assert!(matches!(&messages[0], Message::Notification(notice)
-                if notice.method == "window/showMessage" && notice.params["message"] == "Translation timed out"));
-            assert!(
-                server.scheduler.translations[&ticket]
-                    .document_deadline
-                    .is_none()
-            );
-        } else {
-            assert!(matches!(&messages[0], Message::Response(reply)
-                if reply.id == RequestId::from(1) && reply.response_result.is_err()));
-            assert!(server.scheduler.pending.is_empty());
-        }
-        tail.release.notify_one();
-        server
-            .finish(&connection, next(&completions).await)
-            .unwrap();
-        assert_eq!(response_calls(&fixture), 1);
-        let messages: Vec<_> = client.receiver.try_iter().collect();
-        assert_eq!(messages.len(), 1);
-        if document_expires {
-            assert!(matches!(&messages[0], Message::Response(reply)
-                if reply.id == RequestId::from(1) && reply.response_result.is_ok()));
-        } else {
-            let Message::Request(open) = &messages[0] else {
-                panic!("Expected completed document");
-            };
-            assert_eq!(open.method, "window/showDocument");
-            assert!(server.preview_files.response(
-                &server.ui,
-                &Response::new_ok(open.id.clone(), json!({"success":true}))
-            ));
-        }
-        assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
-        assert!(client.receiver.try_recv().is_err());
-    }
+            .cache
+            .hover(&uri, Position::new(0, 3), false, |_| true)
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn request_deadlines_keep_one_http_operation_and_start_at_each_admission() {
-    let defaults = Settings::default();
-    assert_eq!(defaults.hover_timeout_ms, 20_000);
-    assert_eq!(defaults.selection_timeout_ms, 30_000);
-    for mode in [
-        "manual",
-        "hover",
-        "hover-first",
-        "manual-first",
-        "late-hover",
-        "late-manual",
-    ] {
-        let fixture = Fixture::new().await;
-        let tail = std::sync::Arc::new(StreamTailGate::default());
-        {
-            let mut state = fixture.state.lock().unwrap();
-            state.response_mode = "delta_compact".into();
-            state.stream_tail_gate = Some(tail.clone());
-        }
-        let auth = fixture.auth();
-        fixture.connected(&auth, 3600).await;
-        let provider = ChatGptProvider::synthetic(
-            auth,
-            format!("{}/v1", fixture.base),
-            "synthetic-model".into(),
-        );
-        let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
-        let mut server = Server::configured(
-            finished,
-            provider,
-            Settings {
-                hover_timeout_ms: 200,
-                selection_timeout_ms: 600,
-                ..Default::default()
-            },
-            Ui::new(
-                connection.sender.clone(),
-                UiCapabilities {
-                    show_document: true,
-                    ..Default::default()
-                },
-            ),
+async fn late_hover_join_does_not_extend_http_execution_cap() {
+    let settings = Settings {
+        hover_timeout_ms: 150,
+        ..Default::default()
+    };
+    let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let target = range_target(&server, &uri, 0);
+    server
+        .queue(
+            1.into(),
+            target.clone(),
+            PendingReply::Hover(Position::new(0, 3)),
         )
         .unwrap();
-        let uri: Uri = "file:///deadline.rs".parse().unwrap();
-        let source = "// Translate this.\n";
-        server.documents.insert(
-            uri.clone(),
-            Document::new(1, 1, "rust".into(), source.into()),
-        );
-        let target = || TranslationTarget {
-            uri: uri.clone(),
-            version: 1,
-            session: 1,
-            range: Range::new(Position::new(0, 0), Position::new(0, 18)),
-            target_language: "ja".into(),
-        };
-        let first_hover = mode == "hover" || mode == "hover-first";
-        let first_before = Instant::now();
+    wait_held(&tail, 1).await;
+    let cap = server
+        .scheduler
+        .translations
+        .values()
+        .next()
+        .unwrap()
+        .execution_deadline();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    server
+        .queue(2.into(), target, PendingReply::Hover(Position::new(0, 4)))
+        .unwrap();
+    assert_eq!(
         server
-            .queue(
-                1.into(),
-                target(),
-                if first_hover {
-                    PendingReply::Hover(Position::new(0, 4))
-                } else {
-                    PendingReply::Command
-                },
-            )
-            .unwrap();
-        let first_after = Instant::now();
-        let first_deadline = server.scheduler.pending[&1.into()].deadline;
-        let first_window = Duration::from_millis(if first_hover { 200 } else { 600 });
-        assert!(first_deadline >= first_before + first_window);
-        assert!(first_deadline <= first_after + first_window);
-        let admit_second = |server: &mut Server<ChatGptProvider>| {
-            let before = Instant::now();
-            server
-                .queue(
-                    2.into(),
-                    target(),
-                    if first_hover || mode == "late-manual" {
-                        PendingReply::Command
-                    } else {
-                        PendingReply::Hover(Position::new(0, 4))
-                    },
-                )
-                .unwrap();
-            let after = Instant::now();
-            let second = &server.scheduler.pending[&2.into()];
-            let window = Duration::from_millis(if first_hover || mode == "late-manual" {
-                600
+            .scheduler
+            .translations
+            .values()
+            .next()
+            .unwrap()
+            .execution_deadline(),
+        cap
+    );
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    server.expire(&connection).unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.scheduler.translations.is_empty());
+    let responses: Vec<_> = client
+        .receiver
+        .try_iter()
+        .filter_map(|m| {
+            if let Message::Response(r) = m {
+                Some(r)
             } else {
-                200
-            });
-            assert!(second.deadline >= before + window);
-            assert!(second.deadline <= after + window);
-            assert_eq!(second.ticket, server.scheduler.pending[&1.into()].ticket);
-            assert_eq!(server.scheduler.translations.len(), 1);
-            assert_eq!(
-                *server.scheduler.translations[&second.ticket]
-                    .deadline
-                    .borrow(),
-                Some(first_deadline.max(second.deadline))
-            );
-        };
-        if matches!(mode, "hover-first" | "manual-first") {
-            admit_second(&mut server);
-        }
-        tokio::time::timeout(Duration::from_secs(1), tail.reached.notified())
-            .await
-            .expect("HTTP body must reach the held EOF");
-        if matches!(mode, "late-hover" | "late-manual") {
-            admit_second(&mut server);
-        }
-        let expired_hover = if first_hover {
-            Some(RequestId::from(1))
-        } else if mode == "manual-first" {
-            Some(RequestId::from(2))
-        } else {
-            None
-        };
-        if let Some(id) = expired_hover {
-            let deadline = server.scheduler.pending[&id].deadline;
-            tokio::time::sleep_until((deadline + Duration::from_millis(20)).into()).await;
-            server.expire(&connection).unwrap();
-            let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-                panic!("Expected expired Hover");
-            };
-            assert_eq!(response.id, id);
-            assert_eq!(
-                response.response_result.unwrap_err().code,
-                ErrorCode::RequestFailed as i32
-            );
-            assert!(
-                client.receiver.try_recv().is_err(),
-                "Automatic Hover must stay silent"
-            );
-            assert!(server.documents[&uri].preview.is_none());
-        }
-        if mode == "late-manual" {
-            // Make only the older waiter due; keep the later admission's full window.
-            let pending = server.scheduler.pending.get_mut(&1.into()).unwrap();
-            pending.deadline = pending.deadline.min(Instant::now());
-            server.expire(&connection).unwrap();
-            let error = command_notice(&client, 1, 1).unwrap_err();
-            assert_eq!(error.code, ErrorCode::RequestFailed as i32);
-            assert!(server.documents[&uri].preview.is_none());
-            assert_eq!(server.scheduler.pending.len(), 1);
-            assert!(server.scheduler.pending.contains_key(&2.into()));
-            let remaining = &server.scheduler.pending[&2.into()];
-            assert_eq!(
-                *server.scheduler.translations[&remaining.ticket]
-                    .deadline
-                    .borrow(),
-                Some(remaining.deadline)
-            );
-        }
-        tail.release.notify_one();
-        if mode == "hover" {
-            assert!(server.scheduler.translations.is_empty());
-            assert!(server.scheduler.pending.is_empty());
-        } else {
-            let completion = next(&completions).await;
-            assert!(
-                completion.result.is_ok(),
-                "{mode}: operation was restarted or timed out"
-            );
-            server.finish(&connection, completion).unwrap();
-            assert!(server.documents[&uri].preview.is_some());
-            let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
-                panic!("Expected one ready notification");
-            };
-            assert_eq!(
-                notification.params,
-                json!({"type":3,"message":TRANSLATION_READY})
-            );
-            let count = if mode == "late-hover" { 2 } else { 1 };
-            for _ in 0..count {
-                let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-                    panic!("Expected successful waiter");
-                };
-                assert!(response.response_result.is_ok(), "{mode}");
+                None
             }
-            assert!(client.receiver.try_recv().is_err());
-            assert!(server.scheduler.pending.is_empty());
-            assert!(server.scheduler.translations.is_empty());
-        }
-        assert_eq!(
-            fixture
-                .state
-                .lock()
-                .unwrap()
-                .records
-                .iter()
-                .filter(|r| r.path == "/v1/responses")
-                .count(),
-            1,
-            "{mode}: HTTP must not restart on deadline update"
-        );
-        assert_eq!(server.documents[&uri].text(), Some(source));
-        drop(completions);
-        let before = Instant::now();
-        drop(server);
-        assert!(before.elapsed() < Duration::from_millis(200));
-    }
+        })
+        .collect();
+    assert_eq!(responses.len(), 2);
+    assert!(responses.iter().all(|r| r.response_result.is_err()));
+    assert_eq!(response_calls(&fixture), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2059,7 +1863,7 @@ async fn explicit_preview_reports_admission_refresh_and_stream_failures() {
         assert_eq!(error.code, ErrorCode::RequestFailed as i32);
         assert!(!error.message.contains(source));
         assert!(!error.message.contains("synthetic-access-0"));
-        assert!(server.documents[&uri].preview.is_none());
+        assert!(server.cache.latest(&uri).is_none());
         assert_eq!(server.documents[&uri].text(), Some(source));
         if mode == "refresh" {
             assert!(error.message.contains("code=invalid_grant"));
@@ -2181,6 +1985,9 @@ async fn administration_reports_admission_worker_and_deadline_failures_but_not_c
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
     server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    server
         .request(
             &connection,
             Request::new(4.into(), ExecuteCommand::METHOD.into(), usage),
@@ -2238,16 +2045,21 @@ async fn chatgpt_worker_coalesces_and_invalidates_completed_cache_on_account_cha
     );
     let hover =
         || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    let worker_jobs = server.jobs.take().unwrap();
+    let (held_sender, mut held) = queue::channel(2);
+    server.jobs = Some(held_sender);
     assert!(server.hover(RequestId::from(1), hover()).unwrap().is_none());
     assert!(server.hover(RequestId::from(2), hover()).unwrap().is_none());
     assert_eq!(server.scheduler.translations.len(), 1);
+    worker_jobs.try_send(held.recv().await.unwrap()).unwrap();
+    server.jobs = Some(worker_jobs);
     server
         .cancel(&connection, &RequestId::from(1), ErrorCode::RequestCanceled)
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.cache.latest(&uri).is_some());
     assert!(server.hover(RequestId::from(3), hover()).unwrap().is_some());
     let records = fixture.state.lock().unwrap().records.clone();
     assert_eq!(
@@ -2268,7 +2080,7 @@ async fn chatgpt_worker_coalesces_and_invalidates_completed_cache_on_account_cha
     // A second registration changes the key and starts a fresh inference.
     fixture.connected(&auth, 3600).await;
     assert!(server.hover(RequestId::from(4), hover()).unwrap().is_none());
-    assert!(server.documents[&uri].preview.is_none());
+    assert!(server.cache.latest(&uri).is_none());
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
@@ -2339,7 +2151,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
         server
             .finish(&connection, next(&completions).await)
             .unwrap();
-        assert!(server.documents[&uri].preview.is_none(), "SSE mode {mode}");
+        assert!(server.cache.latest(&uri).is_none(), "SSE mode {mode}");
         assert!(server.scheduler.pending.is_empty());
         assert!(server.scheduler.translations.is_empty());
         let Message::Response(response) = client.receiver.try_recv().unwrap() else {
@@ -2372,7 +2184,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
             server
                 .finish(&connection, next(&completions).await)
                 .unwrap();
-            assert!(server.documents[&uri].preview.is_some());
+            assert!(server.cache.latest(&uri).is_some());
             assert!(server.hover(RequestId::from(3), hover()).unwrap().is_some());
             assert_eq!(
                 fixture
@@ -2445,13 +2257,13 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             target_language: "ja".into(),
         };
         server
-            .queue(2.into(), target, PendingReply::Command)
+            .queue(2.into(), target, PendingReply::Hover(Position::new(0, 5)))
             .unwrap();
         let ticket = server.scheduler.pending[&1.into()].ticket;
         assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
         assert_eq!(
             *server.scheduler.translations[&ticket].deadline.borrow(),
-            Some(server.scheduler.pending[&2.into()].deadline)
+            server.scheduler.translations[&ticket].execution_deadline()
         );
         assert!(
             matches!(completions.try_recv().unwrap(), WorkerEvent::Started(started) if started == ticket)
@@ -2460,7 +2272,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             completions.is_empty(),
             "Stream EOF has not completed the worker"
         );
-        assert!(server.documents[&uri].preview.is_none());
+        assert!(server.cache.latest(&uri).is_none());
         assert_eq!(
             fixture
                 .state
@@ -2506,7 +2318,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         assert!(client.receiver.try_recv().is_err());
         assert!(server.scheduler.pending.is_empty());
         assert!(server.scheduler.translations.is_empty());
-        assert!(server.documents[&uri].preview.is_none());
+        assert!(server.cache.latest(&uri).is_none());
         let start = Instant::now();
         drop(completions);
         drop(server);
@@ -2571,13 +2383,10 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
             .finish(&connection, next(&completions).await)
             .unwrap();
         if mode.is_empty() {
-            assert_eq!(
-                server.documents[&uri].preview.as_ref().unwrap().range,
-                first
-            );
+            assert_eq!(server.cache.latest(&uri).as_ref().unwrap().range, first);
         }
     }
-    assert!(server.documents[&uri].preview.is_none());
+    assert!(server.cache.latest(&uri).is_some());
     server.publish_activity();
     let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
         panic!("Expected background failure status");
@@ -2586,36 +2395,37 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     let message = status.params["message"].as_str().unwrap();
     assert!(message.contains("OpenAI completed without translation text"));
     let target = server.selection.as_ref().unwrap().target.clone();
-    server
+    let reply = server
         .queue(1.into(), target.clone(), PendingReply::Command)
+        .unwrap()
         .unwrap();
+    respond(&connection, 1.into(), Ok(reply)).unwrap();
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert_eq!(command_notice(&client, 1, 1).unwrap_err().message, message);
+    assert!(
+        command_notice(&client, 1, 1)
+            .unwrap_err()
+            .message
+            .contains(message)
+    );
     fixture.state.lock().unwrap().response_mode.clear();
-    server
+    let reply = server
         .queue(2.into(), target, PendingReply::Command)
+        .unwrap()
         .unwrap();
+    respond(&connection, 2.into(), Ok(reply)).unwrap();
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
     command_notice(&client, 2, 3).unwrap();
-    assert_eq!(
-        server.documents[&uri].preview.as_ref().unwrap().range,
-        second
-    );
+    assert_eq!(server.cache.latest(&uri).as_ref().unwrap().range, second);
     for range in [first, second] {
         markdown_actions(&mut server, &uri, range);
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
-        server
-            .finish(&connection, next(&completions).await)
-            .unwrap();
-        assert_eq!(
-            server.documents[&uri].preview.as_ref().unwrap().range,
-            range
-        );
+        assert!(server.cache.exact(&uri, range, false).is_some());
+        assert!(server.scheduler.translations.is_empty());
     }
     server.publish_activity();
     let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
@@ -2625,363 +2435,99 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     assert_eq!(server.documents[&uri].text().unwrap(), source);
     assert!(server.scheduler.pending.is_empty());
     assert!(server.scheduler.translations.is_empty());
-    assert_eq!(response_calls(&fixture), 6);
+    assert_eq!(response_calls(&fixture), 4);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn background_owners_share_one_http_and_keep_waiter_deadlines_independent() {
-    for mode in [
-        "deselect",
-        "auto-disabled",
-        "cancel-clients",
-        "background-expiry",
-    ] {
-        let fixture = Fixture::new().await;
-        fixture.state.lock().unwrap().stream_tail_delay =
-            Duration::from_millis(if mode == "background-expiry" {
-                900
-            } else {
-                550
-            });
-        let auth = fixture.auth();
-        fixture.connected(&auth, 3600).await;
-        let provider = ChatGptProvider::synthetic(
-            auth,
-            format!("{}/v1", fixture.base),
-            "synthetic-model".into(),
-        );
-        let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
-        let mut server = Server::configured(
-            finished,
-            provider,
-            Settings {
-                hover_timeout_ms: 400,
-                selection_timeout_ms: 800,
-                ..Default::default()
-            },
-            Ui::new(
-                connection.sender.clone(),
-                UiCapabilities {
-                    show_document: true,
-                    ..Default::default()
-                },
-            ),
+async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation() {
+    let (fixture, mut server, connection, client, completions, uri) =
+        range_server(Settings::default()).await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let target = range_target(&server, &uri, 0);
+    markdown_actions(&mut server, &uri, target.range);
+    server.selection.as_mut().unwrap().start = Some(Instant::now());
+    server.expire(&connection).unwrap();
+    wait_held(&tail, 1).await;
+    server
+        .queue(
+            1.into(),
+            target.clone(),
+            PendingReply::Hover(Position::new(0, 3)),
         )
         .unwrap();
-        let uri: Uri = "file:///background.md".parse().unwrap();
-        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
-        server.documents.insert(
-            uri.clone(),
-            Document::new(1, 1, "markdown".into(), "First sentence.".into()),
-        );
-        assert_eq!(markdown_actions(&mut server, &uri, range).len(), 3);
-        assert!(server.scheduler.translations.is_empty());
-        let due = server.selection.as_ref().unwrap().start.unwrap();
-        assert!(due > Instant::now() + Duration::from_millis(400));
-        markdown_actions(&mut server, &uri, range);
-        assert_eq!(
-            server.selection.as_ref().unwrap().start,
-            Some(due),
-            "Same range must not reset stability"
-        );
+    assert_eq!(
+        server
+            .queue(2.into(), target.clone(), PendingReply::Command)
+            .unwrap(),
+        Some(Value::Null)
+    );
+    assert!(!server.scheduler.pending.contains_key(&2.into()));
+    server
+        .cancel(&connection, &1.into(), ErrorCode::RequestCanceled)
+        .unwrap();
+    server
+        .cancel(&connection, &2.into(), ErrorCode::RequestCanceled)
+        .unwrap();
+    markdown_actions(&mut server, &uri, Range::default());
+    assert_eq!(server.scheduler.translations.len(), 1);
+    tail.release.notify_one();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.cache.exact(&uri, target.range, false).is_some());
+    assert_eq!(response_calls(&fixture), 1);
+    assert!(client.receiver.try_iter().any(|m| matches!(m, Message::Notification(n) if n.params["message"].as_str().is_some_and(|m| m.contains("ranges.md:1-1")))));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_ticket() {
+    let (fixture, mut server, connection, _client, completions, uri) =
+        range_server(Settings::default()).await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    for line in [0, 2, 4] {
+        let target = range_target(&server, &uri, line);
+        markdown_actions(&mut server, &uri, target.range);
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
-        let ticket = *server.scheduler.translations.keys().next().unwrap();
-        let target = server.selection.as_ref().unwrap().target.clone();
-        if mode == "background-expiry" {
-            tokio::time::sleep(Duration::from_millis(650)).await;
-        }
-        server
-            .hover(
-                1.into(),
-                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}}))
-                    .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(server.scheduler.pending[&1.into()].ticket, ticket);
-        if mode == "background-expiry" {
-            tokio::time::sleep(Duration::from_millis(170)).await;
-            server.expire(&connection).unwrap();
-            assert!(
-                server.scheduler.translations[&ticket]
-                    .background_deadline
-                    .is_none()
-            );
-            assert!(client.receiver.try_recv().is_err());
-        } else {
-            server
-                .queue(2.into(), target, PendingReply::Command)
-                .unwrap();
-            assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
-            if matches!(mode, "deselect" | "auto-disabled") {
-                if mode == "auto-disabled" {
-                    // Exercise retirement with an existing owner; public settings apply on restart.
-                    server.settings.markdown_auto_translate = false;
-                    markdown_actions(&mut server, &uri, range);
-                } else {
-                    markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
-                }
-                assert!(server.selection.is_none());
-                assert!(
-                    server.scheduler.translations[&ticket]
-                        .background_deadline
-                        .is_none()
-                );
-                tokio::time::sleep(Duration::from_millis(420)).await;
-                server.expire(&connection).unwrap();
-                let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-                    panic!("Expected expired Hover");
-                };
-                assert_eq!(response.id, 1.into());
-                assert_eq!(
-                    response.response_result.unwrap_err().code,
-                    ErrorCode::RequestFailed as i32
-                );
-            } else {
-                for id in [1, 2] {
-                    server
-                        .cancel(&connection, &id.into(), ErrorCode::RequestCanceled)
-                        .unwrap();
-                    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-                        panic!("Expected cancellation");
-                    };
-                    assert_eq!(
-                        response.response_result.unwrap_err().code,
-                        ErrorCode::RequestCanceled as i32
-                    );
-                }
-                assert!(
-                    server.scheduler.translations[&ticket]
-                        .background_deadline
-                        .is_some()
-                );
-            }
-            assert!(client.receiver.try_recv().is_err());
-        }
-        let completion = next(&completions).await;
-        assert!(
-            completion.result.is_ok(),
-            "{mode}: {:?}",
-            completion.result.as_ref().err()
-        );
-        server.finish(&connection, completion).unwrap();
-        assert!(server.documents[&uri].preview.is_some(), "{mode}");
-        if matches!(mode, "deselect" | "auto-disabled") {
-            command_notice(&client, 2, 3).unwrap();
-        } else if mode == "background-expiry" {
-            let Message::Response(response) = client.receiver.try_recv().unwrap() else {
-                panic!("Expected Hover result");
-            };
-            assert!(response.response_result.is_ok());
-        }
-        assert!(
-            client.receiver.try_recv().is_err(),
-            "Background success must be silent"
-        );
-        assert_eq!(
-            fixture
-                .state
-                .lock()
-                .unwrap()
-                .records
-                .iter()
-                .filter(|record| record.path == "/v1/responses")
-                .count(),
-            1
-        );
-        assert_eq!(server.documents[&uri].text(), Some("First sentence."));
-        drop(completions);
-        drop(server);
     }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn background_selection_changes_cancel_silently_and_failures_do_not_retry() {
-    for mode in [
-        "new-range",
-        "empty",
-        "edit",
-        "close",
-        "account",
-        "shutdown",
-        "failure",
-    ] {
-        let fixture = Fixture::new().await;
-        if mode == "failure" {
-            fixture.state.lock().unwrap().failure = Some((
-                400,
-                json!({"error":{"code":"synthetic_failure","message":"synthetic failure"}}),
-            ));
-        } else if mode != "new-range" {
-            fixture.state.lock().unwrap().stream_tail_delay = Duration::from_secs(5);
-        }
-        let auth = fixture.auth();
-        fixture.connected(&auth, 3600).await;
-        let provider = ChatGptProvider::synthetic(
-            auth.clone(),
-            format!("{}/v1", fixture.base),
-            "synthetic-model".into(),
-        );
-        let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
-        let mut server = Server::configured(
-            finished,
-            provider,
-            Settings::default(),
-            Ui::new(
-                connection.sender.clone(),
-                UiCapabilities {
-                    show_document: true,
-                    ..Default::default()
-                },
-            ),
-        )
+    assert_eq!(server.scheduler.translations.len(), 3);
+    wait_held(&tail, 2).await;
+    markdown_actions(&mut server, &uri, Range::default());
+    let canceled = server
+        .scheduler
+        .ticket(&range_target(&server, &uri, 2))
         .unwrap();
-        let uri: Uri = "file:///changes.md".parse().unwrap();
-        let range = Range::new(Position::new(0, 0), Position::new(0, 15));
-        server.documents.insert(
-            uri.clone(),
-            Document::new(
-                1,
-                1,
-                "Markdown".into(),
-                "First sentence.\nSecond sentence.".into(),
-            ),
-        );
-        markdown_actions(&mut server, &uri, range);
-        if mode == "new-range" {
-            let second = Range::new(Position::new(1, 0), Position::new(1, 16));
-            markdown_actions(&mut server, &uri, second);
-            server.selection.as_mut().unwrap().start = Some(Instant::now());
-            server.expire(&connection).unwrap();
-            server
-                .finish(&connection, next(&completions).await)
-                .unwrap();
-            assert_eq!(
-                server.documents[&uri].preview.as_ref().unwrap().range,
-                second
-            );
-            let records = fixture.state.lock().unwrap().records.clone();
-            let body = &records
-                .iter()
-                .find(|record| record.path == "/v1/responses")
-                .unwrap()
-                .body;
-            assert!(body.contains("Second sentence."));
-            assert!(!body.contains("First sentence."));
-        } else {
-            server.selection.as_mut().unwrap().start = Some(Instant::now());
-            server.expire(&connection).unwrap();
-            if mode == "failure" {
-                server
-                    .finish(&connection, next(&completions).await)
-                    .unwrap();
-                fixture.state.lock().unwrap().failure = None;
-                for _ in 0..2 {
-                    markdown_actions(&mut server, &uri, range);
-                    server.expire(&connection).unwrap();
-                    assert!(server.selection.as_ref().unwrap().start.is_none());
-                }
-                assert!(server.documents[&uri].preview.is_none());
-                let target = server.selection.as_ref().unwrap().target.clone();
-                server
-                    .queue(1.into(), target, PendingReply::Command)
-                    .unwrap();
-                server
-                    .finish(&connection, next(&completions).await)
-                    .unwrap();
-                command_notice(&client, 1, 3).unwrap();
-                assert!(server.documents[&uri].preview.is_some());
-                assert_eq!(
-                    fixture
-                        .state
-                        .lock()
-                        .unwrap()
-                        .records
-                        .iter()
-                        .filter(|record| record.path == "/v1/responses")
-                        .count(),
-                    2
-                );
-            } else {
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    loop {
-                        if fixture
-                            .state
-                            .lock()
-                            .unwrap()
-                            .records
-                            .iter()
-                            .any(|record| record.path == "/v1/responses")
-                        {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                })
-                .await
-                .unwrap();
-                match mode {
-                    "empty" => {
-                        markdown_actions(&mut server, &uri, Range::new(range.start, range.start));
-                    }
-                    "edit" => {
-                        server
-                            .notification(
-                                &connection,
-                                lsp_server::Notification::new(
-                                    "textDocument/didChange".into(),
-                                    json!({
-                                        "textDocument": {"uri": uri, "version": 2},
-                                        "contentChanges": [{"text": "Changed sentence."}]
-                                    }),
-                                ),
-                            )
-                            .unwrap();
-                    }
-                    "close" => {
-                        server
-                            .notification(
-                                &connection,
-                                lsp_server::Notification::new(
-                                    "textDocument/didClose".into(),
-                                    json!({"textDocument":{"uri":uri}}),
-                                ),
-                            )
-                            .unwrap();
-                    }
-                    "account" => {
-                        fixture.connected(&auth, 3600).await;
-                        let completion = next(&completions).await;
-                        assert!(
-                            matches!(&completion.result,Err(error) if error.kind == ErrorKind::Modified)
-                        );
-                        server.finish(&connection, completion).unwrap();
-                    }
-                    _ => {
-                        server.cancel_all(&connection).unwrap();
-                    }
-                }
-                assert!(server.scheduler.translations.is_empty());
-                assert!(server.scheduler.pending.is_empty());
-                assert!(
-                    server
-                        .documents
-                        .get(&uri)
-                        .is_none_or(|doc| doc.preview.is_none())
-                );
-            }
-        }
-        assert!(
-            client.receiver.try_recv().is_err(),
-            "Background outcome/cancellation must be silent"
-        );
-        drop(completions);
-        let before = Instant::now();
-        drop(server);
-        assert!(before.elapsed() < Duration::from_millis(500));
+    server
+        .cancel_range(&connection, canceled, ErrorCode::RequestCanceled)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    wait_held(&tail, 2).await;
+    for _ in 0..2 {
+        tail.release.notify_one();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
     }
+    for line in [0, 4] {
+        assert!(
+            server
+                .cache
+                .exact(&uri, range_target(&server, &uri, line).range, false)
+                .is_some()
+        );
+    }
+    assert!(
+        server
+            .cache
+            .exact(&uri, range_target(&server, &uri, 2).range, false)
+            .is_none()
+    );
+    assert!(server.scheduler.translations.is_empty());
+    assert_eq!(response_calls(&fixture), 3);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3198,8 +2744,9 @@ async fn automatic_selection_uses_document_code_context_and_sends_only_selected_
             for literal in ["retry_count", "https://example.test/path"] {
                 if selected.contains(literal) {
                     assert!(
-                        server.documents[&uri]
-                            .preview
+                        server
+                            .cache
+                            .latest(&uri)
                             .as_ref()
                             .unwrap()
                             .translation
@@ -3470,12 +3017,18 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
             uri.clone(),
             Document::new(1, 1, "rust".into(), "// sentence".into()),
         );
-        server.documents.get_mut(&uri).unwrap().preview = Some(Preview {
-            context: Context::Mock,
-            range: Range::new(Position::new(0, 0), Position::new(0, 11)),
-            translation: "cached".into(),
-            is_comment: true,
-        });
+        server.cache.insert(
+            uri.clone(),
+            0,
+            Preview {
+                context: Context::Mock,
+                range: Range::new(Position::new(0, 0), Position::new(0, 11)),
+                translation: "cached".into(),
+                is_comment: true,
+            },
+            false,
+            false,
+        );
         let state = server.provider.auth_ui_state();
         server
             .execute_command(
@@ -3507,7 +3060,7 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
         assert!(response.response_result.unwrap().is_null());
         assert!(client.receiver.try_recv().is_err());
         assert_eq!(
-            server.documents[&uri].preview.as_ref().unwrap().translation,
+            server.cache.latest(&uri).as_ref().unwrap().translation,
             "cached"
         );
         drop(locked);
@@ -3992,7 +3545,7 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.documents[&uri].preview.is_none());
+    assert!(server.cache.latest(&uri).is_none());
     client.receiver.try_recv().unwrap();
     assert!(server.hover(2.into(), hover()).is_err());
     assert_eq!(response_calls(&fixture), 1);
@@ -4010,7 +3563,7 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.documents[&uri].preview.is_some());
+    assert!(server.cache.latest(&uri).is_some());
     assert_eq!(response_calls(&fixture), 2);
     provider
         .admit(
@@ -4171,8 +3724,246 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
     }
     assert_eq!(response_calls(&fixture), 4);
     assert_eq!(client.receiver.try_iter().count(), 4);
-    assert!(
-        uris.iter()
-            .all(|uri| server.documents[uri].preview.is_some())
+    assert!(uris.iter().all(|uri| server.cache.latest(uri).is_some()));
+}
+
+async fn range_server(
+    settings: Settings,
+) -> (
+    Fixture,
+    Server<ChatGptProvider>,
+    Connection,
+    Connection,
+    crossbeam_channel::Receiver<WorkerEvent>,
+    Uri,
+) {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
     );
+    let (connection, client) = Connection::memory();
+    let (finished, completions) = bounded(MAX_JOBS);
+    let mut server = Server::configured(
+        finished,
+        provider,
+        settings,
+        Ui::new(
+            connection.sender.clone(),
+            UiCapabilities {
+                show_document: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap();
+    let uri: Uri = "file:///ranges.md".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(
+            1,
+            1,
+            "markdown".into(),
+            "Alpha sentence.\n\nBravo sentence.\n\nThird sentence.".into(),
+        ),
+    );
+    (fixture, server, connection, client, completions, uri)
+}
+fn range_target(server: &Server<ChatGptProvider>, uri: &Uri, line: u32) -> TranslationTarget {
+    let document = &server.documents[uri];
+    TranslationTarget {
+        uri: uri.clone(),
+        version: document.version,
+        session: document.session,
+        range: Range::new(Position::new(line, 0), Position::new(line, 15)),
+        target_language: "ja".into(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_allows_fresh_retry()
+{
+    let mut settings = Settings::default();
+    settings.translation_limits.work.concurrent = 1;
+    let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
+    fixture.state.lock().unwrap().failure = Some((
+        429,
+        json!({"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"Synthetic limit"}}),
+    ));
+    let worker_jobs = server.jobs.take().unwrap();
+    let (hold, mut held) = queue::channel(1);
+    server.jobs = Some(hold);
+    for line in [0, 2, 4] {
+        let target = range_target(&server, &uri, line);
+        assert_eq!(
+            server
+                .queue((line as i32 + 1).into(), target, PendingReply::Command)
+                .unwrap(),
+            Some(Value::Null)
+        );
+    }
+    worker_jobs.try_send(held.recv().await.unwrap()).unwrap();
+    server.jobs = Some(worker_jobs);
+    for _ in 0..3 {
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
+    assert_eq!(response_calls(&fixture), 1);
+    let notices: Vec<_> = client.receiver.try_iter().collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "one stop notification, not one per queued range"
+    );
+    assert!(matches!(&notices[0], Message::Notification(n) if n.params["type"] == 1));
+    for line in [0, 2, 4] {
+        let hover = server
+            .hover(
+                10.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":3}}))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("translation failed")
+        );
+    }
+    // An unsuccessful fresh retry still reports its own error even while the pause is unchanged.
+    let target = range_target(&server, &uri, 0);
+    server
+        .queue(20.into(), target.clone(), PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(response_calls(&fixture), 2);
+    assert!(
+        matches!(client.receiver.try_recv().unwrap(), Message::Notification(n) if n.params["type"] == 1)
+    );
+    fixture.state.lock().unwrap().failure = None;
+    server
+        .queue(21.into(), target.clone(), PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!(response_calls(&fixture), 3);
+    assert!(server.cache.exact(&uri, target.range, false).is_some());
+    server
+        .provider
+        .admit(
+            &server.provider.context().unwrap(),
+            crate::providers::Intent::Automatic,
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_breaks_it() {
+    let (fixture, mut server, connection, _client, completions, uri) =
+        range_server(Settings::default()).await;
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    let first = range_target(&server, &uri, 0);
+    markdown_actions(&mut server, &uri, first.range);
+    server.selection.as_mut().unwrap().start = Some(Instant::now());
+    server.expire(&connection).unwrap();
+    let old = server.scheduler.ticket(&first).unwrap();
+    wait_held(&tail, 1).await;
+    markdown_actions(&mut server, &uri, Range::default());
+    let adjusted = Range::new(Position::new(0, 0), Position::new(0, 5));
+    markdown_actions(&mut server, &uri, adjusted);
+    server.selection.as_mut().unwrap().start = Some(Instant::now());
+    server.expire(&connection).unwrap();
+    assert!(!server.scheduler.translations.contains_key(&old));
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let kept = server
+        .scheduler
+        .translations
+        .keys()
+        .copied()
+        .next()
+        .unwrap();
+    for range in [
+        range_target(&server, &uri, 2).range,
+        Range::new(Position::new(0, 0), Position::new(0, 7)),
+    ] {
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+    }
+    assert!(
+        server.scheduler.translations.contains_key(&kept),
+        "Returning from B must not cancel the earlier A"
+    );
+    assert_eq!(server.scheduler.translations.len(), 3);
+    // A fourth automatic selection remains an unaccepted candidate, and is replaced by a later candidate.
+    for end in [6, 9] {
+        let range = Range::new(Position::new(4, 0), Position::new(4, end));
+        markdown_actions(&mut server, &uri, range);
+        server.selection.as_mut().unwrap().start = Some(Instant::now());
+        server.expire(&connection).unwrap();
+        assert!(server.selection.as_ref().unwrap().start.is_some());
+        assert_eq!(server.scheduler.translations.len(), 3);
+    }
+    server.cancel_activity(&connection).unwrap();
+    drop(completions);
+    drop(server);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reselecting_a_cached_overlap_updates_display_order_without_http() {
+    let (fixture, mut server, connection, _client, completions, uri) =
+        range_server(Settings::default()).await;
+    let mut first = range_target(&server, &uri, 0);
+    first.range.end.character = 10;
+    let mut second = range_target(&server, &uri, 0);
+    second.range.start.character = 5;
+    for target in [first.clone(), second.clone()] {
+        server
+            .queue(1.into(), target, PendingReply::Command)
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+    }
+    let hover = |server: &mut Server<ChatGptProvider>| {
+        server
+            .hover(
+                2.into(),
+                parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":7}}))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    assert!(
+        hover(&mut server)["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("訳 sentence.")
+    );
+    assert_eq!(
+        server
+            .queue(3.into(), first, PendingReply::Command)
+            .unwrap(),
+        Some(Value::Null)
+    );
+    assert!(
+        hover(&mut server)["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("訳Alpha sent")
+    );
+    assert_eq!(response_calls(&fixture), 2);
 }

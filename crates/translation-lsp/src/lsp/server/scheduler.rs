@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) struct Pending {
-    pub(super) ticket: u64,
-    pub(super) deadline: Instant,
-    pub(super) reply: PendingReply,
+    pub ticket: u64,
+    pub deadline: Instant,
+    pub position: Position,
 }
 
 pub(super) enum PendingReply {
@@ -17,22 +17,50 @@ pub(super) enum TranslationRequest {
     Document,
 }
 
+impl TranslationRequest {
+    pub fn retained(&self) -> bool {
+        !matches!(self, Self::Reply(_, PendingReply::Hover(_)))
+    }
+    pub fn explicit(&self) -> bool {
+        matches!(self, Self::Document | Self::Reply(_, PendingReply::Command))
+    }
+
+    fn timeout(&self, settings: &Settings) -> Duration {
+        Duration::from_millis(match self {
+            Self::Document => settings.document_timeout_ms,
+            Self::Reply(_, PendingReply::Hover(_)) => settings.hover_timeout_ms,
+            _ => settings.selection_timeout_ms,
+        })
+    }
+}
+
+pub(super) struct PreparedTranslation {
+    pub target: TranslationTarget,
+    pub context: Context,
+    pub is_comment: bool,
+    pub task: Task,
+}
+
 pub(super) struct Translation {
-    pub(super) context: Context,
-    pub(super) phase: Phase,
-    pub(super) target: TranslationTarget,
-    pub(super) is_comment: bool,
-    pub(super) deadline: watch::Sender<Option<Instant>>,
-    pub(super) failure_notified: bool,
-    pub(super) background_deadline: Option<Instant>,
-    pub(super) document_deadline: Option<Instant>,
+    pub context: Context,
+    pub target: TranslationTarget,
+    pub is_comment: bool,
+    pub deadline: watch::Sender<Option<Instant>>,
+    pub automatic: bool,
+    pub manual: bool,
+    pub document: bool,
+    pub phase: Phase,
+    pub started: Option<Instant>,
+    pub limit: Duration,
+    pub task: Option<Task>,
 }
 
 impl Translation {
-    pub(super) fn detached_deadlines(&self) -> impl Iterator<Item = Instant> {
-        [self.background_deadline, self.document_deadline]
-            .into_iter()
-            .flatten()
+    pub fn retained(&self) -> bool {
+        self.automatic || self.manual || self.document
+    }
+    pub fn execution_deadline(&self) -> Option<Instant> {
+        self.started.map(|start| start + self.limit)
     }
 }
 
@@ -40,79 +68,465 @@ impl Translation {
 pub(super) struct Scheduler {
     pub pending: HashMap<RequestId, Pending>,
     pub translations: HashMap<u64, Translation>,
+    // Slots keep their dispatch category; adding another output does not start another operation.
+    // A canceled job occupies its slot until the worker acknowledges termination.
+    dispatched: HashMap<u64, bool>,
 }
 
 impl Scheduler {
-    pub fn owner_count(&self) -> usize {
-        self.pending.len()
-            + self
-                .translations
-                .values()
-                .map(|work| work.detached_deadlines().count())
-                .sum::<usize>()
-    }
-
     pub fn ticket(&self, target: &TranslationTarget) -> Option<u64> {
         self.translations
             .iter()
             .find_map(|(&ticket, work)| (&work.target == target).then_some(ticket))
     }
 
+    pub fn at(&self, uri: &Uri, position: Position) -> Option<TranslationTarget> {
+        self.translations
+            .iter()
+            .filter(|(_, w)| {
+                &w.target.uri == uri
+                    && (!w.document || w.manual || w.automatic)
+                    && w.target.range.start <= position
+                    && position <= w.target.range.end
+            })
+            .max_by_key(|(ticket, _)| *ticket)
+            .map(|(_, w)| w.target.clone())
+    }
+
+    pub fn admitted(&self) -> usize {
+        self.translations.len()
+            + self
+                .dispatched
+                .keys()
+                .filter(|ticket| !self.translations.contains_key(ticket))
+                .count()
+    }
+    pub fn automatic_count(&self) -> usize {
+        self.translations
+            .values()
+            .filter(|w| w.automatic && !w.manual && !w.document)
+            .count()
+    }
+    pub fn available(&self, settings: &Settings, automatic: bool) -> bool {
+        self.admitted() < settings.translation_limits.work.admitted
+            && (!automatic || self.automatic_count() < settings.translation_limits.work.automatic)
+    }
+
     pub fn join(
         &mut self,
         ticket: u64,
         request: TranslationRequest,
-        deadline: Instant,
+        settings: &Settings,
+        now: Instant,
     ) -> RequestResult<()> {
         let work = self
             .translations
             .get_mut(&ticket)
-            .expect("A joined ticket belongs to the scheduler");
+            .expect("Joined translation exists");
         if work
-            .deadline
-            .borrow()
-            .is_none_or(|deadline| deadline <= Instant::now())
+            .execution_deadline()
+            .is_some_and(|deadline| deadline <= now)
         {
             return Err(failure(ErrorCode::RequestFailed, "Translation timed out"));
         }
+        if matches!(
+            request,
+            TranslationRequest::Reply(_, PendingReply::Hover(_))
+        ) && self.pending.len() >= settings.translation_limits.work.hover_waiters
+        {
+            return Err(failure(
+                ErrorCode::RequestFailed,
+                "Too many pending Hover requests",
+            ));
+        }
+        // Repeated Hover joins never renew the operation's execution budget.
+        if request.retained() {
+            work.limit = work.limit.max(request.timeout(settings));
+        }
         match request {
-            TranslationRequest::Reply(id, reply) => {
+            TranslationRequest::Reply(id, PendingReply::Hover(position)) => {
                 self.pending.insert(
                     id,
                     Pending {
                         ticket,
-                        deadline,
-                        reply,
+                        deadline: now + Duration::from_millis(settings.hover_timeout_ms),
+                        position,
                     },
                 );
             }
-            TranslationRequest::Selection => work.background_deadline = Some(deadline),
+            TranslationRequest::Reply(_, PendingReply::Command) => {
+                work.manual = true;
+                if let Some(Task::Translation { intent, .. }) = work.task.as_mut() {
+                    *intent = crate::providers::Intent::Explicit;
+                }
+            }
+            TranslationRequest::Selection => work.automatic = true,
             TranslationRequest::Document => {
-                work.document_deadline.get_or_insert(deadline);
+                work.document = true;
+                if let Some(Task::Translation { intent, .. }) = work.task.as_mut() {
+                    *intent = crate::providers::Intent::Explicit;
+                }
             }
         }
         self.update_deadline(ticket);
         Ok(())
     }
 
-    pub(super) fn update_deadline(&mut self, ticket: u64) {
-        let deadline = self
+    pub fn insert(
+        &mut self,
+        ticket: u64,
+        prepared: PreparedTranslation,
+        request: TranslationRequest,
+        settings: &Settings,
+        now: Instant,
+    ) -> RequestResult<()> {
+        let PreparedTranslation {
+            target,
+            context,
+            is_comment,
+            task,
+        } = prepared;
+        let (deadline, _) = watch::channel(None);
+        self.translations.insert(
+            ticket,
+            Translation {
+                context,
+                target,
+                is_comment,
+                deadline,
+                automatic: false,
+                manual: false,
+                document: false,
+                phase: Phase::Queued,
+                started: None,
+                limit: request.timeout(settings),
+                task: Some(task),
+            },
+        );
+        if let Err(error) = self.join(ticket, request, settings, now) {
+            self.translations.remove(&ticket);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, ticket: u64) -> Option<Translation> {
+        let work = self.translations.remove(&ticket)?;
+        work.deadline.send_replace(None);
+        Some(work)
+    }
+
+    pub fn retire_automatic(&mut self, ticket: u64) {
+        if let Some(work) = self.translations.get_mut(&ticket) {
+            work.automatic = false;
+        }
+        self.update_deadline(ticket);
+    }
+
+    pub fn update_deadline(&mut self, ticket: u64) {
+        let waiter_deadline = self
             .pending
             .values()
-            .filter(|pending| pending.ticket == ticket)
-            .map(|pending| pending.deadline)
-            .chain(
-                self.translations
-                    .get(&ticket)
-                    .into_iter()
-                    .flat_map(Translation::detached_deadlines),
-            )
+            .filter(|p| p.ticket == ticket)
+            .map(|p| p.deadline)
             .max();
-        if let Some(work) = self.translations.get(&ticket) {
-            work.deadline.send_replace(deadline);
+        let Some(work) = self.translations.get(&ticket) else {
+            return;
+        };
+        if !work.retained() && waiter_deadline.is_none() {
+            self.remove(ticket);
+            return;
         }
-        if deadline.is_none() {
-            self.translations.remove(&ticket);
+        let deadline = work.execution_deadline().map(|cap| {
+            if work.retained() {
+                cap
+            } else {
+                cap.min(waiter_deadline.unwrap())
+            }
+        });
+        work.deadline.send_replace(deadline);
+    }
+
+    pub fn dispatch(
+        &mut self,
+        jobs: &JobSender,
+        settings: &Settings,
+        now: Instant,
+    ) -> RequestResult<()> {
+        let limits = settings.translation_limits.work;
+        while self.dispatched.len() < limits.concurrent {
+            let tabs = self.dispatched.values().filter(|tab| **tab).count();
+            let next = self
+                .translations
+                .iter()
+                .filter(|(_, work)| {
+                    work.task.is_some() && (!work.document || tabs < limits.documents)
+                })
+                .map(|(&ticket, _)| ticket)
+                .min();
+            let Some(ticket) = next else {
+                break;
+            };
+            let work = self.translations.get_mut(&ticket).unwrap();
+            work.started = Some(now);
+            let task = work.task.take().unwrap();
+            let deadline = work.deadline.subscribe();
+            let tab = work.document;
+            self.update_deadline(ticket);
+            jobs.try_send(Job {
+                ticket,
+                deadline,
+                task,
+            })
+            .map_err(|_| {
+                failure(
+                    ErrorCode::InternalError,
+                    "Translation worker is unavailable",
+                )
+            })?;
+            self.dispatched.insert(ticket, tab);
         }
+        Ok(())
+    }
+
+    pub fn terminated(&mut self, ticket: u64) {
+        self.dispatched.remove(&ticket);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add(
+        s: &mut Scheduler,
+        ticket: u64,
+        request: TranslationRequest,
+        settings: &Settings,
+        now: Instant,
+    ) {
+        let target = TranslationTarget {
+            uri: "file:///same.md".parse().unwrap(),
+            version: 1,
+            session: 1,
+            range: Range::new(
+                Position::new(ticket as u32, 0),
+                Position::new(ticket as u32, 5),
+            ),
+            target_language: "ja".into(),
+        };
+        let task = Task::Translation {
+            intent: crate::providers::Intent::Explicit,
+            generation: 0,
+            text: "source".into(),
+            target_language: "ja".into(),
+            context: Context::Mock,
+        };
+        s.insert(
+            ticket,
+            PreparedTranslation {
+                target,
+                context: Context::Mock,
+                is_comment: false,
+                task,
+            },
+            request,
+            settings,
+            now,
+        )
+        .unwrap();
+    }
+
+    fn manual() -> TranslationRequest {
+        TranslationRequest::Reply(0.into(), PendingReply::Command)
+    }
+
+    #[test]
+    fn dispatch_starts_absolute_budgets_and_only_terminal_events_release_slots() {
+        let settings = Settings::default();
+        let now = Instant::now();
+        let mut s = Scheduler::default();
+        let (jobs, mut received) = queue::channel(2);
+        for ticket in 1..=3 {
+            add(&mut s, ticket, manual(), &settings, now);
+        }
+        s.dispatch(&jobs, &settings, now).unwrap();
+        assert_eq!(received.try_recv().unwrap().ticket, 1);
+        assert_eq!(received.try_recv().unwrap().ticket, 2);
+        assert!(s.translations[&3].execution_deadline().is_none());
+        s.remove(1);
+        s.dispatch(&jobs, &settings, now + Duration::from_secs(20))
+            .unwrap();
+        assert!(received.try_recv().is_err());
+        s.terminated(1);
+        let later = now + Duration::from_secs(25);
+        s.dispatch(&jobs, &settings, later).unwrap();
+        assert_eq!(received.try_recv().unwrap().ticket, 3);
+        assert_eq!(
+            s.translations[&3].execution_deadline(),
+            Some(later + Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn hover_joins_do_not_renew_and_promotion_uses_original_start() {
+        let settings = Settings::default();
+        let now = Instant::now();
+        let mut s = Scheduler::default();
+        let (jobs, mut received) = queue::channel(2);
+        add(
+            &mut s,
+            1,
+            TranslationRequest::Reply(1.into(), PendingReply::Hover(Position::new(1, 2))),
+            &settings,
+            now,
+        );
+        s.dispatch(&jobs, &settings, now).unwrap();
+        received.try_recv().unwrap();
+        for id in 2..10 {
+            s.join(
+                1,
+                TranslationRequest::Reply(id.into(), PendingReply::Hover(Position::new(1, 2))),
+                &settings,
+                now + Duration::from_secs(10),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            s.translations[&1].execution_deadline(),
+            Some(now + Duration::from_secs(20))
+        );
+        s.join(1, manual(), &settings, now + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(
+            s.translations[&1].execution_deadline(),
+            Some(now + Duration::from_secs(30))
+        );
+        s.join(
+            1,
+            TranslationRequest::Document,
+            &settings,
+            now + Duration::from_secs(15),
+        )
+        .unwrap();
+        assert_eq!(
+            s.translations[&1].execution_deadline(),
+            Some(now + Duration::from_secs(180))
+        );
+        s.join(
+            1,
+            TranslationRequest::Document,
+            &settings,
+            now + Duration::from_secs(25),
+        )
+        .unwrap();
+        assert_eq!(
+            s.translations[&1].execution_deadline(),
+            Some(now + Duration::from_secs(180))
+        );
+        assert!(
+            s.at(&"file:///same.md".parse().unwrap(), Position::new(1, 2))
+                .is_some(),
+            "A shared tab must not hide its retained range from Hover"
+        );
+        s.pending.clear();
+        s.update_deadline(1);
+        assert!(s.translations.contains_key(&1));
+    }
+
+    #[test]
+    fn only_tab_slot_waiters_can_be_bypassed_and_automatic_limits_are_separate() {
+        let settings = Settings::default();
+        let now = Instant::now();
+        let mut s = Scheduler::default();
+        let (jobs, mut received) = queue::channel(2);
+        add(&mut s, 1, TranslationRequest::Document, &settings, now);
+        add(&mut s, 2, TranslationRequest::Document, &settings, now);
+        add(&mut s, 3, manual(), &settings, now);
+        s.dispatch(&jobs, &settings, now).unwrap();
+        assert_eq!(received.try_recv().unwrap().ticket, 1);
+        assert_eq!(received.try_recv().unwrap().ticket, 3);
+        s.remove(1);
+        s.terminated(1);
+        s.dispatch(&jobs, &settings, now).unwrap();
+        assert_eq!(received.try_recv().unwrap().ticket, 2);
+        for ticket in 4..=6 {
+            add(
+                &mut s,
+                ticket,
+                TranslationRequest::Selection,
+                &settings,
+                now,
+            );
+        }
+        assert!(!s.available(&settings, true));
+        assert!(s.available(&settings, false));
+        s.join(4, manual(), &settings, now).unwrap();
+        assert!(s.available(&settings, true));
+    }
+}
+
+#[cfg(test)]
+mod shared_outputs_tests {
+    use super::*;
+
+    #[test]
+    fn a_tab_subscriber_shares_a_running_range_without_another_slot() {
+        let settings = Settings::default();
+        let now = Instant::now();
+        let mut scheduler = Scheduler::default();
+        let (jobs, mut receiver) = queue::channel(2);
+        for ticket in 1..=2 {
+            let target = TranslationTarget {
+                uri: "file:///shared.md".parse().unwrap(),
+                version: 1,
+                session: 1,
+                range: Range::new(Position::new(ticket, 0), Position::new(ticket, 5)),
+                target_language: "ja".into(),
+            };
+            let task = Task::Translation {
+                intent: crate::providers::Intent::Explicit,
+                generation: 0,
+                text: "source".into(),
+                target_language: "ja".into(),
+                context: Context::Mock,
+            };
+            let request = if ticket == 1 {
+                TranslationRequest::Document
+            } else {
+                TranslationRequest::Reply(1.into(), PendingReply::Command)
+            };
+            scheduler
+                .insert(
+                    ticket as u64,
+                    PreparedTranslation {
+                        target,
+                        context: Context::Mock,
+                        is_comment: false,
+                        task,
+                    },
+                    request,
+                    &settings,
+                    now,
+                )
+                .unwrap();
+        }
+        scheduler.dispatch(&jobs, &settings, now).unwrap();
+        receiver.try_recv().unwrap();
+        receiver.try_recv().unwrap();
+        scheduler
+            .join(2, TranslationRequest::Document, &settings, now)
+            .unwrap();
+        assert_eq!(scheduler.dispatched.len(), 2);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            scheduler.translations[&2].execution_deadline(),
+            Some(now + Duration::from_millis(settings.document_timeout_ms))
+        );
+        assert!(
+            scheduler
+                .at(&"file:///shared.md".parse().unwrap(), Position::new(2, 3))
+                .is_some()
+        );
     }
 }
