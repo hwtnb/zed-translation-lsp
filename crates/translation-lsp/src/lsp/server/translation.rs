@@ -69,7 +69,7 @@ impl<P: TranslationProvider> Server<P> {
                 TranslationRequest::Document => {
                     self.preview_files.open(
                         &self.ui,
-                        &preview.translation,
+                        &preview,
                         document.language_id == "markdown",
                     )?;
                     Ok(None)
@@ -255,12 +255,12 @@ impl<P: TranslationProvider> Server<P> {
                 .output_kib
                 .check(translation.text.len(), SizeSetting::Output)
                 .map_err(|m| failure(ErrorCode::RequestFailed, &m.to_string()))?;
-            Ok(Preview {
-                range: work.target.range,
-                translation: translation.text,
-                context: translation.context,
-                is_comment: work.is_comment,
-            })
+            Ok(Preview::new(
+                translation.context,
+                work.target.range,
+                translation.text,
+                work.is_comment,
+            ))
         })();
         self.complete(connection, completion.ticket, &work, result, silent)?;
         self.dispatch().map_err(|e| e.message)?;
@@ -300,10 +300,7 @@ impl<P: TranslationProvider> Server<P> {
                         false,
                     );
                     let markdown = self.documents[&work.target.uri].language_id == "markdown";
-                    if let Err(error) =
-                        self.preview_files
-                            .open(&self.ui, &preview.translation, markdown)
-                    {
+                    if let Err(error) = self.preview_files.open(&self.ui, preview, markdown) {
                         self.command_failure(&failure(
                             ErrorCode::RequestFailed,
                             &format!("{}: {}", location(&work.target), error.message),
@@ -317,12 +314,12 @@ impl<P: TranslationProvider> Server<P> {
             {
                 self.record_problem(work, Problem::Failed(error.message.clone()));
                 if work.automatic || work.manual {
-                    let preview = Preview {
-                        range: work.target.range,
-                        context: work.context.clone(),
-                        translation: error.message.chars().take(2048).collect(),
-                        is_comment: false,
-                    };
+                    let preview = Preview::new(
+                        work.context.clone(),
+                        work.target.range,
+                        error.message.chars().take(2048).collect(),
+                        false,
+                    );
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,

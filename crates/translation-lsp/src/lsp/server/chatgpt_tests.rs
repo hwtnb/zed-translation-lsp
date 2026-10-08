@@ -3020,12 +3020,12 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
         server.cache.insert(
             uri.clone(),
             0,
-            Preview {
-                context: Context::Mock,
-                range: Range::new(Position::new(0, 0), Position::new(0, 11)),
-                translation: "cached".into(),
-                is_comment: true,
-            },
+            Preview::new(
+                Context::Mock,
+                Range::new(Position::new(0, 0), Position::new(0, 11)),
+                "cached".into(),
+                true,
+            ),
             false,
             false,
         );

@@ -5,6 +5,7 @@ pub(super) mod files;
 
 #[derive(Clone)]
 pub(crate) struct Preview {
+    id: uuid::Uuid,
     pub context: crate::providers::Context,
     pub range: Range,
     pub translation: String,
@@ -12,6 +13,21 @@ pub(crate) struct Preview {
 }
 
 impl Preview {
+    pub fn new(
+        context: crate::providers::Context,
+        range: Range,
+        translation: String,
+        is_comment: bool,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            context,
+            range,
+            translation,
+            is_comment,
+        }
+    }
+
     pub fn hover(&self, position: Position) -> Option<Hover> {
         // Zed keyboard hover uses the selection head, including the exclusive end.
         // Cached ranges match their own positions; there is no nearest-range fallback.
@@ -66,12 +82,12 @@ mod tests {
             crate::providers::Context::ChatGpt(auth.key().unwrap()),
         ] {
             let is_mock = matches!(context, crate::providers::Context::Mock);
-            let preview = Preview {
+            let preview = Preview::new(
                 context,
-                range: Range::new(Position::new(0, 0), Position::new(0, 1)),
-                translation: source.into(),
-                is_comment: false,
-            };
+                Range::new(Position::new(0, 0), Position::new(0, 1)),
+                source.into(),
+                false,
+            );
             let HoverContents::Markup(content) =
                 preview.hover(preview.range.start).unwrap().contents
             else {
@@ -125,12 +141,12 @@ mod tests {
     #[test]
     fn hover_includes_only_its_own_range_and_exact_end() {
         let range = Range::new(Position::new(1, 4), Position::new(2, 35));
-        let preview = Preview {
+        let preview = Preview::new(
+            crate::providers::Context::Mock,
             range,
-            translation: "模擬訳".into(),
-            context: crate::providers::Context::Mock,
-            is_comment: false,
-        };
+            "模擬訳".into(),
+            false,
+        );
         for position in [range.start, Position::new(2, 10), range.end] {
             assert_eq!(preview.hover(position).unwrap().range, Some(range));
         }

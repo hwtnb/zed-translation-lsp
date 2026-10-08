@@ -1922,6 +1922,10 @@ fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
             .unwrap()
             .to_file_path()
             .unwrap();
+        assert_eq!(
+            cached_path, path,
+            "Cached tab must reuse the same preview file"
+        );
         assert_eq!(std::fs::read_to_string(&cached_path).unwrap(), PARAGRAPH_JA);
         client.send(Response::new_ok(open.id, json!({"success":true})).into());
         assert!(client.receive(cached, TIMEOUT).unwrap().is_null());

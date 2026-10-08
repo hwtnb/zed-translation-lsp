@@ -178,12 +178,7 @@ mod tests {
     }
 
     fn preview(range: Range, text: &str) -> Preview {
-        Preview {
-            context: Context::Mock,
-            range,
-            translation: text.into(),
-            is_comment: false,
-        }
+        Preview::new(Context::Mock, range, text.into(), false)
     }
 
     fn value(hover: Hover) -> String {

@@ -138,6 +138,8 @@ These ceilings are a local resource policy, not measured hardware limits or prov
 
 Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`. They bound transport processing separately from the decoded translation; they do not allocate the maximum up front. Increasing a local limit does not increase the model's context or output capacity or extend the request deadline. Long documents are sent in one request, without automatic splitting. Failed, incomplete, and oversized results are not displayed or saved as completed translations.
 
+Reopening the same cached tab translation reuses its temporary file and focuses that document. If the file was deleted or its saved contents changed, the server creates a fresh preview without overwriting it. A newly translated result gets a separate file. Temporary previews are still removed on server exit; copies saved with Save As are preserved.
+
 Translations opened in a tab acknowledge the command immediately and open the result when translation completes. Full documents and selections both default to a three-minute execution budget, in addition to time spent in the queue. Text length does not automatically extend it. Use the range or all-translations cancellation Code Actions to stop pending work. Editing or closing the source document also prevents the result from opening.
 
 Unknown fields, wrong value types, and out-of-range values prevent the language server from starting and return an English settings error. Omitting a field uses its default.
