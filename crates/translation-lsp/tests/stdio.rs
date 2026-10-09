@@ -429,7 +429,8 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
         json!({"selection_timeout_ms":120001}),
         json!({"document_timeout_ms":600001}),
         json!({"selection_debounce_ms":99}),
-        json!({"markdown_auto_translate":"false"}),
+        json!({"features":{"automatic_selection":"false"}}),
+        json!({"markdown_auto_translate":false}),
         json!({"hover_timeout_ms":1.5}),
         json!({"unknown_setting":true}),
         json!({"translation_limits":{"input_kib":{"document":16385}}}),
@@ -599,7 +600,7 @@ fn public_deadlines_separate_hover_waiting_from_retained_execution() {
         &["--mock-delay-ms", "1400"],
         false,
         false,
-        json!({"hover_timeout_ms":1000,"selection_timeout_ms":1800,"markdown_auto_translate":false}),
+        json!({"hover_timeout_ms":1000,"selection_timeout_ms":1800,"features":{"automatic_selection":false}}),
     );
     let uri = "file:///configured-deadline.rs";
     client.open(uri, "rust", COMMENT_DOCUMENT, 1);
@@ -2244,7 +2245,7 @@ fn document_execution_deadline_starts_after_queue_waiting() {
         &["--mock-delay-ms", "1500"],
         false,
         false,
-        json!({"selection_timeout_ms":3000,"document_timeout_ms":1000,"markdown_auto_translate":false}),
+        json!({"selection_timeout_ms":3000,"document_timeout_ms":1000,"features":{"automatic_selection":false}}),
         true,
     );
     let mut blockers = Vec::new();
@@ -2652,6 +2653,268 @@ fn failed_ranges_offer_cursor_retry_and_reject_stale_retry_actions() {
                 .iter()
                 .any(|a| a["command"]["command"] == "translation-lsp.retry")
         );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn features_errors_name_the_language_or_the_feature_at_initialization() {
+    let generic = "Invalid translation settings: check field names and value types";
+    for (options, message) in [
+        (json!({"features": {"unknown": true}}), generic),
+        (json!({"features": {"comment_hover": "false"}}), generic),
+        (json!({"features": {"languages": []}}), generic),
+        (json!({"markdown_auto_translate": false}), generic),
+        (
+            json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
+            "features.languages keys must be one of rust, javascript, typescript, \
+             typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, markdown, plaintext",
+        ),
+        (
+            json!({"features": {"languages": {"rust": {"document_action": false}}}}),
+            "features.languages.rust.document_action is not available; document_action applies \
+             to markdown, plaintext",
+        ),
+    ] {
+        let mut client = Client::spawn(&[], false, false);
+        let error = client
+            .call(
+                "initialize",
+                json!({"capabilities": {}, "initializationOptions": options}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert_eq!(error.message, message);
+        client.notify("exit", Value::Null);
+        assert!(!client.child.wait().unwrap().success());
+    }
+}
+
+fn commands(actions: &Value) -> Vec<&str> {
+    actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["command"]["command"].as_str().unwrap())
+        .collect()
+}
+
+fn refuse(client: &mut Client, command: Value, feature: &str) {
+    let refused = client.execute(command);
+    let error = client.receive(refused, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32602);
+    assert_eq!(
+        error.message,
+        format!("The features setting turns off {feature} for this language")
+    );
+    assert_eq!(
+        client.notifications,
+        vec![json!({"type": 1, "message": error.message})]
+    );
+    client.notifications.clear();
+}
+
+fn ready(client: &mut Client, command: Value) {
+    let accepted = client.execute(command);
+    assert!(client.receive(accepted, TIMEOUT).unwrap().is_null());
+    let notice = client.notice();
+    assert_eq!(notice["type"], 3);
+    assert!(notice["message"].as_str().unwrap().ends_with(READY));
+}
+
+fn opened(client: &mut Client, command: Value) {
+    let accepted = client.execute(command);
+    while client.documents.is_empty() {
+        client.pump();
+    }
+    let open = client.documents.remove(0);
+    client.send(Response::new_ok(open.id, json!({"success": true})).into());
+    assert!(client.receive(accepted, TIMEOUT).unwrap().is_null());
+}
+
+#[test]
+fn comment_hover_switch_stops_new_hover_work_and_keeps_manual_results() {
+    for features in [
+        json!({"languages": {"yaml": {"comment_hover": false}}}),
+        json!({"comment_hover": false, "languages": {"toml": {"comment_hover": true}}}),
+    ] {
+        let mut client = Client::configured(
+            &["--mock-delay-ms", "150"],
+            false,
+            false,
+            json!({"features": features}),
+        );
+        let comment = |source: &'static str| {
+            let comment = &source[..source.find("failure.").unwrap() + "failure.".len()];
+            (comment, range_for(source, comment))
+        };
+        let uri = "file:///switch.yaml";
+        let source = include_str!("../../../samples/comment.yaml");
+        let (original, range) = comment(source);
+        client.open(uri, "yaml", source, 1);
+        assert!(client.hover(uri, range["start"].clone()).is_null());
+        // Work started by that Hover would still be running, and offer its cancellation.
+        let actions = client.actions(uri, range.clone());
+        assert_eq!(commands(&actions), ["translation-lsp.preview"]);
+        // A Hover during the manual translation joins it, and later ones read its result.
+        let command = client.execute(actions[0]["command"].clone());
+        let joined = client.request_hover(uri, range["start"].clone());
+        assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+        assert_preview(
+            &client.receive(joined, TIMEOUT).unwrap(),
+            original,
+            COMMENT_JA,
+            &range,
+        );
+        assert!(
+            client.notice()["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(READY)
+        );
+        assert_preview(
+            &client.hover(uri, range["end"].clone()),
+            original,
+            COMMENT_JA,
+            &range,
+        );
+        client.change(uri, 2, json!([{ "text": source }]));
+        assert!(client.hover(uri, range["start"].clone()).is_null());
+
+        let uri = "file:///switch.toml";
+        let source = include_str!("../../../samples/comment.toml");
+        let (original, range) = comment(source);
+        client.open(uri, "toml", source, 1);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            original,
+            COMMENT_JA,
+            &range,
+        );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn selection_action_switch_hides_the_action_and_refuses_its_command() {
+    for features in [
+        json!({"languages": {"markdown": {"selection_action": false}}}),
+        json!({
+            "selection_action": false,
+            "languages": {
+                "plaintext": {"selection_action": true},
+                "rust": {"selection_action": true}
+            }
+        }),
+    ] {
+        let mut client =
+            Client::configured_documents(&[], false, false, json!({"features": features}), true);
+        let range = range_for(PARAGRAPH, PARAGRAPH);
+        let uri = "file:///switch.md";
+        client.open(uri, "markdown", PARAGRAPH, 1);
+        let actions = client.actions(uri, range.clone());
+        assert_eq!(commands(&actions), ["translation-lsp.open-translation"]);
+        // The tab action carries the target that the hidden action would.
+        let mut command = actions[0]["command"].clone();
+        command["command"] = json!("translation-lsp.preview");
+        refuse(&mut client, command.clone(), "selection_action");
+        assert!(client.hover(uri, range["start"].clone()).is_null());
+        // The tab action and the retry command of the same language are unchanged.
+        opened(&mut client, actions[0]["command"].clone());
+        assert!(client.hover(uri, range["start"].clone()).is_null());
+        command["command"] = json!("translation-lsp.retry");
+        ready(&mut client, command);
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            PARAGRAPH,
+            PARAGRAPH_JA,
+            &range,
+        );
+
+        let uri = "file:///switch.txt";
+        client.open(uri, "plaintext", PARAGRAPH, 1);
+        let actions = client.actions(uri, range.clone());
+        assert_eq!(
+            commands(&actions),
+            [
+                "translation-lsp.preview",
+                "translation-lsp.open-translation"
+            ]
+        );
+        ready(&mut client, actions[0]["command"].clone());
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            PARAGRAPH,
+            PARAGRAPH_JA,
+            &range,
+        );
+
+        let uri = "file:///switch.rs";
+        let range = range_for(COMMENT_DOCUMENT, COMMENT);
+        client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+        client.action(uri, range.clone());
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            COMMENT,
+            COMMENT_JA,
+            &range,
+        );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn document_action_switch_hides_both_tab_actions_and_refuses_their_command() {
+    for features in [
+        json!({"languages": {"markdown": {"document_action": false}}}),
+        json!({"document_action": false, "languages": {"plaintext": {"document_action": true}}}),
+    ] {
+        let mut client =
+            Client::configured_documents(&[], false, false, json!({"features": features}), true);
+        let cursor = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}});
+        let range = range_for(PARAGRAPH, PARAGRAPH);
+        let uri = "file:///switch.md";
+        client.open(uri, "markdown", PARAGRAPH, 1);
+        assert_eq!(client.actions(uri, cursor.clone()), json!([]));
+        let actions = client.actions(uri, range.clone());
+        assert_eq!(commands(&actions), ["translation-lsp.preview"]);
+        // The selection action carries the target that the hidden action would.
+        let mut command = actions[0]["command"].clone();
+        command["command"] = json!("translation-lsp.open-translation");
+        refuse(&mut client, command, "document_action");
+        assert!(client.documents.is_empty());
+        // The selection action of the same language is unchanged.
+        ready(&mut client, actions[0]["command"].clone());
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            PARAGRAPH,
+            PARAGRAPH_JA,
+            &range,
+        );
+
+        let uri = "file:///switch.txt";
+        client.open(uri, "plaintext", PARAGRAPH, 1);
+        let titles = |actions: Value| -> Vec<String> {
+            actions
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|action| action["title"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            titles(client.actions(uri, range.clone())),
+            [
+                "Translate selection to ja",
+                "Translate selection to ja and open in tab"
+            ]
+        );
+        let actions = client.actions(uri, cursor);
+        assert_eq!(
+            titles(actions.clone()),
+            ["Translate document to ja and open in tab"]
+        );
+        opened(&mut client, actions[0]["command"].clone());
         client.finish(true);
     }
 }

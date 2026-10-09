@@ -12,7 +12,7 @@ Zed controls Hover placement and width. The extension cannot guarantee placement
 
 ## Markdown selection
 
-With ChatGPT connected and plan use enabled, or with the Anthropic provider selected, and `markdown_auto_translate` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
+With ChatGPT connected and plan use enabled, or with the Anthropic provider selected, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
 
 Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action.
 

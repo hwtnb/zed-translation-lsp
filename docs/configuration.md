@@ -24,8 +24,13 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
         "hover_timeout_ms": 20000,
         "selection_timeout_ms": 30000,
         "document_timeout_ms": 180000,
-        "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
+        "features": {
+          "comment_hover": true,
+          "automatic_selection": true,
+          "selection_action": true,
+          "document_action": true
+        },
         "translation_limits": {
           "input_kib": {
             "hover": 16,
@@ -74,11 +79,62 @@ To turn this extension off for one language, put `"!translation-lsp"` in that la
 }
 ```
 
-In that language, neither Hover translation nor the Code Actions appear.
+In that language, neither Hover translation nor the Code Actions appear. To turn off only some features in a language, use [`features`](#features).
 
 ## Translation languages
 
 UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language.
+
+## Features
+
+`features` turns each way of starting a translation on or off, for every language or for one language. Every value is a boolean.
+
+| Setting inside `features` | What it turns on or off | Language IDs |
+| --- | --- | --- |
+| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `json`, `jsonc`, `yaml`, `toml` |
+| `automatic_selection` | Starting a translation after a stable Markdown selection. | `markdown` |
+| `selection_action` | The `Translate selection to …` Code Action. | Every language ID in the table below |
+| `document_action` | The `Translate selection to … and open in tab` and `Translate document to … and open in tab` Code Actions. | `markdown`, `plaintext` |
+
+`features`, each setting inside it, `languages`, each language inside `languages`, and each setting of a language can be omitted. For a feature in a language, the value under `languages.<language ID>` applies. Without it, the value written directly inside `features` applies. Without that either, the feature is on.
+
+The following example turns tab translations off in every language, and comment Hover off in YAML and TOML:
+
+```json
+"features": {
+  "comment_hover": true,
+  "automatic_selection": true,
+  "selection_action": true,
+  "document_action": false,
+  "languages": {
+    "yaml": { "comment_hover": false },
+    "toml": { "comment_hover": false }
+  }
+}
+```
+
+Where `comment_hover` is off, Hover over a comment starts no translation. A translation started by `Translate selection to …` still appears on Hover. Where `selection_action` or `document_action` is off, its Code Actions are not listed. The cancel, retry, and account menu Code Actions are not affected.
+
+The keys of `languages` are the following language IDs, in lowercase:
+
+| Zed language | Language ID |
+| --- | --- |
+| Rust | `rust` |
+| JavaScript, including `.jsx` files | `javascript` |
+| TypeScript | `typescript` |
+| TSX (`.tsx` files) | `typescriptreact` |
+| CSharp | `csharp` |
+| C | `c` |
+| C++ | `cpp` |
+| Python | `python` |
+| JSON | `json` |
+| JSONC | `jsonc` |
+| YAML | `yaml` |
+| TOML | `toml` |
+| Markdown | `markdown` |
+| Plain Text | `plaintext` |
+
+Any other key of `languages`, such as `javascriptreact`, is a settings error. So is a feature written for a language outside its language IDs, such as `languages.rust.document_action`.
 
 ## Timing
 
@@ -89,7 +145,6 @@ Translation timing options are optional:
 | `hover_timeout_ms` | `20000` | Integer `1000`–`120000`, inclusive | Response deadline from receipt, including queue time, for each Hover request. |
 | `selection_timeout_ms` | `30000` | Integer `1000`–`120000`, inclusive | Execution budget from dispatch for retained manual selections and Markdown background translations. |
 | `document_timeout_ms` | `180000` | Integer `1000`–`600000`, inclusive | Execution budget from dispatch for full-document or selection translations opened in a tab; queue time is additional. |
-| `markdown_auto_translate` | `true` | Boolean | Start Markdown prose translation after a stable selection. Set `false` to keep manual selection translation and comment Hover. |
 | `selection_debounce_ms` | `450` | Integer `100`–`2000`, inclusive | Native server's wait after observing a new selection. Zed's own observation delay is additional. |
 
 ## Size limits

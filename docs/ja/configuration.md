@@ -24,8 +24,13 @@
         "hover_timeout_ms": 20000,
         "selection_timeout_ms": 30000,
         "document_timeout_ms": 180000,
-        "markdown_auto_translate": true,
         "selection_debounce_ms": 450,
+        "features": {
+          "comment_hover": true,
+          "automatic_selection": true,
+          "selection_action": true,
+          "document_action": true
+        },
         "translation_limits": {
           "input_kib": {
             "hover": 16,
@@ -74,11 +79,62 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 }
 ```
 
-その言語では、ホバーの翻訳もコードアクションも出なくなります。
+その言語では、ホバーの翻訳もコードアクションも出なくなります。一部の機能だけを止める場合は、[`features`](#機能の切り替え) を使います。
 
 ## 翻訳する言語
 
 画面上の表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。
+
+## 機能の切り替え
+
+`features` は、翻訳を始める機能を、すべての言語または言語ごとに切り替えます。値はすべて真偽値です。
+
+| `features` 内の設定 | 切り替える機能 | 言語ID |
+| --- | --- | --- |
+| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`json`、`jsonc`、`yaml`、`toml` |
+| `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
+| `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
+| `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
+
+`features`、その中の各設定、`languages`、`languages` の中の各言語、言語の中の各設定は、どれも省略できます。ある言語の機能には、`languages.<言語ID>` の値を使います。その値がなければ `features` の直下の値を使い、それもなければ有効です。
+
+次の例は、タブに開く翻訳をすべての言語で止め、コメントのホバーをYAMLとTOMLで止めます。
+
+```json
+"features": {
+  "comment_hover": true,
+  "automatic_selection": true,
+  "selection_action": true,
+  "document_action": false,
+  "languages": {
+    "yaml": { "comment_hover": false },
+    "toml": { "comment_hover": false }
+  }
+}
+```
+
+`comment_hover` を止めた言語では、コメントにホバーしても翻訳を始めません。`Translate selection to …` で始めた翻訳は、ホバーに表示します。`selection_action` または `document_action` を止めた言語では、そのコードアクションを一覧に出しません。取り消し、再試行、アカウントメニューのコードアクションは変わりません。
+
+`languages` のキーは次の言語IDで、小文字で書きます。
+
+| Zedの言語 | 言語ID |
+| --- | --- |
+| Rust | `rust` |
+| JavaScript（`.jsx` のファイルを含む） | `javascript` |
+| TypeScript | `typescript` |
+| TSX（`.tsx` のファイル） | `typescriptreact` |
+| CSharp | `csharp` |
+| C | `c` |
+| C++ | `cpp` |
+| Python | `python` |
+| JSON | `json` |
+| JSONC | `jsonc` |
+| YAML | `yaml` |
+| TOML | `toml` |
+| Markdown | `markdown` |
+| Plain Text | `plaintext` |
+
+`javascriptreact` など、これ以外のキーは設定エラーです。`languages.rust.document_action` のように、機能をその言語IDにない言語へ書いた場合も設定エラーです。
 
 ## タイミング
 
@@ -89,7 +145,6 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 | `hover_timeout_ms` | `20000` | 整数 `1000`〜`120000`、両端を含む | ホバー要求ごとの受信時からの応答期限。キュー待ちを含む。 |
 | `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 保持した手動選択・Markdownバックグラウンド翻訳の実行期限。ワーカー（翻訳処理を実行するタスク）へ渡した時点から計る。 |
 | `document_timeout_ms` | `180000` | 整数 `1000`〜`600000`、両端を含む | 別タブに開く文書・選択範囲の実行期限。ワーカーへ渡した時点から計り、キュー待ちは別。 |
-| `markdown_auto_translate` | `true` | 真偽値 | 安定したMarkdownの文章選択からバックグラウンド翻訳を始める。`false` でも手動選択翻訳とコメントのホバーを使える。 |
 | `selection_debounce_ms` | `450` | 整数 `100`〜`2000`、両端を含む | ネイティブサーバーが新しい選択を観測してから待つ時間。Zed側の観測待ちは別に加わる。 |
 
 ## サイズの上限

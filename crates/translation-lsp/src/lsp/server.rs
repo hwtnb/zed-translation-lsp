@@ -43,7 +43,7 @@ use tokio::sync::watch;
 use crate::{
     config::{
         AnthropicDocument, AnthropicEffort, ChatgptDocument, ProviderSettings, ReasoningEffort,
-        Settings, anthropic_thinking,
+        Settings, anthropic_thinking, features::Feature,
     },
     providers::{
         AuthUiState, Context, Interaction, Output, OutputOptions, Translated, TranslationProvider,
@@ -652,16 +652,26 @@ impl<P: TranslationProvider> Server<P> {
                 ),
             )?;
         }
-        if document.selection(params.range).is_ok_and(|text| {
-            text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
-        }) {
+        let enabled = |feature| {
+            self.settings
+                .features
+                .enables(feature, &document.language_id)
+        };
+        if enabled(Feature::SelectionAction)
+            && document.selection(params.range).is_ok_and(|text| {
+                text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
+            })
+        {
             add_action(
                 params.range,
                 COMMAND,
                 format!("Translate selection to {}", self.settings.target_language),
             )?;
         }
-        if document.supports_document_preview() && self.ui.capabilities.show_document {
+        if enabled(Feature::DocumentAction)
+            && document.supports_document_preview()
+            && self.ui.capabilities.show_document
+        {
             let (range, subject) = if params.range.start == params.range.end {
                 (document.full_range(), "document")
             } else {
@@ -732,7 +742,12 @@ impl<P: TranslationProvider> Server<P> {
             authorization?;
             return to_value(hover).map(Some);
         }
-        let Some(range) = range else {
+        // Turning comment Hover off only stops it from starting a translation.
+        let Some(range) = range.filter(|_| {
+            self.settings
+                .features
+                .enables(Feature::CommentHover, &document.language_id)
+        }) else {
             return Ok(Some(Value::Null));
         };
         let target = TranslationTarget {

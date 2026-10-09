@@ -1,8 +1,10 @@
 pub(crate) mod error;
+pub(crate) mod features;
 pub(crate) mod limits;
 
 use error::{ConfigError, bounded_number};
 
+use features::Features;
 use limits::TranslationLimits;
 use serde::Deserialize;
 use serde_json::Value;
@@ -17,8 +19,8 @@ pub(crate) struct Settings {
     pub hover_timeout_ms: u64,
     pub selection_timeout_ms: u64,
     pub document_timeout_ms: u64,
-    pub markdown_auto_translate: bool,
     pub selection_debounce_ms: u64,
+    pub features: Features,
 }
 
 #[derive(Clone, Deserialize)]
@@ -189,8 +191,8 @@ impl Default for Settings {
             hover_timeout_ms: 20_000,
             selection_timeout_ms: 30_000,
             document_timeout_ms: 180_000,
-            markdown_auto_translate: true,
             selection_debounce_ms: 450,
+            features: Features::default(),
         }
     }
 }
@@ -202,6 +204,7 @@ impl Settings {
             Some(options) => {
                 ProviderSettings::check_document_model(&options)?;
                 AnthropicEffort::check_choice(&options)?;
+                Features::check_languages(&options)?;
                 reject_arrays(&options)?;
                 serde_json::from_value(options)?
             }
@@ -569,7 +572,6 @@ mod tests {
             assert_eq!(settings.hover_timeout_ms, 20_000);
             assert_eq!(settings.selection_timeout_ms, 30_000);
             assert_eq!(settings.document_timeout_ms, 180_000);
-            assert!(settings.markdown_auto_translate);
             assert_eq!(settings.selection_debounce_ms, 450);
         }
         let settings = Settings::from_options(Some(json!({
@@ -827,21 +829,6 @@ mod tests {
             ] {
                 assert!(Settings::from_options(Some(json!({(field):value}))).is_err());
             }
-        }
-        assert!(
-            !Settings::from_options(Some(json!({"markdown_auto_translate":false})))
-                .unwrap()
-                .markdown_auto_translate
-        );
-        assert!(
-            Settings::from_options(Some(json!({"markdown_auto_translate":true})))
-                .unwrap()
-                .markdown_auto_translate
-        );
-        for value in [Value::Null, json!(0), json!("false")] {
-            assert!(
-                Settings::from_options(Some(json!({"markdown_auto_translate":value}))).is_err()
-            );
         }
         assert!(Settings::from_options(Some(json!({"unknown_setting":true}))).is_err());
     }

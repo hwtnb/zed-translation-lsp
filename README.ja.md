@@ -64,7 +64,7 @@ Pythonのコメントとドキュメンテーション文字列は [samples/comm
 | 操作 | 方法 |
 | --- | --- |
 | コメントのホバー | 対応するコードのコメントにマウスポインターを重ねるか、カーソルを置いてZedの `editor: hover` を実行します。 |
-| Markdownの選択 | ChatGPTが利用可能であるか、Anthropicプロバイダーを選んでいて、`markdown_auto_translate` が `true` の場合、Markdownの文章を選択して安定させるとバックグラウンドで翻訳します。その範囲でホバーを開いて訳文を読みます。 |
+| Markdownの選択 | ChatGPTが利用可能であるか、Anthropicプロバイダーを選んでいて、`features.automatic_selection` が `true` の場合、Markdownの文章を選択して安定させるとバックグラウンドで翻訳します。その範囲でホバーを開いて訳文を読みます。 |
 | `Translate selection to …` | すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。 |
 | `… and open in tab` | Markdownまたはプレーンテキスト（Zedの言語名は `Plain Text`）では、`Translate selection to … and open in tab` で訳文を別タブに開けます。選択がない場合は `Translate document to … and open in tab` となり、文書全体を翻訳します。 |
 | 取り消し | 1件を止めるには、その範囲にカーソルか選択範囲を置き、コードアクションの `Cancel translation of lines …` を実行します。`Cancel all translations` はアカウントメニューを残してすべての翻訳を取り消します。 |
@@ -75,14 +75,14 @@ Pythonのコメントとドキュメンテーション文字列は [samples/comm
 
 - コメントの上を通りすぎるだけでも、Zedがホバー要求を送って受け付けられた場合は、翻訳の利用量を消費します。
 - コメントに認証情報が書かれていれば、それも一緒に送信されます。
-- `markdown_auto_translate` が `true` の場合、Markdownの文章は、コピーのために選択しただけでも送信されることがあります。
+- `features.automatic_selection` が `true` の場合、Markdownの文章は、コピーのために選択しただけでも送信されることがあります。
 - 模擬モードでは、文章を外部へ送りません。
 
 1回の要求に含める内容は[送信する内容](docs/ja/usage.md#送信する内容)で説明します。費用は各プロバイダーのページで説明します。
 
 ## ドキュメント
 
-- [設定](docs/ja/configuration.md): 設定の全体例、サーバーのパス、翻訳する言語、タイミング、サイズの上限、受付とキャッシュの上限、モデルの変更。
+- [設定](docs/ja/configuration.md): 設定の全体例、サーバーのパス、翻訳する言語、機能の切り替え、タイミング、サイズの上限、受付とキャッシュの上限、モデルの変更。
 - [ChatGPT](docs/ja/providers/chatgpt.md): ChatGPTプロバイダーの設定と、アカウントへの接続。
 - [Anthropic API](docs/ja/providers/anthropic.md): Anthropicプロバイダーの設定と、APIキー。
 - [使い方](docs/ja/usage.md): ホバー、選択、タブに開く翻訳、状態表示、取り消しと再試行、送信する内容。

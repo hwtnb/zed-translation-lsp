@@ -1,4 +1,7 @@
-use super::limits::SizeSetting;
+use super::{
+    features::{Feature, LANGUAGE_IDS},
+    limits::SizeSetting,
+};
 
 #[derive(thiserror::Error)]
 pub(crate) enum ConfigError {
@@ -49,6 +52,16 @@ pub(crate) enum ConfigError {
     ThinkingRequired {
         scope: &'static str,
         effort: &'static str,
+    },
+    #[error("features.languages keys must be one of {}", LANGUAGE_IDS.join(", "))]
+    FeatureLanguage,
+    #[error(
+        "features.languages.{language}.{feature} is not available; {feature} applies to {}",
+        .feature.language_ids().join(", ")
+    )]
+    FeatureUnavailable {
+        language: &'static str,
+        feature: Feature,
     },
 }
 

@@ -20,7 +20,10 @@ impl<P: TranslationProvider> Server<P> {
             .documents
             .get_mut(&params.text_document.uri)
             .and_then(|document| {
-                if !self.settings.markdown_auto_translate
+                if !self
+                    .settings
+                    .features
+                    .enables(Feature::AutomaticSelection, &document.language_id)
                     || !P::capabilities().automatic_selection
                     || state != AuthUiState::Ready
                     || !document.language_id.eq_ignore_ascii_case("markdown")

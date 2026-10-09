@@ -193,15 +193,34 @@ impl<P: TranslationProvider> Server<P> {
                     "Document previews support Markdown and Plain Text",
                 ));
             }
+            self.check_feature(Feature::DocumentAction, &target)?;
             self.queue_translation(target, TranslationRequest::Document)?;
             Ok(Some(Value::Null))
         } else {
             let reply = if params.command == RETRY_COMMAND {
                 PendingReply::Retry
             } else {
+                self.check_feature(Feature::SelectionAction, &target)?;
                 PendingReply::Command
             };
             self.queue(id, target, reply)
         }
+    }
+
+    // The actions of a feature turned off are not listed, so its command can
+    // only come from a client that did not take it from the list.
+    fn check_feature(&self, feature: Feature, target: &TranslationTarget) -> RequestResult<()> {
+        if self.documents.get(&target.uri).is_some_and(|document| {
+            !self
+                .settings
+                .features
+                .enables(feature, &document.language_id)
+        }) {
+            return Err(failure(
+                ErrorCode::InvalidParams,
+                &format!("The features setting turns off {feature} for this language"),
+            ));
+        }
+        Ok(())
     }
 }

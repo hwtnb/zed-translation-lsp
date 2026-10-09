@@ -291,7 +291,21 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
-    for automatic in [false, true] {
+    for (features, automatic) in [
+        (json!({"automatic_selection": false}), false),
+        (json!({"automatic_selection": true}), true),
+        (
+            json!({"languages": {"markdown": {"automatic_selection": false}}}),
+            false,
+        ),
+        (
+            json!({
+                "automatic_selection": false,
+                "languages": {"markdown": {"automatic_selection": true}}
+            }),
+            true,
+        ),
+    ] {
         let fixture = Fixture::new().await;
         fixture.state.lock().unwrap().translation = Some("Translated sentence.".into());
         let auth = fixture.auth();
@@ -302,7 +316,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             "synthetic-model".into(),
         );
         let settings = Settings::from_options(Some(json!({
-            "target_language":"en", "markdown_auto_translate":automatic,
+            "target_language":"en", "features":features,
             "hover_timeout_ms":1000, "selection_timeout_ms":1500, "selection_debounce_ms":100,
             "provider":{"name":"chatgpt","model":"synthetic-model"}
         })))
