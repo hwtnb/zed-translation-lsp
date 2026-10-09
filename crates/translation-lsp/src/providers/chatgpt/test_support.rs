@@ -87,6 +87,8 @@ pub(crate) struct FixtureState {
     pub token_release: Option<Arc<tokio::sync::Notify>>,
     pub stream_tail_delay: Duration,
     pub stream_tail_gate: Option<Arc<StreamTailGate>>,
+    // Cut this many successful streams halfway by closing the connection.
+    pub interrupted_streams: usize,
     pub refreshes: usize,
     pub revocations: usize,
     pub refresh_failure: Option<(u16, Value)>,
@@ -124,6 +126,7 @@ impl Fixture {
             token_release: None,
             stream_tail_delay: Duration::ZERO,
             stream_tail_gate: None,
+            interrupted_streams: 0,
             refreshes: 0,
             revocations: 0,
             refresh_failure: None,
@@ -673,7 +676,7 @@ async fn endpoint(
     base: String,
     shared: Arc<Mutex<FixtureState>>,
     signing_key: Arc<CoreEdDsaPrivateSigningKey>,
-) -> Result<hyper::Response<BoxBody<Bytes, Infallible>>, Infallible> {
+) -> Result<hyper::Response<BoxBody<Bytes, std::io::Error>>, Infallible> {
     let path = request.uri().path().to_owned();
     let authorization = request
         .headers()
@@ -782,9 +785,21 @@ async fn endpoint(
     }
     let tail_delay = state.stream_tail_delay;
     let tail_gate = state.stream_tail_gate.clone();
-    let body = if path == "/v1/responses" && (!tail_delay.is_zero() || tail_gate.is_some()) {
+    let interrupted = path == "/v1/responses" && status == 200 && state.interrupted_streams > 0;
+    let body = if interrupted {
+        state.interrupted_streams -= 1;
+        let partial = Bytes::copy_from_slice(&result.as_bytes()[..result.len() / 2]);
+        let frames = futures_util::stream::once(async move { Ok(Frame::data(partial)) }).chain(
+            futures_util::stream::once(async {
+                // Let the server flush the status and body before the connection drops.
+                tokio::task::yield_now().await;
+                Err(std::io::Error::other("synthetic connection loss"))
+            }),
+        );
+        BodyExt::boxed(StreamBody::new(frames))
+    } else if path == "/v1/responses" && (!tail_delay.is_zero() || tail_gate.is_some()) {
         let frames = futures_util::stream::once(async move {
-            Ok::<_, Infallible>(Frame::data(Bytes::from(result)))
+            Ok::<_, std::io::Error>(Frame::data(Bytes::from(result)))
         })
         .chain(futures_util::stream::once(async move {
             if let Some(gate) = tail_gate {
@@ -792,11 +807,13 @@ async fn endpoint(
                 gate.release.notified().await;
             }
             tokio::time::sleep(tail_delay).await;
-            Ok::<_, Infallible>(Frame::data(Bytes::new()))
+            Ok::<_, std::io::Error>(Frame::data(Bytes::new()))
         }));
         BodyExt::boxed(StreamBody::new(frames))
     } else {
-        Full::new(Bytes::from(result)).boxed()
+        Full::new(Bytes::from(result))
+            .map_err(|never| match never {})
+            .boxed()
     };
     Ok(response
         .status(status)

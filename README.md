@@ -4,7 +4,7 @@
 
 Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, and Python, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
-The ChatGPT provider uses your ChatGPT account with permission to use your plan. Without provider settings, the extension runs in mock mode: it translates only the bundled samples into Japanese and sends no text to an external service.
+The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Without provider settings, the extension runs in mock mode: it translates only the bundled samples into Japanese and sends no text to an external service.
 
 ## Installation
 
@@ -84,7 +84,7 @@ Use a path for the OS where the language server runs, including `.exe` on Window
 
 Windows paths can use forward slashes in JSON. If you use backslashes, escape each one as `\\`. Do not include extra shell quotes inside the path value, even when the path contains spaces.
 
-UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language. `provider.model` is required for ChatGPT. `reasoning_effort` is optional and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported models or effort values return an error.
+UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language. `provider.model` is required for ChatGPT. `reasoning_effort` is optional and accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported models or effort values return an error. The Anthropic provider has its own fields; see [Using the Anthropic API](#using-the-anthropic-api).
 
 Translation timing options are optional:
 
@@ -152,12 +152,12 @@ If `binary.path` is omitted, the extension looks for `translation-lsp` on the wo
 
 1. Open Zed's Command Palette and run `zed: open settings file`.
 2. Edit `lsp.translation-lsp.initialization_options.provider.model` with the model slug you want to use.
-3. Set `lsp.translation-lsp.initialization_options.provider.reasoning_effort` if needed. Omit it to use the API default, or specify one of the values listed above. An explicit `none` differs from omitting the setting.
+3. For ChatGPT, set `lsp.translation-lsp.initialization_options.provider.reasoning_effort` if needed. Omit it to use the API default, or specify one of the values listed above. An explicit `none` differs from omitting the setting. For Anthropic, use `provider.effort` and `provider.thinking` instead.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
 
-Translation requests use ordinary text output. Choose a model available to your ChatGPT account; the extension does not switch to another model when a request fails.
+Translation requests use ordinary text output. Choose a model available to your ChatGPT account or Anthropic API key; the extension does not switch to another model when a request fails.
 
 ## Connecting to ChatGPT
 
@@ -179,11 +179,50 @@ Credentials are stored locally in this extension's OS-specific configuration dir
 | macOS | `~/Library/Application Support/translation-lsp/` |
 | Linux | `$XDG_CONFIG_HOME/translation-lsp/`, or `~/.config/translation-lsp/` when unset |
 
-The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. There is no API-key setting or automatic switch to another billing route. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration. The ChatGPT provider does not accept an API key, and the extension never switches to another billing route automatically. Authentication follows [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
 Authentication data uses `auth.json` version 2. On first access, the server migrates version 1 under the credential-store lock without creating a credential backup. Migration preserves tokens, registrations, and the selected account. Each registration receives an authorization ID: token refresh preserves it, while reconnecting replaces it. Refresh and temporary store locks preserve cached translations; the server checks authorization again before displaying them.
 
 Older binaries cannot read version 2. To downgrade, convert the current credentials to version 1 or sign in again.
+
+## Using the Anthropic API
+
+Select the `anthropic` provider to translate with Claude through the Anthropic API, and pass an API key to the language server through its environment. The other `initialization_options` described above apply unchanged.
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "binary": {
+        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
+        "env": { "TRANSLATION_LSP_ANTHROPIC_API_KEY": "sk-ant-…" }
+      },
+      "initialization_options": {
+        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+      }
+    }
+  }
+}
+```
+
+| Setting | Default | Rules |
+| --- | --- | --- |
+| `provider.name` | None | `"anthropic"` selects this provider. |
+| `provider.model` | `claude-haiku-5-5` | Optional. Empty and whitespace-only values are settings errors. The value is sent as written, without substituting another model. |
+| `provider.effort` | `low` | Optional. One of `low`, `medium`, `high`, `xhigh`, or `max`. The ChatGPT-only values `none` and `minimal` are settings errors. |
+| `provider.thinking` | Depends on `model` and `effort` | Optional. When omitted, it is `false` if `model` is `claude-haiku-5-5` and `effort` is `low`, `medium`, or `high`, and `true` otherwise. An explicit `false` together with `effort` `xhigh` or `max` is a settings error, because the API rejects that combination. |
+
+`effort` sets how much work the model spends on a response; `low` is the lightest and cheapest. With `thinking` set to `false`, the model answers without a reasoning step. With `true`, the model decides when to reason before answering. Reasoning is never displayed, and its tokens count toward the cost and the output token limit. Some models do not accept requests without thinking: if you use another model and set `thinking` to `false` explicitly, the API can return HTTP 400. In that case, omit `thinking` or set it to `true`. The omitted value is chosen by comparing `model` with `claude-haiku-5-5` exactly. Every request sends `effort`, so `model` must support it; according to the API documentation, older models such as Claude Haiku 4.5 do not. Unknown fields are rejected: there is no setting for the API key or the API endpoint. Restart the language server after changing these settings.
+
+**API key.** The server reads the key only from the `TRANSLATION_LSP_ANTHROPIC_API_KEY` environment variable of its own process, once at startup. Set it in `lsp.translation-lsp.binary.env` as shown above, then restart the language server. This stores the key as plain text in your Zed settings file, so keep that file out of shared repositories and synchronized dotfiles. The server deliberately ignores `ANTHROPIC_API_KEY`: Claude Code prefers that variable over a subscription login, so exporting it for your whole shell would move your ordinary Claude Code usage to API billing. Without a key the server still starts, and a translation request returns a settings error that names the variable without contacting the API. The server does not write the key to logs, error messages, or disk.
+
+**Cost.** API usage is billed to the Claude Console organization that owns the key. It is separate from the usage included in a Claude subscription. Automatic comment Hover and Markdown selection translation send requests without a confirmation, as described under [Reading translations](#reading-translations).
+
+**What is sent.** Each request contains the translation instructions and the text to translate as a single user message. Conversation history is not sent. The request asks for at most 64,000 output tokens, or fewer when `translation_limits.output_kib` is smaller; a translation that reaches that limit is reported as an error instead of being shown incomplete.
+
+**Errors and pauses.** A billing error, a rejected key, an unknown model, and a permission error stop automatic translation and report the HTTP status, the API's error type, and the request ID. After fixing billing in the Claude Console or correcting `provider.model`, run a selection or document translation explicitly; automatic translation resumes when that succeeds. Changing the key or any setting requires a language server restart. Rate limits and overload are retried once as described under [Limitations](#limitations). If the model declines a text, the request fails with the reported category, is not retried, and does not pause automatic translation.
+
+There is no account menu or usage command for this provider.
 
 ## Reading translations
 
@@ -203,9 +242,9 @@ While translation is queued or running, Zed shows a spinner and text directly in
 
 The spinner disappears when work ends, including cancellation and timeout. Hover over the original text to check the result. On clients that support server status, translation failures and timeouts leave a warning that clears on retry, editing, or closing the document. Clients without these display capabilities retain Hover and explicit-operation notifications.
 
-With ChatGPT connected, plan use enabled, and `markdown_auto_translate` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification. Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action. Selecting prose just to copy it can also send it for translation.
+With ChatGPT connected and plan use enabled, or with the Anthropic provider selected, and `markdown_auto_translate` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification. Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action. Selecting prose just to copy it can also send it for translation.
 
-To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. If disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The Hover translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. The Hover translation action is hidden when there is no selection.
 
 In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. Both operations use `translation_limits.input_kib.document`, which defaults to 1 MiB. The client must support `window/showDocument`.
 
@@ -245,7 +284,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 - Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
 - Default input limits are 16 KiB for Hover previews and 1 MiB for documents; the output limit is 4 MiB. Each Hover response waits up to 20 seconds from receipt, including queue time. Manual and automatic selection work has a 30-second execution budget and tab work has 180 seconds, starting when dispatched to a worker. Retained comment translations use `hover_timeout_ms`, with a default 20-second execution cap starting at dispatch, independently of the Hover response deadline. Repeated joins never restart execution time; adding a longer-lived owner can increase the budget from the original start. API calls, credential refresh, retries, and streaming use that budget. Queue time is additional for retained work, and admission and concurrency limits bound the number of operations ahead of it. OAuth and management operations have separate internal limits.
 - An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. Connection failures and interrupted streams are not automatically replayed.
-- Usage limits, account restrictions, and configuration errors pause automatic translation and return an error. After resolving the cause, explicitly run a selection or document translation to retry; restarting or reconnecting is unnecessary. Automatic translation stays paused until an explicit retry succeeds. Jobs accepted before the stop do not send new HTTP requests; repeated stop notifications are suppressed and affected retained ranges keep their failure state. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant.
+- Usage limits, account restrictions, and configuration errors pause automatic translation and return an error. After resolving the cause, explicitly run a selection or document translation to retry; restarting or reconnecting is unnecessary. Automatic translation stays paused until an explicit retry succeeds. Jobs accepted before the stop do not send new HTTP requests; repeated stop notifications are suppressed and affected retained ranges keep their failure state. Check usage in ChatGPT settings. Failures retain credentials unless token refresh confirms an unusable grant. The Anthropic provider follows the same rules for billing, key, model, and permission errors; see [Using the Anthropic API](#using-the-anthropic-api).
 - Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.
 
 ## Development
@@ -258,7 +297,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs workspace tests, formatting, Clippy, the native release build, and the WASM release build on Windows, macOS, and Linux. Local success on one OS does not establish success on the others. Before releasing, check the CI results for all three OSes and test the Zed flow on each: install the extension, locate the native server, connect, translate a comment, and open and save a document translation. HTTP/OIDC fixtures use synthetic credentials and do not require a ChatGPT account.
+The [CI workflow](.github/workflows/ci.yml) runs workspace tests, formatting, Clippy, the native release build, and the WASM release build on Windows, macOS, and Linux. Local success on one OS does not establish success on the others. Before releasing, check the CI results for all three OSes and test the Zed flow on each: install the extension, locate the native server, connect, translate a comment, and open and save a document translation. HTTP/OIDC fixtures use synthetic credentials and do not require a ChatGPT account or an Anthropic API key. Tests do not call the real APIs, and the stdio tests remove `TRANSLATION_LSP_ANTHROPIC_API_KEY` from the server process.
 
 Specify dependencies with Cargo compatibility ranges written as `major.minor`. Document a compatibility reason for any exact version pin. When updating dependencies, review the lockfile changes from `cargo update`, run the checks above, and build both the native server and WASM extension in release mode. Keep related Oxc crates on the same release line. When updating `zed_extension_api`, also check the target Zed host's API support.
 

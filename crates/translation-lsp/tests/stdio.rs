@@ -54,6 +54,8 @@ impl Client {
         let mut child = Command::new(env!("CARGO_BIN_EXE_translation-lsp"))
             .args(args)
             .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+            // A developer's real key must never reach a test process.
+            .env_remove("TRANSLATION_LSP_ANTHROPIC_API_KEY")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -458,6 +460,107 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
                 .unwrap()
                 .contains("translation")
         );
+    }
+}
+
+#[test]
+fn anthropic_without_a_key_starts_and_reports_the_missing_environment_variable() {
+    let mut client = Client::spawn(&[], false, false);
+    let initialized = client
+        .call(
+            "initialize",
+            json!({
+                "capabilities": {},
+                "initializationOptions": {"provider": {"name": "anthropic"}}
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        initialized["serverInfo"]["name"],
+        "Translation LSP (Anthropic)"
+    );
+    assert_eq!(
+        initialized["capabilities"]["executeCommandProvider"]["commands"],
+        json!([
+            "translation-lsp.preview",
+            "translation-lsp.retry",
+            "translation-lsp.open-translation",
+            "translation-lsp.cancel-range",
+            "translation-lsp.cancel-all"
+        ])
+    );
+    client.notify("initialized", json!({}));
+    let uri = "file:///missing-key.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, PARAGRAPH);
+    let action = client.action(uri, range.clone());
+    let command = client.execute(action);
+    let error = client.receive(command, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32803);
+    assert!(
+        error.message.contains("TRANSLATION_LSP_ANTHROPIC_API_KEY"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("lsp.translation-lsp.binary.env"));
+    let notice = client.notice();
+    assert_eq!(notice["type"], 1);
+    assert_eq!(notice["message"], error.message);
+    assert!(client.hover(uri, range["start"].clone()).is_null());
+    client.finish(true);
+}
+
+#[test]
+fn anthropic_settings_errors_name_the_setting_at_initialization() {
+    for (provider, message) in [
+        (
+            json!({"name": "anthropic", "effort": "minimal"}),
+            "provider.effort must be one of low, medium, high, xhigh, max",
+        ),
+        (
+            json!({"name": "anthropic", "effort": "max", "thinking": false}),
+            "provider.thinking must not be false when provider.effort is max",
+        ),
+        (
+            json!({"name": "anthropic", "model": " "}),
+            "provider.model must be nonempty",
+        ),
+    ] {
+        let mut client = Client::spawn(&[], false, false);
+        let error = client
+            .call(
+                "initialize",
+                json!({"capabilities": {}, "initializationOptions": {"provider": provider}}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert!(error.message.starts_with(message), "{}", error.message);
+        client.notify("exit", Value::Null);
+        assert!(!client.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn anthropic_starts_when_thinking_is_omitted_at_every_effort() {
+    for provider in [
+        json!({"name": "anthropic", "effort": "xhigh"}),
+        json!({"name": "anthropic", "effort": "max"}),
+        json!({"name": "anthropic", "model": "synthetic-model"}),
+        json!({"name": "anthropic", "model": "synthetic-model", "effort": "max"}),
+    ] {
+        let mut client = Client::spawn(&[], false, false);
+        let initialized = client
+            .call(
+                "initialize",
+                json!({"capabilities": {}, "initializationOptions": {"provider": provider}}),
+            )
+            .unwrap();
+        assert_eq!(
+            initialized["serverInfo"]["name"],
+            "Translation LSP (Anthropic)"
+        );
+        client.notify("initialized", json!({}));
+        client.finish(true);
     }
 }
 

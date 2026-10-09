@@ -29,6 +29,39 @@ pub(crate) enum ProviderSettings {
         model: String,
         reasoning_effort: Option<ReasoningEffort>,
     },
+    Anthropic {
+        #[serde(default = "default_anthropic_model")]
+        model: String,
+        #[serde(default)]
+        effort: AnthropicEffort,
+        // `None` when omitted. `anthropic_thinking` chooses the value to send.
+        #[serde(default, deserialize_with = "explicit_bool")]
+        thinking: Option<bool>,
+    },
+}
+
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-5-5";
+
+fn default_anthropic_model() -> String {
+    DEFAULT_ANTHROPIC_MODEL.into()
+}
+
+// Unlike `Option<bool>`, this rejects an explicit `null`.
+fn explicit_bool<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(deserializer).map(Some)
+}
+
+// An omitted setting turns thinking off only where that is known to be
+// accepted: the default model up to `high`. Other models may reject disabled
+// thinking, and no list of them is kept here, so the omitted value enables it.
+pub(crate) fn anthropic_thinking(
+    model: &str,
+    effort: AnthropicEffort,
+    thinking: Option<bool>,
+) -> bool {
+    thinking.unwrap_or(model != DEFAULT_ANTHROPIC_MODEL || effort.requires_thinking().is_some())
 }
 
 impl Default for ProviderSettings {
@@ -47,6 +80,47 @@ pub(crate) enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AnthropicEffort {
+    #[default]
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl AnthropicEffort {
+    const CHOICES: &str = "low, medium, high, xhigh, max";
+
+    // The API rejects disabled thinking at these levels.
+    fn requires_thinking(self) -> Option<&'static str> {
+        match self {
+            Self::Xhigh => Some("xhigh"),
+            Self::Max => Some("max"),
+            Self::Low | Self::Medium | Self::High => None,
+        }
+    }
+
+    // Decoding reports every mismatch as the same generic error. Name this
+    // setting when its value is a string outside the list, such as the
+    // ChatGPT-only `none` and `minimal`.
+    fn check_choice(options: &Value) -> Result<(), ConfigError> {
+        let provider = &options["provider"];
+        if provider["name"] == "anthropic"
+            && let effort @ Value::String(_) = &provider["effort"]
+            && Self::deserialize(effort).is_err()
+        {
+            return Err(ConfigError::Choice {
+                setting: "provider.effort",
+                choices: Self::CHOICES,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for Settings {
@@ -69,7 +143,10 @@ impl Settings {
     pub fn from_options(options: Option<Value>) -> Result<Self, ConfigError> {
         let settings = match options {
             None | Some(Value::Null) => Self::default(),
-            Some(options) => serde_json::from_value(options)?,
+            Some(options) => {
+                AnthropicEffort::check_choice(&options)?;
+                serde_json::from_value(options)?
+            }
         };
         settings.translation_limits.validate()?;
         for (name, value, minimum, maximum) in [
@@ -111,7 +188,9 @@ impl Settings {
                 });
             }
         }
-        if let ProviderSettings::Chatgpt { model, .. } = &settings.provider {
+        if let ProviderSettings::Chatgpt { model, .. } | ProviderSettings::Anthropic { model, .. } =
+            &settings.provider
+        {
             if !bounded(model, 256) {
                 return Err(ConfigError::Text {
                     setting: "provider.model",
@@ -121,6 +200,15 @@ impl Settings {
             if model.chars().any(char::is_whitespace) {
                 return Err(ConfigError::ModelWhitespace);
             }
+        }
+        if let ProviderSettings::Anthropic {
+            effort,
+            thinking: Some(false),
+            ..
+        } = &settings.provider
+            && let Some(effort) = effort.requires_thinking()
+        {
+            return Err(ConfigError::ThinkingRequired { effort });
         }
         Ok(settings)
     }
@@ -338,6 +426,209 @@ mod tests {
             json!({"api_key":"not-a-supported-setting"}),
         ] {
             assert!(Settings::from_options(Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn anthropic_settings_default_to_light_haiku_and_name_rejected_values() {
+        let anthropic = |fields: Value| {
+            let mut provider = json!({"name": "anthropic"});
+            provider
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            Settings::from_options(Some(json!({"provider": provider})))
+        };
+        let ProviderSettings::Anthropic {
+            model,
+            effort,
+            thinking,
+        } = anthropic(json!({})).unwrap().provider
+        else {
+            panic!("Expected Anthropic settings")
+        };
+        assert_eq!(model, "claude-haiku-5-5");
+        assert_eq!(effort, AnthropicEffort::Low);
+        assert_eq!(thinking, None);
+        let ProviderSettings::Anthropic {
+            model,
+            effort,
+            thinking,
+        } = anthropic(json!({"model": "claude-opus-5", "effort": "max", "thinking": true}))
+            .unwrap()
+            .provider
+        else {
+            panic!("Expected Anthropic settings")
+        };
+        assert_eq!(model, "claude-opus-5");
+        assert_eq!(effort, AnthropicEffort::Max);
+        assert_eq!(thinking, Some(true));
+        for (effort, thinking) in [
+            ("low", false),
+            ("medium", false),
+            ("high", false),
+            ("low", true),
+            ("xhigh", true),
+            ("max", true),
+        ] {
+            assert!(anthropic(json!({"effort": effort, "thinking": thinking})).is_ok());
+        }
+
+        for effort in ["none", "minimal", "ultra", "", "LOW"] {
+            let error = anthropic(json!({"effort": effort, "model": "synthetic-secret"}))
+                .err()
+                .unwrap();
+            assert!(matches!(
+                error,
+                ConfigError::Choice {
+                    setting: "provider.effort",
+                    ..
+                }
+            ));
+            assert_eq!(
+                error.to_string(),
+                "provider.effort must be one of low, medium, high, xhigh, max"
+            );
+        }
+        for effort in ["xhigh", "max"] {
+            for model in ["claude-haiku-5-5", "claude-opus-5-5"] {
+                let error = anthropic(json!({"model": model, "effort": effort, "thinking": false}))
+                    .err()
+                    .unwrap();
+                assert!(matches!(error, ConfigError::ThinkingRequired { .. }));
+                assert_eq!(
+                    error.to_string(),
+                    format!("provider.thinking must not be false when provider.effort is {effort}")
+                );
+            }
+        }
+        for model in ["", " ", "\t"] {
+            assert!(matches!(
+                anthropic(json!({"model": model})).err().unwrap(),
+                ConfigError::Text {
+                    setting: "provider.model",
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            anthropic(json!({"model": "claude haiku"})).err().unwrap(),
+            ConfigError::ModelWhitespace
+        ));
+        for fields in [
+            json!({"api_key": "synthetic-secret"}),
+            json!({"reasoning_effort": "low"}),
+            json!({"base_url": "http://127.0.0.1"}),
+            json!({"effort": 1}),
+            json!({"effort": null}),
+            json!({"thinking": "false"}),
+            json!({"thinking": null}),
+            json!({"model": null}),
+        ] {
+            let error = anthropic(fields).err().unwrap();
+            assert!(matches!(error, ConfigError::Decode(_)));
+            assert!(!error.to_string().contains("synthetic-secret"));
+        }
+
+        // The Anthropic fields and checks do not leak into the other providers.
+        for options in [
+            json!({"provider": {"name": "chatgpt", "model": "synthetic-model", "effort": "low"}}),
+            json!({"provider": {"name": "chatgpt", "model": "synthetic-model", "thinking": true}}),
+            json!({"provider": {"name": "mock", "effort": "low"}}),
+            json!({"provider": {"name": "chatgpt", "effort": "none"}}),
+        ] {
+            assert!(matches!(
+                Settings::from_options(Some(options)).err().unwrap(),
+                ConfigError::Decode(_)
+            ));
+        }
+        assert!(matches!(
+            Settings::from_options(Some(json!({
+                "provider": {"name": "chatgpt", "model": "synthetic-model", "reasoning_effort": "none"}
+            })))
+            .unwrap()
+            .provider,
+            ProviderSettings::Chatgpt {
+                reasoning_effort: Some(ReasoningEffort::None),
+                ..
+            }
+        ));
+        assert!(matches!(
+            Settings::from_options(Some(json!({"provider": {"name": "mock"}})))
+                .unwrap()
+                .provider,
+            ProviderSettings::Mock {}
+        ));
+    }
+
+    #[test]
+    fn omitted_anthropic_thinking_follows_the_model_and_effort() {
+        let resolved = |fields: Value| {
+            let mut provider = json!({"name": "anthropic"});
+            provider
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let ProviderSettings::Anthropic {
+                model,
+                effort,
+                thinking,
+            } = Settings::from_options(Some(json!({"provider": provider})))
+                .unwrap()
+                .provider
+            else {
+                panic!("Expected Anthropic settings")
+            };
+            anthropic_thinking(&model, effort, thinking)
+        };
+        let efforts = [
+            ("low", false),
+            ("medium", false),
+            ("high", false),
+            ("xhigh", true),
+            ("max", true),
+        ];
+        // The default model keeps thinking off up to `high`, named or not.
+        for (effort, expected) in efforts {
+            assert_eq!(resolved(json!({"effort": effort})), expected, "{effort}");
+            assert_eq!(
+                resolved(json!({"model": "claude-haiku-5-5", "effort": effort})),
+                expected,
+                "{effort}"
+            );
+        }
+        assert!(!resolved(json!({})));
+        assert!(!resolved(json!({"model": "claude-haiku-5-5"})));
+        // Any other model name enables it, including near matches of the default.
+        for model in [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-4-5",
+            "claude-haiku-5-5-20260101",
+            "anthropic.claude-haiku-5-5",
+            "claude-haiku-5",
+            "Claude-Haiku-5-5",
+        ] {
+            assert!(resolved(json!({"model": model})), "{model}");
+            for (effort, _) in efforts {
+                assert!(
+                    resolved(json!({"model": model, "effort": effort})),
+                    "{model} {effort}"
+                );
+            }
+        }
+        // An explicit value is sent as written wherever the settings accept it.
+        for model in ["claude-haiku-5-5", "claude-opus-5-5"] {
+            for (effort, required) in efforts {
+                assert!(resolved(
+                    json!({"model": model, "effort": effort, "thinking": true})
+                ));
+                if !required {
+                    assert!(!resolved(
+                        json!({"model": model, "effort": effort, "thinking": false})
+                    ));
+                }
+            }
         }
     }
 

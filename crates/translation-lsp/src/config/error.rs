@@ -37,6 +37,13 @@ pub(crate) enum ConfigError {
     },
     #[error("provider.model must not contain whitespace")]
     ModelWhitespace,
+    #[error("{setting} must be one of {choices}")]
+    Choice {
+        setting: &'static str,
+        choices: &'static str,
+    },
+    #[error("provider.thinking must not be false when provider.effort is {effort}")]
+    ThinkingRequired { effort: &'static str },
 }
 
 #[derive(Debug)]

@@ -41,9 +41,10 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::{
-    config::{ProviderSettings, Settings},
+    config::{ProviderSettings, Settings, anthropic_thinking},
     providers::{
         AuthUiState, Context, Interaction, Translated, TranslationProvider,
+        anthropic::AnthropicProvider,
         chatgpt::ChatGptProvider,
         error::{Error as ProviderError, ErrorKind},
         mock::{MockOptions, MockProvider},
@@ -135,15 +136,14 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
                 Err(failure(ErrorCode::InvalidParams, &message.to_string())),
             );
         })?;
-    let chatgpt = matches!(settings.provider, ProviderSettings::Chatgpt { .. });
     let ui = Ui::new(
         connection.sender.clone(),
         UiCapabilities::from(&params.capabilities),
     );
-    let initialized = if chatgpt {
-        capabilities::<ChatGptProvider>()
-    } else {
-        capabilities::<MockProvider>()
+    let initialized = match settings.provider {
+        ProviderSettings::Mock {} => capabilities::<MockProvider>(),
+        ProviderSettings::Chatgpt { .. } => capabilities::<ChatGptProvider>(),
+        ProviderSettings::Anthropic { .. } => capabilities::<AnthropicProvider>(),
     };
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
 
@@ -160,6 +160,21 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
             let provider = ChatGptProvider::new(
                 model,
                 reasoning_effort,
+                settings.source_language.clone(),
+                settings.translation_limits.output_kib,
+            )?;
+            serve_initialized(connection, settings, ui, provider)
+        }
+        ProviderSettings::Anthropic {
+            model,
+            effort,
+            thinking,
+        } => {
+            let thinking = anthropic_thinking(&model, effort, thinking);
+            let provider = AnthropicProvider::new(
+                model,
+                effort,
+                thinking,
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
             )?;
@@ -816,6 +831,8 @@ fn respond(
     Ok(())
 }
 
+#[cfg(test)]
+mod anthropic_tests;
 #[cfg(test)]
 mod chatgpt_tests;
 #[cfg(test)]

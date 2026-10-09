@@ -5,7 +5,10 @@ use serde_json::Value;
 
 #[cfg(test)]
 use crate::providers::error::ErrorKind;
-use crate::providers::error::{Cause, Error, RemoteError, RemoteKind};
+use crate::providers::{
+    error::{Error, RemoteError, RemoteKind, Service},
+    transport::{self, safe},
+};
 
 #[derive(Clone)]
 pub(crate) struct Http {
@@ -64,19 +67,29 @@ pub(super) fn response_error(
         _ => RemoteKind::Failed,
     };
     RemoteError {
+        service: Service::OpenAi,
         kind,
         status,
         detail: safe(detail, secrets, 512),
         code: (!code.is_empty()).then(|| safe(code, secrets, 128)),
         param: param.map(|value| safe(value, secrets, 128)),
         request_id: request_id.map(|value| safe(value, secrets, 128)),
+        advice: match kind {
+            RemoteKind::UsageLimit => {
+                Some("Check ChatGPT usage at https://chatgpt.com/settings/usage")
+            }
+            RemoteKind::RefreshUnusable => Some(
+                "Choose Continue with ChatGPT / Choose account and reconnect the saved account.",
+            ),
+            _ => None,
+        },
     }
     .into()
 }
 
 impl Http {
     pub fn new() -> Result<Self, Error> {
-        let client = Self::client_builder()
+        let client = transport::client_builder()
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|_| Error::failed("Could not prepare the OpenAI HTTP client"))?;
@@ -87,16 +100,9 @@ impl Http {
         })
     }
 
-    fn client_builder() -> reqwest::ClientBuilder {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(5))
-    }
-
     pub fn responses_client() -> Result<reqwest::Client, Error> {
         // The worker owns the changing total deadline; OAuth keeps its 15-second cap.
-        Self::client_builder()
+        transport::client_builder()
             .build()
             .map_err(|_| Error::failed("Could not prepare the OpenAI Responses client"))
     }
@@ -202,19 +208,7 @@ impl Http {
 }
 
 pub(super) fn temporary_network(source: reqwest::Error) -> Error {
-    Cause::Network(source.without_url()).into()
-}
-
-pub(super) fn safe(value: &str, secrets: &[&str], maximum: usize) -> String {
-    let mut value = value.to_owned();
-    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
-        value = value.replace(secret, "[redacted]");
-    }
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(maximum)
-        .collect()
+    transport::network_error(Service::OpenAi)(source)
 }
 
 #[cfg(test)]

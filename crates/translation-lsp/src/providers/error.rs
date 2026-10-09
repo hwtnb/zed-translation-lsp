@@ -18,6 +18,38 @@ pub(crate) enum ErrorKind {
     RefreshUnusable,
 }
 
+// The remote service named in user-visible diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Service {
+    OpenAi,
+    Anthropic,
+}
+
+impl Service {
+    fn network_advice(self) -> &'static str {
+        match self {
+            Self::OpenAi => "credentials are retained, retry later",
+            Self::Anthropic => "retry later",
+        }
+    }
+
+    fn code_label(self) -> &'static str {
+        match self {
+            Self::OpenAi => "code",
+            Self::Anthropic => "type",
+        }
+    }
+}
+
+impl std::fmt::Display for Service {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Anthropic",
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum Notification {
     #[default]
@@ -54,6 +86,13 @@ pub(crate) struct Error {
 pub(crate) enum Cause {
     #[error("{0}")]
     Failed(&'static str),
+    #[error("{0}")]
+    Configuration(&'static str),
+    #[error("{service} {problem}")]
+    Protocol {
+        service: Service,
+        problem: &'static str,
+    },
     #[error(transparent)]
     Transport(#[from] TransportExceeded),
     #[error("Translation canceled")]
@@ -64,12 +103,25 @@ pub(crate) enum Cause {
     Credentials(#[source] CredentialError),
     #[error(transparent)]
     Size(#[from] SizeExceeded),
-    #[error("OpenAI network request failed or timed out; credentials are retained, retry later")]
-    Network(#[source] reqwest::Error),
+    #[error("{service} network request failed or timed out; {}", .service.network_advice())]
+    Network {
+        service: Service,
+        #[source]
+        source: reqwest::Error,
+    },
     #[error(transparent)]
     Remote(#[from] RemoteError),
-    #[error("OpenAI stream failed (event={event}); {source}{diagnostics}")]
+    #[error(
+        "{service} declined to translate this text{}; no translation was saved",
+        .category.as_ref().map(|category| format!(" (category={category})")).unwrap_or_default()
+    )]
+    Refusal {
+        service: Service,
+        category: Option<String>,
+    },
+    #[error("{service} stream failed (event={event}); {source}{diagnostics}")]
     Stream {
+        service: Service,
         event: String,
         #[source]
         source: Arc<Cause>,
@@ -78,7 +130,8 @@ pub(crate) enum Cause {
 }
 
 // Only remote failures can carry these categories. Cancellation, local storage,
-// and size errors cannot be constructed as a remote usage-limit failure.
+// and size errors cannot be constructed as a remote usage-limit failure. A missing
+// local setting is `Cause::Configuration`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
     Failed,
@@ -91,21 +144,23 @@ pub(crate) enum RemoteKind {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RemoteError {
+    pub service: Service,
     pub kind: RemoteKind,
     pub status: u16,
     pub detail: String,
     pub code: Option<String>,
     pub param: Option<String>,
     pub request_id: Option<String>,
+    pub advice: Option<&'static str>,
 }
 
 impl std::error::Error for RemoteError {}
 
 impl std::fmt::Display for RemoteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "OpenAI HTTP {}: {}", self.status, self.detail)?;
+        write!(f, "{} HTTP {}: {}", self.service, self.status, self.detail)?;
         for (name, value) in [
-            ("code", &self.code),
+            (self.service.code_label(), &self.code),
             ("param", &self.param),
             ("request_id", &self.request_id),
         ] {
@@ -113,27 +168,27 @@ impl std::fmt::Display for RemoteError {
                 write!(f, " ({name}={value})")?;
             }
         }
-        match self.kind {
-            RemoteKind::UsageLimit => {
-                f.write_str(". Check ChatGPT usage at https://chatgpt.com/settings/usage")
-            }
-            RemoteKind::RefreshUnusable => f.write_str(
-                ". Choose Continue with ChatGPT / Choose account and reconnect the saved account.",
-            ),
-            _ => Ok(()),
+        if let Some(advice) = self.advice {
+            write!(f, ". {advice}")?;
         }
+        Ok(())
     }
 }
 
 impl Cause {
     pub fn kind(&self) -> ErrorKind {
         match self {
-            Self::Failed(_) | Self::Size(_) | Self::Transport(_) => ErrorKind::Failed,
+            Self::Failed(_)
+            | Self::Protocol { .. }
+            | Self::Size(_)
+            | Self::Transport(_)
+            | Self::Refusal { .. } => ErrorKind::Failed,
+            Self::Configuration(_) => ErrorKind::Configuration,
             Self::Cancelled => ErrorKind::Cancelled,
             Self::Modified => ErrorKind::Modified,
             Self::Credentials(CredentialError::Busy) => ErrorKind::Unavailable,
             Self::Credentials(_) => ErrorKind::Storage,
-            Self::Network(_) => ErrorKind::Temporary,
+            Self::Network { .. } => ErrorKind::Temporary,
             Self::Stream { source, .. } => source.kind(),
             Self::Remote(error) => match error.kind {
                 RemoteKind::Failed => ErrorKind::Failed,
@@ -143,6 +198,19 @@ impl Cause {
                 RemoteKind::Configuration => ErrorKind::Configuration,
                 RemoteKind::RefreshUnusable => ErrorKind::RefreshUnusable,
             },
+        }
+    }
+}
+
+impl Cause {
+    // Only a temporary failure the service itself reported may be sent again.
+    // A network failure is also temporary, but the request may be in progress
+    // or partly answered, so it is left for a manual retry.
+    fn service_reported_temporary(&self) -> bool {
+        match self {
+            Self::Remote(error) => error.kind == RemoteKind::Temporary,
+            Self::Stream { source, .. } => source.service_reported_temporary(),
+            _ => false,
         }
     }
 }
@@ -182,6 +250,9 @@ impl Error {
     pub fn cause(&self) -> &Cause {
         &self.cause
     }
+    pub fn retryable(&self) -> bool {
+        self.cause.service_reported_temporary()
+    }
     pub fn notification(&self) -> Notification {
         self.notification
     }
@@ -191,9 +262,10 @@ impl Error {
     pub fn require_explicit_retry(&mut self) {
         self.recovery = Recovery::ExplicitTranslation;
     }
-    pub fn in_stream(self, event: String, diagnostics: String) -> Self {
+    pub fn in_stream(self, service: Service, event: String, diagnostics: String) -> Self {
         Self {
             cause: Arc::new(Cause::Stream {
+                service,
                 event,
                 source: self.cause,
                 diagnostics,
@@ -206,6 +278,12 @@ impl Error {
     }
     pub fn failed(message: &'static str) -> Self {
         Cause::Failed(message).into()
+    }
+    pub fn configuration(message: &'static str) -> Self {
+        Cause::Configuration(message).into()
+    }
+    pub fn protocol(service: Service, problem: &'static str) -> Self {
+        Cause::Protocol { service, problem }.into()
     }
 }
 
@@ -237,9 +315,10 @@ impl std::fmt::Display for TransportScope {
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[error(
-    "OpenAI {scope} exceeds {maximum_bytes} bytes derived from translation_limits.output_kib; received {actual_bytes} bytes"
+    "{service} {scope} exceeds {maximum_bytes} bytes derived from translation_limits.output_kib; received {actual_bytes} bytes"
 )]
 pub(crate) struct TransportExceeded {
+    pub service: Service,
     pub scope: TransportScope,
     pub actual_bytes: usize,
     pub maximum_bytes: usize,
@@ -259,12 +338,14 @@ mod tests {
     #[test]
     fn notification_policy_does_not_change_remote_cause_or_recovery() {
         let mut error: Error = RemoteError {
+            service: Service::OpenAi,
             kind: RemoteKind::UsageLimit,
             status: 429,
             detail: "Quota reached".into(),
             code: Some("usage_limit".into()),
             param: None,
             request_id: Some("request-1".into()),
+            advice: None,
         }
         .into();
         error.require_explicit_retry();
@@ -273,7 +354,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::UsageLimit);
         assert_eq!(error.notification(), Notification::Suppress);
         assert_eq!(error.to_string(), before);
-        let stream = error.in_stream("response.failed".into(), String::new());
+        let stream = error.in_stream(Service::OpenAi, "response.failed".into(), String::new());
         assert_eq!(stream.kind(), ErrorKind::UsageLimit);
         assert_eq!(stream.notification(), Notification::Suppress);
         assert!(
@@ -289,6 +370,59 @@ mod tests {
         };
         assert_eq!(remote.status, 429);
         assert_eq!(remote.request_id.as_deref(), Some("request-1"));
+    }
+
+    #[test]
+    fn only_temporary_failures_reported_by_the_service_are_retryable() {
+        let remote = |kind| -> Error {
+            RemoteError {
+                service: Service::Anthropic,
+                kind,
+                status: 529,
+                detail: "Overloaded".into(),
+                code: None,
+                param: None,
+                request_id: None,
+                advice: None,
+            }
+            .into()
+        };
+        let temporary = remote(RemoteKind::Temporary);
+        assert_eq!(temporary.kind(), ErrorKind::Temporary);
+        assert!(temporary.retryable());
+        assert!(
+            temporary
+                .in_stream(Service::Anthropic, "error".into(), String::new())
+                .retryable()
+        );
+        for kind in [
+            RemoteKind::Failed,
+            RemoteKind::UsageLimit,
+            RemoteKind::NotEligible,
+            RemoteKind::Configuration,
+            RemoteKind::RefreshUnusable,
+        ] {
+            assert!(!remote(kind).retryable());
+            assert!(
+                !remote(kind)
+                    .in_stream(Service::Anthropic, "error".into(), String::new())
+                    .retryable()
+            );
+        }
+        for error in [
+            Error::cancelled(),
+            Error::failed("Translation timed out"),
+            Error::configuration("Missing setting"),
+            Error::protocol(Service::OpenAi, "SSE stream is invalid or truncated"),
+            Cause::Refusal {
+                service: Service::Anthropic,
+                category: None,
+            }
+            .into(),
+            Cause::Modified.into(),
+        ] {
+            assert!(!error.retryable(), "{error}");
+        }
     }
 
     #[test]

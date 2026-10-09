@@ -1,6 +1,11 @@
+pub(crate) mod admission;
+pub(crate) mod anthropic;
 pub(crate) mod chatgpt;
 pub(crate) mod error;
 pub(crate) mod mock;
+pub(crate) mod prompt;
+pub(crate) mod sse;
+pub(crate) mod transport;
 
 use std::future::Future;
 
@@ -42,6 +47,7 @@ pub(crate) enum AuthUiState {
 pub(crate) enum Context {
     Mock,
     ChatGpt(AccountKey),
+    Anthropic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
