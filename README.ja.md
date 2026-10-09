@@ -254,14 +254,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 [CIワークフロー](.github/workflows/ci.yml)はWindows・macOS・Linuxそれぞれでワークスペース全体のテスト、fmt、Clippy、ネイティブとWASMのリリースビルドを実行します。1 OSでの成功だけを他OSの成功とは扱いません。リリース前には3 OSのCI結果に加え、各OSのZedで拡張導入・ネイティブ起動・認証・コメント翻訳・文書翻訳の表示と保存を確認してください。HTTP/OIDCのテスト用環境は合成の認証情報を使うため、ChatGPTアカウントは不要です。
 
-依存は通常のCargo互換範囲を `major.minor` で指定します（`serde` と `serde_json` も `1.0`）。`cargo update` は意図した更新時に実行し、ロックファイルの変更を確認して、上記の検証とネイティブ/WASMのリリースビルドを繰り返してください。Oxcのパーサー・アロケーター・ソース位置情報用クレートは同じリリース系列に揃えます。`zed_extension_api` を更新する場合は、WASMビルドに加えて対象ZedのAPI対応を確認してください。HTTP/OIDCテストはローカルのテスト用環境と合成の認証情報を使います。テスト用環境ごとにOSの乱数からEd25519署名鍵を生成し、メモリで保持して、JWT署名とJWKSに同じ鍵を使います。
+依存関係のバージョンは `major.minor` のCargo互換範囲で指定します。特定のバージョンに固定する場合は、互換性上の理由を記録してください。更新時は `cargo update` によるロックファイルの差分を確認し、上記の検証とネイティブ・WASM両方のリリースビルドを実行してください。Oxcの関連クレートは同じリリース系列に揃えます。`zed_extension_api` の更新時は、対象ZedのAPI対応も確認してください。
 
-Rustの字句解析器（`ra-ap-rustc_lexer` 0.176）はUnicodeテーブルの版が一致している必要があります。ネイティブサーバーのマニフェストで `unicode-ident` を `=1.0.24`（Unicode 17）に固定し、`unicode-properties` 0.1.4と揃えています。1.0.25・1.0.26はUnicode 18で、字句解析器のコンパイル時検査に失敗します。字句解析器と両テーブルクレートが同じUnicode版に対応した時点で、この互換性のための固定を外し、まとめて更新してください。
+新しいコード言語のコメント抽出には、Tree-sitterの文法を第一候補として検証します。既存のRust用字句解析器とJavaScript／TypeScript用Oxcは継続して使用します。
 
-OIDC SDKは引き続き `ed25519-dalek` 2.2と `rand_core` 0.6に依存します。テスト用環境の鍵生成には `ed25519-dalek` 3.0と `getrandom` 0.4を使い、SDKを変更せずに両系列を併用します。SDKが使う旧暗号ライブラリ系列は、現在Cargoが `crypto-common` 0.1.6と `generic-array` 0.14.9へ解決します。[0.1.7の変更](https://github.com/RustCrypto/traits/pull/2088)は、非推奨警告を抑えるために `generic-array` を0.14.7へ固定するものだけです。本プロジェクトではそのダウングレードを強制しません。
-
-C#のコメント抽出にはTree-sitter 0.27と `tree-sitter-c-sharp` 0.23を使います。新しいコード言語を追加する場合も、Tree-sitterの文法を第一候補として検証します。既存のRust用字句解析器、JavaScript／TypeScript用Oxcは維持しています。C#の特殊なUnicode改行は、解析入力だけをバイト位置が変わらない形で調整し、コメント本文は変更していない原文から取得します。
-
-C/C++の抽出は `tree-sitter-c` 0.24と `tree-sitter-cpp` 0.23を使い、Tree-sitter本体を共用します。raw文字列やバックスラッシュで継続する行コメントは、それぞれの文法で解析します。
-
-Pythonの抽出は `tree-sitter-python` 0.25を使います。三重引用符だけを目印にせず、構文木上の位置からドキュメンテーション文字列を判定します。
+現在のバージョン固定の例外は `unicode-ident = "=1.0.24"` です。Rustの字句解析器とUnicodeテーブルの版を揃えるために固定しています。字句解析器と関連するUnicodeテーブルが同じ版に対応した時点で、固定を外してまとめて更新してください。
