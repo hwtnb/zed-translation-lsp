@@ -43,7 +43,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
     };
     let (jobs, received_jobs) = queue::channel(4);
     let (administrations, received_admin) = queue::channel(2);
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let (connection, _client) = Connection::memory();
     let ui = Ui::new(connection.sender.clone(), UiCapabilities::default());
     let mut stops = Vec::new();
@@ -135,7 +135,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
         }
     }
     let (record, recorded) = bounded(1);
-    let (completed, completions) = bounded(MAX_JOBS);
+    let (completed, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::new_with_provider(completed, RecordingProvider(record)).unwrap();
     let (connection, client) = Connection::memory();
     let uri: Uri = "file:///unsaved.rs".parse().unwrap();
@@ -220,7 +220,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
 #[test]
 fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     let (connection, client) = Connection::memory();
-    let (finished, _completions) = bounded(MAX_JOBS);
+    let (finished, _completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::new(
         MockOptions {
             delay: Duration::from_secs(30),
@@ -360,7 +360,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         ]
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         OtherProvider,

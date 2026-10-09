@@ -70,7 +70,7 @@ const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
 const SETTINGS_COMMAND: &str = "translation-lsp.settings";
 const ACTION_KIND: &str = "translation.preview";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
-const MAX_JOBS: usize = 8;
+const WORKER_EVENT_CHANNEL_CAPACITY: usize = 8;
 const CANCEL_COMMAND: &str = "translation-lsp.cancel-range";
 const CANCEL_ALL_COMMAND: &str = "translation-lsp.cancel-all";
 
@@ -220,7 +220,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
     ui: Ui,
     provider: P,
 ) -> ServerResult<()> {
-    let (finished_sender, finished) = bounded(MAX_JOBS);
+    let (finished_sender, finished) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(finished_sender, provider, settings, ui)?;
     let result = (|| {
         server.publish_activity();

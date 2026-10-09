@@ -14,7 +14,7 @@ async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() 
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -89,7 +89,7 @@ async fn hover_limits_control_actions_background_and_manual_admission() {
         ))
         .unwrap();
         let (connection, _client) = Connection::memory();
-        let (finished, _completions) = bounded(MAX_JOBS);
+        let (finished, _completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -152,7 +152,7 @@ async fn document_pipeline_opens_large_translation_and_does_not_publish_oversize
             Settings::from_options(Some(json!({"translation_limits":{"output_kib":limit}})))
                 .unwrap();
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -240,7 +240,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             "synthetic-model".into(),
         );
         let (stop, deadline) = watch::channel(Some(Instant::now() + Duration::from_secs(5)));
-        let (finished, events) = bounded(MAX_JOBS);
+        let (finished, events) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let job = Job {
             ticket: 1,
             deadline,
@@ -307,7 +307,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
         })))
         .unwrap();
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -463,7 +463,7 @@ async fn activity_problem_survives_busy_store_and_clears_confirmed_external_inva
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -550,7 +550,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider.clone(),
@@ -566,7 +566,8 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     )
     .unwrap();
     // Hold admission until the test owns the store lock, without delaying the worker.
-    let (held_sender, mut held_jobs) = queue::channel(MAX_JOBS);
+    let (held_sender, mut held_jobs) =
+        queue::channel(server.settings.translation_limits.work.concurrent);
     let worker_jobs = server.jobs.replace(held_sender).unwrap();
     let uri: Uri = "file:///activity-background.md".parse().unwrap();
     let range = Range::new(Position::new(0, 0), Position::new(0, 15));
@@ -726,7 +727,7 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -857,7 +858,7 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut settings = Settings::default();
     settings.translation_limits.work.automatic = 5;
     let mut server = Server::configured(
@@ -1041,7 +1042,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -1216,7 +1217,7 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut settings = Settings::default();
         settings.translation_limits.work.automatic = 4;
         let mut server = Server::configured(
@@ -1303,7 +1304,7 @@ async fn cached_translation_survives_store_lock_but_not_reauthorization() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider.clone(),
@@ -1421,7 +1422,7 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         let tail = std::sync::Arc::new(StreamTailGate::default());
         fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut settings = Settings::default();
         settings.translation_limits.work.automatic = 4;
         let mut server = Server::configured(
@@ -1489,7 +1490,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut settings = Settings::default();
     settings.translation_limits.work.automatic = 4;
     let mut server = Server::configured(
@@ -1626,7 +1627,7 @@ async fn documentation_comments_reach_http_and_return_translated_hover() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::new_with_provider(finished, provider).unwrap();
         let uri: Uri = "file:///Example.cs".parse().unwrap();
         server.documents.insert(
@@ -1828,7 +1829,7 @@ async fn explicit_preview_reports_admission_refresh_and_stream_failures() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -1925,7 +1926,7 @@ async fn administration_reports_admission_worker_and_deadline_failures_but_not_c
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -2021,7 +2022,7 @@ async fn chatgpt_worker_coalesces_and_invalidates_completed_cache_on_account_cha
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -2124,7 +2125,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider.clone(),
@@ -2237,7 +2238,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -2370,7 +2371,7 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -2583,7 +2584,7 @@ async fn automatic_selection_excludes_code_whitespace_non_markdown_and_ineligibl
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -2632,7 +2633,7 @@ async fn automatic_selection_uses_document_code_context_and_sends_only_selected_
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -3016,7 +3017,7 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
             "synthetic-model".into(),
         );
         let (connection, client) = Connection::memory();
-        let (finished, completions) = bounded(MAX_JOBS);
+        let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -3107,7 +3108,7 @@ async fn account_picker_dispatches_only_the_selected_command() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -3205,7 +3206,7 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -3423,7 +3424,7 @@ async fn candidates_are_local_and_explicit_commands_use_standard_lsp_ui() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,
@@ -3543,7 +3544,7 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider.clone(),
@@ -3650,7 +3651,7 @@ async fn unrelated_hover_is_null_when_translation_authorization_is_unavailable()
             "synthetic-model".into(),
         );
         let (connection, _client) = Connection::memory();
-        let (finished, _completions) = bounded(MAX_JOBS);
+        let (finished, _completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
         let mut server = Server::configured(
             finished,
             provider,
@@ -3725,7 +3726,7 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut settings = Settings::default();
     settings.translation_limits.work.automatic = 4;
     let mut server = Server::configured(
@@ -3794,7 +3795,7 @@ async fn range_server(
         "synthetic-model".into(),
     );
     let (connection, client) = Connection::memory();
-    let (finished, completions) = bounded(MAX_JOBS);
+    let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let mut server = Server::configured(
         finished,
         provider,

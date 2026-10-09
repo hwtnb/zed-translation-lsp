@@ -127,7 +127,10 @@ impl<P: TranslationProvider> Server<P> {
         {
             return Err(failure(
                 ErrorCode::RequestFailed,
-                "Translation queue is full; this range was not accepted",
+                &format!(
+                    "{}: Translation queue is full; this range was not accepted",
+                    location(&target)
+                ),
             ));
         }
         let intent = if request.explicit() {

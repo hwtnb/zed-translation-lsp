@@ -1165,16 +1165,19 @@ fn configurable_queue_accepts_multiple_ranges_and_shutdown_retires_retained_work
         let request = client.execute(action);
         assert!(client.receive(request, TIMEOUT).unwrap().is_null());
     }
-    let uri = "file:///overflow.md";
+    let uri = "file:///nested/overflow.md";
     client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
     let action = client.action(uri, range_for(MARKDOWN_DOCUMENT, PARAGRAPH));
     let request = client.execute(action);
-    assert_error(client.receive(request, TIMEOUT), -32803);
-    assert!(
-        client.notifications.last().unwrap()["message"]
-            .as_str()
-            .unwrap()
-            .contains("not accepted")
+    let error = client.receive(request, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, -32803);
+    assert_eq!(
+        error.message,
+        "overflow.md:3-4: Translation queue is full; this range was not accepted"
+    );
+    assert_eq!(
+        client.notifications.last().unwrap(),
+        &json!({"type":1,"message":error.message})
     );
     client.finish(true);
 }
