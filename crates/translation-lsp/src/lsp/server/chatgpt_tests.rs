@@ -718,7 +718,6 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
 #[tokio::test(flavor = "current_thread")]
 async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
     let fixture = Fixture::new().await;
-    fixture.state.lock().unwrap().delay = Duration::from_secs(1);
     let auth = fixture.auth();
     fixture.connected(&auth, 3600).await;
     let provider = ChatGptProvider::synthetic(
@@ -742,6 +741,10 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         ),
     )
     .unwrap();
+    // Keep translation work out of the worker until activity cancellation is observed.
+    let (held_sender, mut held_jobs) =
+        queue::channel(server.settings.translation_limits.work.concurrent);
+    let worker_jobs = server.jobs.replace(held_sender).unwrap();
     let uri: Uri = "file:///activity-picker.md".parse().unwrap();
     let range = Range::new(Position::new(0, 0), Position::new(0, 15));
     server.documents.insert(
@@ -795,6 +798,23 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         panic!("Expected end");
     };
     assert_eq!(end.params["value"]["kind"], "end");
+    assert!(client.receiver.is_empty(), "Picker must remain pending");
+    assert_eq!(server.scheduler.admitted(), 1);
+    let job = held_jobs.recv().await.unwrap();
+    let ticket = job.ticket;
+    assert!(job.deadline.borrow().is_none());
+    worker_jobs.try_send(job).unwrap();
+    server.jobs = Some(worker_jobs);
+    let canceled = next(&completions).await;
+    assert_eq!(canceled.ticket, ticket);
+    assert!(matches!(&canceled.result, Err(error) if error.kind() == ErrorKind::Cancelled));
+    server.finish(&connection, canceled).unwrap();
+    assert_eq!(server.scheduler.admitted(), 0);
+    assert!(fixture.state.lock().unwrap().records.is_empty());
+    assert_eq!(
+        *server.administrations[&2.into()].stop.borrow(),
+        Some(deadline)
+    );
     assert!(client.receiver.is_empty(), "Picker must remain pending");
     server.ui.response(Response::new_ok(picker.id, Value::Null));
     while !server.administrations.is_empty() {
