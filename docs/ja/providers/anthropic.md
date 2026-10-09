@@ -29,7 +29,7 @@
 | 設定 | 既定値 | 規則 |
 | --- | --- | --- |
 | `provider.name` | なし | `"anthropic"` でこのプロバイダーを選びます。 |
-| `provider.model` | `claude-haiku-5-5` | 省略できます。空文字と空白だけの値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
+| `provider.model` | `claude-haiku-5-5` | 省略できます。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
 | `provider.effort` | `low` | 省略できます。`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。ChatGPT用の `none` と `minimal` は設定エラーです。 |
 | `provider.thinking` | `model` と `effort` で決まる | 省略できます。省略した場合、`model` が `claude-haiku-5-5` で `effort` が `low`、`medium`、`high` のいずれかなら `false`、それ以外は `true` です。明示した `false` と、`effort` の `xhigh` または `max` の組み合わせは設定エラーです。APIがこの組み合わせを拒否するためです。 |
 | `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.effort`、`provider.thinking` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |

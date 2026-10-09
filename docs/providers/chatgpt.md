@@ -28,7 +28,7 @@ The other `initialization_options` described under [Configuration](../configurat
 | Setting | Default | Rules |
 | --- | --- | --- |
 | `provider.name` | None | `"chatgpt"` selects this provider. |
-| `provider.model` | None | Required. Empty and whitespace-only values are settings errors. The value is sent as written, without substituting another model. |
+| `provider.model` | None | Required. Empty values, values that contain whitespace or control characters, and values longer than 256 bytes are settings errors. The value is sent as written, without substituting another model. |
 | `provider.reasoning_effort` | None | Optional. One of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. When omitted, the API default is used. An explicit `none` differs from omitting the setting. |
 | `provider.document` | None | Optional. An object holding the model and options for translations opened in a tab. Its values are not inherited from `provider.model` or `provider.reasoning_effort`: a value omitted inside it takes the default in the rows below. Unknown fields inside it are settings errors. |
 | `provider.document.model` | None | Required when `provider.document` is present. The rules of `provider.model` apply. |
@@ -47,9 +47,7 @@ Unsupported models or effort values return an error. Unknown fields are rejected
 }
 ```
 
-For ChatGPT, `provider.document.reasoning_effort` accepts the same values as `provider.reasoning_effort`, and omitting it sends no reasoning effort for tab translations.
-
-With ChatGPT, a `reasoning_effort` written outside `provider.document` does not apply to tab translations. When `provider.document` omits it, tab requests carry no reasoning effort and the model uses its own default. To fix the reasoning effort of tab translations, write it inside `provider.document` as well. The model and reasoning effort above are examples.
+A `reasoning_effort` written outside `provider.document` does not apply to tab translations. When `provider.document` omits it, tab requests carry no reasoning effort and the model uses its own default. To fix the reasoning effort of tab translations, write it inside `provider.document` as well. The model and reasoning effort above are examples.
 
 What `provider.document` changes for every provider is described under [Tab translations with another model](../configuration.md#tab-translations-with-another-model).
 

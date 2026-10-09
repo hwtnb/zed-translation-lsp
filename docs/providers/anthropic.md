@@ -29,7 +29,7 @@ The other `initialization_options` described under [Configuration](../configurat
 | Setting | Default | Rules |
 | --- | --- | --- |
 | `provider.name` | None | `"anthropic"` selects this provider. |
-| `provider.model` | `claude-haiku-5-5` | Optional. Empty and whitespace-only values are settings errors. The value is sent as written, without substituting another model. |
+| `provider.model` | `claude-haiku-5-5` | Optional. Empty values, values that contain whitespace or control characters, and values longer than 256 bytes are settings errors. The value is sent as written, without substituting another model. |
 | `provider.effort` | `low` | Optional. One of `low`, `medium`, `high`, `xhigh`, or `max`. The ChatGPT-only values `none` and `minimal` are settings errors. |
 | `provider.thinking` | Depends on `model` and `effort` | Optional. When omitted, it is `false` if `model` is `claude-haiku-5-5` and `effort` is `low`, `medium`, or `high`, and `true` otherwise. An explicit `false` together with `effort` `xhigh` or `max` is a settings error, because the API rejects that combination. |
 | `provider.document` | None | Optional. An object holding the model and options for translations opened in a tab. Its values are not inherited from `provider.model`, `provider.effort`, or `provider.thinking`: a value omitted inside it takes the default in the rows below. Unknown fields inside it are settings errors. |

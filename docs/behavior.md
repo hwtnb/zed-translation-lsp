@@ -44,8 +44,6 @@ After eviction, Markdown Hover does not automatically translate the range again;
 
 ## Deadlines
 
-Default input limits are 16 KiB for Hover previews and 1 MiB for documents; the output limit is 4 MiB.
-
 Each Hover response waits up to 20 seconds from receipt, including queue time. Manual and automatic selection work has a 30-second execution budget and tab work has 180 seconds, starting when dispatched to a worker. Retained comment translations use `hover_timeout_ms`, with a default 20-second execution cap starting at dispatch, independently of the Hover response deadline. Repeated joins never restart execution time; adding a longer-lived owner can increase the budget from the original start. API calls, credential refresh, retries, and streaming use that budget. Queue time is additional for retained work, and admission and concurrency limits bound the number of operations ahead of it. OAuth and management operations have separate internal limits.
 
 ## Automatic retries

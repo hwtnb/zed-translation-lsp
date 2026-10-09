@@ -28,7 +28,7 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 | 設定 | 既定値 | 規則 |
 | --- | --- | --- |
 | `provider.name` | なし | `"chatgpt"` でこのプロバイダーを選びます。 |
-| `provider.model` | なし | 必須です。空文字と空白だけの値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
+| `provider.model` | なし | 必須です。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
 | `provider.reasoning_effort` | なし | 省略できます。`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。省略した場合は、APIの既定値を使います。明示した `none` は省略とは異なります。 |
 | `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.reasoning_effort` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |
 | `provider.document.model` | なし | `provider.document` を書く場合は必須です。規則は `provider.model` と同じです。 |
@@ -47,9 +47,7 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 }
 ```
 
-ChatGPTでは、`provider.document.reasoning_effort` に `provider.reasoning_effort` と同じ値を指定できます。省略すると、タブ翻訳では推論強度を送りません。
-
-ChatGPTでは、`provider.document` の外側に書いた `reasoning_effort` は、タブ翻訳には適用されません。`provider.document` の中で省略すると、タブ翻訳の要求は推論強度を含まず、モデル側の既定値が使われます。タブ翻訳の推論強度を固定したい場合は、`provider.document` の中にも書いてください。上のモデルと推論強度は例です。
+`provider.document` の外側に書いた `reasoning_effort` は、タブ翻訳には適用されません。`provider.document` の中で省略すると、タブ翻訳の要求は推論強度を含まず、モデル側の既定値が使われます。タブ翻訳の推論強度を固定したい場合は、`provider.document` の中にも書いてください。上のモデルと推論強度は例です。
 
 `provider.document` を設定したときにどのプロバイダーでも変わる点は、[タブ翻訳だけ別のモデルを使う](../configuration.md#タブ翻訳だけ別のモデルを使う)で説明します。
 

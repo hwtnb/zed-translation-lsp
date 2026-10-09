@@ -48,7 +48,7 @@ Manual completion and failure notifications identify the file name and lines. Au
 
 To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. With `provider.document`, a tab translation is listed as `Cancel tab translation of lines …`, so one range can offer both actions; canceling one leaves the other running.
 
-`Cancel all translations` stops all translation work without canceling an account menu. Old cancellation actions cannot cancel a later request for the same range. The server also accepts progress cancellation for all translations, if the client exposes that control. The actual Zed progress control and action refresh need UI verification; Code Actions are the primary cancellation route.
+`Cancel all translations` stops all translation work without canceling an account menu. Old cancellation actions cannot cancel a later request for the same range. The server also accepts progress cancellation for all translations, if the client exposes that control. Zed's progress control and its refresh of the listed actions have not been verified in the editor; use Code Actions as the primary cancellation route.
 
 To retry a failed range without selecting its text again, place the cursor inside it and choose `Retry translation of lines …` from Code Actions. The action retries the recorded range as an explicit request, including after a usage-limit pause. Hover alone continues to show the failure.
 
