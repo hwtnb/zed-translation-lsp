@@ -140,6 +140,7 @@ impl Client {
             initialized["capabilities"]["executeCommandProvider"]["commands"],
             json!([
                 "translation-lsp.preview",
+                "translation-lsp.retry",
                 "translation-lsp.open-translation",
                 "translation-lsp.cancel-range",
                 "translation-lsp.cancel-all"
@@ -2399,4 +2400,57 @@ fn comment_hover_response_cancellation_preserves_work_until_explicit_cancel_or_c
         );
     }
     client.finish(true);
+}
+
+#[test]
+fn failed_ranges_offer_cursor_retry_and_reject_stale_retry_actions() {
+    for (language, source, original) in [
+        ("rust", COMMENT_DOCUMENT, COMMENT),
+        ("markdown", MARKDOWN_DOCUMENT, PARAGRAPH),
+    ] {
+        let mut client = Client::new(&["--mock-fail"]);
+        let uri = "file:///retry.txt";
+        client.open(uri, language, source, 1);
+        let range = range_for(source, original);
+        if language == "rust" {
+            let id = client.request_hover(uri, range["start"].clone());
+            assert_error(client.receive(id, TIMEOUT), -32803);
+        } else {
+            let action = client.action(uri, range.clone());
+            let id = client.execute(action);
+            assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+            assert_eq!(client.notice()["type"], 1);
+        }
+        let cursor = json!({"start":range["start"],"end":range["start"]});
+        let actions = client.actions(uri, cursor.clone());
+        let retry = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["command"]["command"] == "translation-lsp.retry")
+            .unwrap()["command"]
+            .clone();
+        assert_eq!(retry["arguments"][0]["range"], range);
+        let id = client.execute(retry.clone());
+        assert!(client.receive(id, TIMEOUT).unwrap().is_null());
+        assert_eq!(client.notice()["type"], 1);
+        assert!(
+            client.hover(uri, range["start"].clone())["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("Retry translation of lines")
+        );
+        client.change(uri, 2, json!([{"text":source}]));
+        let id = client.execute(retry);
+        assert_error(client.receive(id, TIMEOUT), -32801);
+        assert!(
+            !client
+                .actions(uri, cursor)
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["command"]["command"] == "translation-lsp.retry")
+        );
+        client.finish(true);
+    }
 }

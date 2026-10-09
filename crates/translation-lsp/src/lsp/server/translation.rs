@@ -53,7 +53,9 @@ impl<P: TranslationProvider> Server<P> {
         limit
             .check(original.len(), setting)
             .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))?;
-        if let Some(preview) = self.cache.exact(&target.uri, target.range, tab) {
+        if request.reuses_completed()
+            && let Some(preview) = self.cache.exact(&target.uri, target.range, tab)
+        {
             self.next_ticket += 1;
             self.cache.insert(
                 target.uri.clone(),
@@ -74,7 +76,7 @@ impl<P: TranslationProvider> Server<P> {
                     )?;
                     Ok(None)
                 }
-                TranslationRequest::Reply(_, PendingReply::Command) => {
+                TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
                     self.ui
                         .inform(&format!("{}: {TRANSLATION_READY}", location(&target)))
                         .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
@@ -83,7 +85,10 @@ impl<P: TranslationProvider> Server<P> {
                 _ => Ok(None),
             };
         }
-        let immediate = matches!(request, TranslationRequest::Reply(_, PendingReply::Command));
+        let immediate = matches!(
+            request,
+            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry)
+        );
         if let Some(ticket) = self.scheduler.ticket(&target) {
             let generation = if request.explicit() {
                 Some(

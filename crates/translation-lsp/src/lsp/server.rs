@@ -65,6 +65,7 @@ type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 type RequestResult<T> = Result<T, ResponseError>;
 
 const COMMAND: &str = "translation-lsp.preview";
+const RETRY_COMMAND: &str = "translation-lsp.retry";
 const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
 const SETTINGS_COMMAND: &str = "translation-lsp.settings";
 const ACTION_KIND: &str = "translation.preview";
@@ -188,6 +189,7 @@ pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
             execute_command_provider: Some(ExecuteCommandOptions {
                 commands: [
                     COMMAND.to_owned(),
+                    RETRY_COMMAND.to_owned(),
                     DOCUMENT_COMMAND.to_owned(),
                     CANCEL_COMMAND.to_owned(),
                     CANCEL_ALL_COMMAND.to_owned(),
@@ -508,13 +510,6 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn code_actions(&mut self, params: CodeActionParams) -> RequestResult<Vec<CodeAction>> {
-        let state = self.provider.auth_ui_state();
-        if P::capabilities().account_menu.is_some()
-            && matches!(state, AuthUiState::SignedOut | AuthUiState::PlanDisabled)
-        {
-            self.clear_problem();
-        }
-        self.observe_selection(&params, state);
         if params.context.only.as_ref().is_some_and(|kinds| {
             !kinds.iter().any(|kind| {
                 let kind = kind.as_str();
@@ -525,6 +520,13 @@ impl<P: TranslationProvider> Server<P> {
         }) {
             return Ok(Vec::new());
         }
+        let state = self.provider.auth_ui_state();
+        if P::capabilities().account_menu.is_some()
+            && matches!(state, AuthUiState::SignedOut | AuthUiState::PlanDisabled)
+        {
+            self.clear_problem();
+        }
+        self.observe_selection(&params, state);
         if !self.administrations.is_empty() {
             return self.cancel_actions(&params);
         }
@@ -546,6 +548,12 @@ impl<P: TranslationProvider> Server<P> {
         if P::capabilities().account_menu.is_some() && state != AuthUiState::Ready {
             return Ok(actions);
         }
+        let retry_range = if params.range.start == params.range.end && self.check_cache().is_ok() {
+            self.cache
+                .failed_range(&params.text_document.uri, params.range.start)
+        } else {
+            None
+        };
         let Some(document) = self.documents.get(&params.text_document.uri) else {
             return Ok(actions);
         };
@@ -570,6 +578,24 @@ impl<P: TranslationProvider> Server<P> {
             });
             Ok(())
         };
+        if let Some(range) = retry_range
+            && document.selection(range).is_ok_and(|text| {
+                text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
+            })
+            && !self.scheduler.translations.values().any(|work| {
+                work.target.uri == params.text_document.uri && work.target.range == range
+            })
+        {
+            add_action(
+                range,
+                RETRY_COMMAND,
+                format!(
+                    "Retry translation of lines {}-{}",
+                    range.start.line + 1,
+                    range.end.line + 1
+                ),
+            )?;
+        }
         if document.selection(params.range).is_ok_and(|text| {
             text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
         }) {

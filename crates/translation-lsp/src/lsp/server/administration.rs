@@ -149,7 +149,10 @@ impl<P: TranslationProvider> Server<P> {
             );
             return Ok(None);
         }
-        if params.command != COMMAND && params.command != DOCUMENT_COMMAND {
+        if !matches!(
+            params.command.as_str(),
+            COMMAND | RETRY_COMMAND | DOCUMENT_COMMAND
+        ) {
             return Err(failure(ErrorCode::InvalidParams, "Unknown preview command"));
         }
         if params.arguments.len() != 1 {
@@ -185,7 +188,12 @@ impl<P: TranslationProvider> Server<P> {
             self.queue_translation(target, TranslationRequest::Document)?;
             Ok(Some(Value::Null))
         } else {
-            self.queue(id, target, PendingReply::Command)
+            let reply = if params.command == RETRY_COMMAND {
+                PendingReply::Retry
+            } else {
+                PendingReply::Command
+            };
+            self.queue(id, target, reply)
         }
     }
 }

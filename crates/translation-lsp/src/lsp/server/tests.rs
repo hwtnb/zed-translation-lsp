@@ -351,6 +351,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
             .commands,
         [
             COMMAND,
+            RETRY_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
             CANCEL_ALL_COMMAND,

@@ -3574,15 +3574,33 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
     );
     assert_eq!(response_calls(&fixture), 1);
     fixture.state.lock().unwrap().failure = None;
-    let target = TranslationTarget {
-        uri: uri.clone(),
-        version: 1,
-        session: 1,
-        range: Range::new(Position::new(0, 0), Position::new(0, source.len() as u32)),
-        target_language: "ja".into(),
-    };
+    let actions = markdown_actions(
+        &mut server,
+        &uri,
+        Range::new(Position::new(0, 4), Position::new(0, 4)),
+    );
+    let retry = actions
+        .into_iter()
+        .filter_map(|a| a.command)
+        .find(|c| c.command == RETRY_COMMAND)
+        .unwrap();
+    assert_eq!(
+        retry.arguments.as_ref().unwrap()[0]["range"],
+        json!(Range::new(
+            Position::new(0, 0),
+            Position::new(0, source.len() as u32)
+        ))
+    );
     server
-        .queue(3.into(), target, PendingReply::Command)
+        .execute_command(
+            &connection,
+            3.into(),
+            ExecuteCommandParams {
+                command: retry.command,
+                arguments: retry.arguments.unwrap(),
+                work_done_progress_params: Default::default(),
+            },
+        )
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
@@ -4173,4 +4191,123 @@ async fn comment_and_selection_share_automatic_capacity_but_manual_promotion_fre
             .finish(&connection, next(&completions).await)
             .unwrap();
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unrelated_action_kinds_preserve_selection_candidate_and_adjustment_chain() {
+    let (fixture, mut server, connection, _client, completions, uri) =
+        range_server(Settings::default()).await;
+    let selected = range_target(&server, &uri, 0);
+    let full_range = server.documents[&uri].full_range().unwrap();
+    let unrelated = |uri: &Uri, range, kind| {
+        parse(json!({
+            "textDocument":{"uri":uri},"range":range,"context":{"diagnostics":[],"only":[kind]}
+        }))
+        .unwrap()
+    };
+    assert!(
+        server
+            .code_actions(unrelated(&uri, full_range, "source.fixAll"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(server.selection.is_none());
+    markdown_actions(&mut server, &uri, selected.range);
+    let previous = server.previous_selection.clone();
+    let deadline = server.selection.as_ref().unwrap().start;
+    let other: Uri = "file:///other.md".parse().unwrap();
+    assert!(
+        server
+            .code_actions(unrelated(&other, full_range, "source.organizeImports"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(server.previous_selection == previous);
+    assert!(server.selection.as_ref().unwrap().target == selected);
+    assert_eq!(server.selection.as_ref().unwrap().start, deadline);
+    // A genuine request for the parent translation kind still observes a selection.
+    server
+        .code_actions(unrelated(&uri, selected.range, "translation"))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(
+        server.settings.selection_debounce_ms + 10,
+    ))
+    .await;
+    server.start_selection();
+    let completion = next(&completions).await;
+    server.finish(&connection, completion).unwrap();
+    assert_eq!(response_calls(&fixture), 1);
+    assert_eq!(server.cache.latest(&uri).unwrap().range, selected.range);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retry_action_refreshes_failed_range_without_discarding_readable_translation() {
+    let (fixture, mut server, connection, _client, completions, uri) =
+        range_server(Settings::default()).await;
+    let target = range_target(&server, &uri, 0);
+    let context = server.provider.context().unwrap();
+    server.cache.insert(
+        uri.clone(),
+        1,
+        Preview::new(
+            context.clone(),
+            target.range,
+            "Previous translation".into(),
+            false,
+        ),
+        false,
+        false,
+    );
+    server.cache.insert(
+        uri.clone(),
+        2,
+        Preview::new(context, target.range, "Synthetic failure".into(), false),
+        false,
+        true,
+    );
+    server.next_ticket = 2;
+    let cursor = Range::new(Position::new(0, 5), Position::new(0, 5));
+    let retry = markdown_actions(&mut server, &uri, cursor)
+        .into_iter()
+        .filter_map(|a| a.command)
+        .find(|c| c.command == RETRY_COMMAND)
+        .unwrap();
+    let params = ExecuteCommandParams {
+        command: retry.command,
+        arguments: retry.arguments.unwrap(),
+        work_done_progress_params: Default::default(),
+    };
+    let tail = std::sync::Arc::new(StreamTailGate::default());
+    fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
+    server
+        .execute_command(&connection, 1.into(), params.clone())
+        .unwrap();
+    wait_held(&tail, 1).await;
+    server
+        .execute_command(&connection, 2.into(), params)
+        .unwrap();
+    assert_eq!(response_calls(&fixture), 1);
+    assert_eq!(
+        server.cache.latest(&uri).unwrap().translation,
+        "Previous translation"
+    );
+    assert!(
+        !markdown_actions(&mut server, &uri, cursor).iter().any(|a| a
+            .command
+            .as_ref()
+            .is_some_and(|c| c.command == RETRY_COMMAND))
+    );
+    tail.release.notify_one();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(
+        server
+            .cache
+            .latest(&uri)
+            .unwrap()
+            .translation
+            .contains("Alpha")
+    );
+    assert!(server.cache.failed_range(&uri, cursor.start).is_none());
 }

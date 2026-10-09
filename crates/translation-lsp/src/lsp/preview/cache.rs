@@ -81,6 +81,19 @@ impl Cache {
         Some(self.entries[index].preview.clone())
     }
 
+    pub fn failed_range(&self, uri: &Uri, position: Position) -> Option<Range> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                &entry.uri == uri
+                    && !entry.tab
+                    && entry.failed
+                    && contains(entry.preview.range, Range::new(position, position))
+            })
+            .max_by_key(|entry| entry.ticket)
+            .map(|entry| entry.preview.range)
+    }
+
     pub fn hover(
         &mut self,
         uri: &Uri,
@@ -111,7 +124,7 @@ impl Cache {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
                     value: format!(
-                        "> **Translation LSP: translation failed**\n\n{}\n\nRun Translate selection to retry.",
+                        "> **Translation LSP: translation failed**\n\n{}\n\nTo retry, place the cursor in this range and run Retry translation of lines … from Code Actions.",
                         fenced_text(&entry.preview.translation)
                     ),
                 }),

@@ -9,6 +9,7 @@ pub(super) struct Pending {
 pub(super) enum PendingReply {
     Hover(Position),
     Command,
+    Retry,
 }
 
 pub(super) enum TranslationRequest {
@@ -19,7 +20,14 @@ pub(super) enum TranslationRequest {
 
 impl TranslationRequest {
     pub fn explicit(&self) -> bool {
-        matches!(self, Self::Document | Self::Reply(_, PendingReply::Command))
+        matches!(
+            self,
+            Self::Document | Self::Reply(_, PendingReply::Command | PendingReply::Retry)
+        )
+    }
+
+    pub fn reuses_completed(&self) -> bool {
+        !matches!(self, Self::Reply(_, PendingReply::Retry))
     }
 
     fn timeout(&self, settings: &Settings) -> Duration {
@@ -162,7 +170,7 @@ impl Scheduler {
                     },
                 );
             }
-            TranslationRequest::Reply(_, PendingReply::Command) => {
+            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
                 work.manual = true;
                 if let Some(Task::Translation { intent, .. }) = work.task.as_mut() {
                     *intent = crate::providers::Intent::Explicit;
