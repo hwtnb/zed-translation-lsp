@@ -2245,11 +2245,15 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
 async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
     for operation in ["cancel", "deadline", "edit", "shutdown"] {
         let fixture = Fixture::new().await;
+        let tail = std::sync::Arc::new(StreamTailGate::default());
         {
             let mut state = fixture.state.lock().unwrap();
             state.response_mode = "delta_compact".into();
-            state.stream_tail_delay = Duration::from_secs(5);
+            state.stream_tail_gate = Some(tail.clone());
         }
+        // Only the deadline case lets the execution budget run out. Its budget is
+        // wide enough for the steps before it to finish on a loaded machine.
+        let execution_budget = Duration::from_secs(if operation == "deadline" { 2 } else { 20 });
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
         let provider = ChatGptProvider::synthetic(
@@ -2263,7 +2267,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             finished,
             provider,
             Settings {
-                hover_timeout_ms: 250,
+                hover_timeout_ms: execution_budget.as_millis() as u64,
                 ..Default::default()
             },
             Ui::new(
@@ -2287,7 +2291,18 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
                     .unwrap(),
             )
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        // Wait for the worker to start and for its response to stay open, rather
+        // than for a fixed time.
+        let ticket = server.scheduler.pending[&1.into()].ticket;
+        let started = {
+            let completions = completions.clone();
+            tokio::task::spawn_blocking(move || completions.recv_timeout(Duration::from_secs(3)))
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(started, WorkerEvent::Started(started) if started == ticket));
+        wait_held(&tail, 1).await;
         let target = TranslationTarget {
             uri: uri.clone(),
             version: 1,
@@ -2298,14 +2313,13 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         server
             .queue(2.into(), target, PendingReply::Hover(Position::new(0, 5)))
             .unwrap();
-        let ticket = server.scheduler.pending[&1.into()].ticket;
         assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
+        let execution_deadline = server.scheduler.translations[&ticket]
+            .execution_deadline()
+            .unwrap();
         assert_eq!(
             *server.scheduler.translations[&ticket].deadline.borrow(),
-            server.scheduler.translations[&ticket].execution_deadline()
-        );
-        assert!(
-            matches!(completions.try_recv().unwrap(), WorkerEvent::Started(started) if started == ticket)
+            Some(execution_deadline)
         );
         assert!(
             completions.is_empty(),
@@ -2331,9 +2345,14 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
                     .unwrap();
                 assert_eq!(
                     *server.scheduler.translations[&ticket].deadline.borrow(),
-                    server.scheduler.translations[&ticket].execution_deadline()
+                    Some(execution_deadline)
                 );
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                assert_eq!(
+                    server.scheduler.translations[&ticket].execution_deadline(),
+                    Some(execution_deadline)
+                );
+                // Expiry holds at any time after the deadline, however late this runs.
+                tokio::time::sleep_until(execution_deadline.into()).await;
                 server.expire(&connection).unwrap();
             }
             "edit" => {
@@ -2358,6 +2377,8 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         assert!(server.scheduler.pending.is_empty());
         assert!(server.scheduler.translations.is_empty());
         assert!(server.cache.latest(&uri).is_none());
+        // The worker abandons the open response instead of waiting for it to end.
+        wait_held(&tail, 0).await;
         let start = Instant::now();
         drop(completions);
         drop(server);
