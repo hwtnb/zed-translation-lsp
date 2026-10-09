@@ -62,6 +62,20 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 
 対応言語の `language_servers` を明示している場合は、既存の配列へ `"translation-lsp"` を追加してください。言語ごとの設定は[言語サーバーの設定](languages.md#言語サーバーの設定)にあります。
 
+特定の言語でこの拡張を止めるには、その言語の `language_servers` に `"!translation-lsp"` を書き、続けて `"..."` を書いてほかのサーバーを残します。
+
+```json
+{
+  "languages": {
+    "YAML": {
+      "language_servers": ["!translation-lsp", "..."]
+    }
+  }
+}
+```
+
+その言語では、ホバーの翻訳もコードアクションも出なくなります。
+
 ## 翻訳する言語
 
 画面上の表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。

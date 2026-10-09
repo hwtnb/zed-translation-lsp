@@ -1493,9 +1493,18 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "typescriptreact",
             "const view: Element = <div>// jsx text</div>;",
         ),
+        ("file:///general.json", "json", "\"// string\""),
+        ("file:///general.jsonc", "jsonc", "{\"s\": \"// string\"}"),
+        ("file:///general.yaml", "yaml", "s: \"# string\""),
+        ("file:///general.toml", "toml", "s = \"# string\""),
     ] {
-        let source = format!("{lead}\n    {COMMENT}\n");
-        let range = range_for(&source, COMMENT);
+        let comment = if matches!(language, "yaml" | "toml") {
+            COMMENT.replace("//", "#")
+        } else {
+            COMMENT.to_owned()
+        };
+        let source = format!("{lead}\n    {comment}\n");
+        let range = range_for(&source, &comment);
         client.open(uri, language, &source, 1);
         for point in [
             json!({"line": 1, "character": 0}),
@@ -1505,22 +1514,24 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         }
         assert_preview(
             &client.hover(uri, range["start"].clone()),
-            COMMENT,
+            &comment,
             COMMENT_JA,
             &range,
         );
         assert_preview(
             &client.hover(uri, range["end"].clone()),
-            COMMENT,
+            &comment,
             COMMENT_JA,
             &range,
         );
-        let literal = if language == "rust" {
-            format!("let t = r#\"{COMMENT}\"#;")
-        } else if language == "csharp" {
-            format!("var t = @\"{COMMENT}\";")
-        } else {
-            format!("const t = `{COMMENT}`;")
+        let literal = match language {
+            "rust" => format!("let t = r#\"{comment}\"#;"),
+            "csharp" => format!("var t = @\"{comment}\";"),
+            // JSON strings cannot span lines.
+            "json" | "jsonc" => format!("[\n\"{}\"]", comment.replace('\n', " ")),
+            "yaml" => format!("t: \"{comment}\""),
+            "toml" => format!("t = \"\"\"{comment}\"\"\""),
+            _ => format!("const t = `{comment}`;"),
         };
         client.change(uri, 2, json!([{"text": literal}]));
         assert!(
@@ -1531,7 +1542,7 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         client.change(uri, 3, json!([{"text": source}]));
         assert_preview(
             &client.hover(uri, range["start"].clone()),
-            COMMENT,
+            &comment,
             COMMENT_JA,
             &range,
         );
@@ -2432,6 +2443,61 @@ fn python_docstring_and_comment_hover_use_canonical_bodies() {
             &range,
         );
         client.close(uri);
+    }
+    client.finish(true);
+}
+
+#[test]
+fn json_yaml_and_toml_samples_translate_their_comment_groups() {
+    let mut client = Client::new(&[]);
+    for (uri, language, source) in [
+        (
+            "file:///comment.json",
+            "json",
+            include_str!("../../../samples/comment.jsonc"),
+        ),
+        (
+            "file:///comment.jsonc",
+            "jsonc",
+            include_str!("../../../samples/comment.jsonc"),
+        ),
+        (
+            "file:///comment.yaml",
+            "yaml",
+            include_str!("../../../samples/comment.yaml"),
+        ),
+        (
+            "file:///comment.toml",
+            "toml",
+            include_str!("../../../samples/comment.toml"),
+        ),
+    ] {
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = source.replace('\n', ending);
+            let start = source.find(['/', '#']).unwrap();
+            let end = source.find("failure.").unwrap() + "failure.".len();
+            let original = &source[start..end];
+            let range = range_for(
+                &source.replace(ending, "\n"),
+                &original.replace(ending, "\n"),
+            );
+            client.open(uri, language, &source, 1);
+            for point in ["start", "end"] {
+                assert_preview(
+                    &client.hover(uri, range[point].clone()),
+                    original,
+                    COMMENT_JA,
+                    &range,
+                );
+            }
+            let key = source.find("retry_count").unwrap();
+            assert!(
+                client
+                    .hover(uri, position(&source[..key].replace(ending, "\n")))
+                    .is_null()
+            );
+            client.close(uri);
+        }
     }
     client.finish(true);
 }

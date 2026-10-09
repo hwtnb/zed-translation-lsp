@@ -62,6 +62,20 @@ If `binary.path` is omitted, the extension looks for `translation-lsp` on the wo
 
 If you explicitly configure a language's `language_servers`, add `"translation-lsp"` to the existing array. The settings of each language are listed under [Language server settings](languages.md#language-server-settings).
 
+To turn this extension off for one language, put `"!translation-lsp"` in that language's `language_servers`, followed by `"..."` to keep the other servers:
+
+```json
+{
+  "languages": {
+    "YAML": {
+      "language_servers": ["!translation-lsp", "..."]
+    }
+  }
+}
+```
+
+In that language, neither Hover translation nor the Code Actions appear.
+
 ## Translation languages
 
 UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language.

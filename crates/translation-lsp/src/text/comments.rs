@@ -9,6 +9,7 @@ use rust_lexer::DocStyle;
 
 mod c_family;
 mod csharp;
+mod data;
 mod python;
 mod syntax;
 
@@ -19,6 +20,7 @@ enum LineKind {
     CSharp(u8),
     CFamily(&'static str),
     Python,
+    Data(u8),
 }
 
 enum Kind {
@@ -49,6 +51,9 @@ impl Comments {
         }
         if language_id == "rust" {
             return Self(rust::parse(text));
+        }
+        if matches!(language_id, "json" | "jsonc" | "yaml" | "toml") {
+            return Self(data::parse(language_id, text));
         }
 
         Self(javascript::parse(language_id, uri, text))
@@ -110,7 +115,11 @@ impl Comments {
                 }
                 Kind::Line(LineKind::Python) => 1,
                 Kind::Line(LineKind::CFamily(prefix)) => prefix.len() as u8,
-                Kind::Line(LineKind::JavaScript(opening) | LineKind::CSharp(opening))
+                Kind::Line(
+                    LineKind::JavaScript(opening)
+                    | LineKind::CSharp(opening)
+                    | LineKind::Data(opening),
+                )
                 | Kind::Block { opening, .. } => opening,
             } as usize;
             let closing = if matches!(comment.kind, Kind::Block { .. }) {
@@ -434,6 +443,284 @@ mod tests {
         }
     }
 
+    fn bodies(language: &str, text: &str) -> Vec<String> {
+        let uri = "untitled:comment".parse().unwrap();
+        let comments = Comments::parse(language, &uri, text);
+        let mut bodies = Vec::new();
+        let mut index = 0;
+        while index < comments.0.len() {
+            let group = comments.at(text, comments.0[index].range.start).unwrap();
+            bodies.push(comments.body(text, group.clone()));
+            index = group.end;
+        }
+        bodies
+    }
+
+    const JSON: &str = concat!(
+        "{\n",
+        "  // line one\n",
+        "  // line two\n",
+        "  \"a\": \"// not\", /* block */ \"b\": \"/* not */\"\n",
+        "}\n",
+    );
+    const YAML: &str = concat!(
+        "# top\n",
+        "# second\n",
+        "key: value # trailing\n",
+        "url: http://a/#frag\n",
+        "text: \"quoted # not\"\n",
+        "plain: a#b\n",
+        "block: |\n",
+        "  # not a comment\n",
+        "list:\n",
+        "  - item # c\n",
+        "  # indented\n",
+        "---\n",
+        "# second doc\n",
+    );
+    const TOML: &str = concat!(
+        "# top\n",
+        "# second\n",
+        "a = \"x # not\" # trailing\n",
+        "b = 'y # not'\n",
+        "c = '''\n",
+        "# not\n",
+        "'''\n",
+        "d = \"\"\"\n",
+        "# not\n",
+        "\"\"\"\n",
+        "[table] # after header\n",
+        "arr = [\n",
+        "  1, # one\n",
+        "]\n",
+    );
+
+    #[test]
+    fn json_yaml_and_toml_comments_exclude_strings_and_keep_source_newlines() {
+        for (language, source, expected) in [
+            ("json", JSON, &["line one\nline two", "block "][..]),
+            ("jsonc", JSON, &["line one\nline two", "block "]),
+            (
+                "yaml",
+                YAML,
+                &["top\nsecond", "trailing", "c", "indented", "second doc"],
+            ),
+            (
+                "toml",
+                TOML,
+                &["top\nsecond", "trailing", "after header", "one"],
+            ),
+        ] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let source = source.replace('\n', ending);
+                let expected: Vec<_> = expected
+                    .iter()
+                    .map(|body| body.replace('\n', ending))
+                    .collect();
+                assert_eq!(bodies(language, &source), expected, "{language} {ending:?}");
+                let uri = "untitled:comment".parse().unwrap();
+                let comments = Comments::parse(language, &uri, &source);
+                for comment in &comments.0 {
+                    let token = &source[comment.range.clone()];
+                    assert!(!token.contains("not") && !token.ends_with(['\r', '\n']));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hash_line_groups_break_on_blank_code_and_indent() {
+        for (language, code) in [("yaml", "a: 1 # inline"), ("toml", "a = 1 # inline")] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = [
+                    "# first  ",
+                    "#",
+                    "# \tthird🚀",
+                    "",
+                    "# separate",
+                    code,
+                    "# alone",
+                    "#!keep",
+                ]
+                .join(ending);
+                assert_eq!(
+                    bodies(language, &text),
+                    [
+                        format!("first  {ending}{ending}\tthird🚀"),
+                        "separate".to_owned(),
+                        "inline".to_owned(),
+                        format!("alone{ending}!keep"),
+                    ],
+                    "{language} {ending:?}"
+                );
+                let (range, _) = body_at(language, &text, "# first");
+                assert_eq!(range, ["# first  ", "#", "# \tthird🚀"].join(ending));
+            }
+        }
+        let text = "a:\n  # nested\n  # group\n    # deeper\n  b: 1\n";
+        assert_eq!(bodies("yaml", text), ["nested\ngroup", "deeper"]);
+    }
+
+    #[test]
+    fn json_and_toml_keep_comments_around_errors_but_never_read_string_contents() {
+        for (language, broken, expected) in [
+            // An unclosed string ends at its line.
+            (
+                "json",
+                "{\"a\": \"unclosed // hidden\n// after\n\"b\": 1}",
+                &["after"][..],
+            ),
+            // The next line's first quote must not close it and expose that string.
+            (
+                "json",
+                "[\"unclosed\n\"two /* hidden */\", \"three // hidden\"] // after",
+                &["after"],
+            ),
+            (
+                "json",
+                "{\"a\": \"C:\\dir // hidden\"} // after",
+                &["after"],
+            ),
+            ("json", "{\"a\": \"x\\\" // hidden\"} // after", &["after"]),
+            ("json", "{\"a\": \"x\\\\\" // after\n}", &["after"]),
+            // A backslash does not carry the string over the line break.
+            ("json", "{\"a\": \"unclosed\\\n// after\n}", &["after"]),
+            ("json", "{'a': 'single // hidden'} // after", &["after"]),
+            (
+                "json",
+                "{\"a\": 1 \"b\": \"no comma\"} // after",
+                &["after"],
+            ),
+            (
+                "json",
+                "{\n// before\n\"a\": 1, // same\n\"b\" // key\n}\n// after",
+                &["before", "same", "key", "after"],
+            ),
+            (
+                "json",
+                "{\"a\": [1, // open\n\"b\": tru // typing",
+                &["open", "typing"],
+            ),
+            ("json", "/* closed */ /* unclosed\n// hidden", &["closed "]),
+            ("toml", "a = \"unclosed # hidden\n# after", &["after"]),
+            ("toml", "a = 'unclosed # hidden\n# after", &["after"]),
+            ("toml", "a = \"x\\\" # hidden\n# after", &["after"]),
+            ("toml", "\"k\\q # hidden\" = 1 # after", &["after"]),
+            ("toml", "a = \"\"\"unclosed\n# hidden\nb = 1 # hidden", &[]),
+            ("toml", "a = '''unclosed\n# hidden\nb = 1 # hidden", &[]),
+            ("toml", "a = \"\"\"x\\ # hidden\n\"\"\" # after", &["after"]),
+            // The sixth quote opens a string of its own.
+            (
+                "toml",
+                "a = \"\"\"x\"\"\"\"\"\" # hidden\n# after",
+                &["after"],
+            ),
+            // The lexer keeps these quotes inside a bare token.
+            ("toml", "a = r\"x # hidden\"\n# after", &["after"]),
+            (
+                "toml",
+                "a = x'''\n# hidden\n''' # after\nb = don't # hidden",
+                &["after"],
+            ),
+            (
+                "toml",
+                "a = # typing\nb = [1, 2 # open\n[table # header\nc = tru # after",
+                &["typing", "open", "header", "after"],
+            ),
+        ] {
+            let prefix = if language == "json" { "//" } else { "#" };
+            for ending in ["\n", "\r\n", "\r"] {
+                let source = format!("{prefix} Real.\n\n{broken}").replace('\n', ending);
+                let mut found = bodies(language, &source);
+                assert_eq!(found.remove(0), "Real.", "{broken}");
+                assert_eq!(found, expected, "{broken} {ending:?}");
+            }
+        }
+        assert!(bodies("json", "/* unclosed").is_empty());
+        assert_eq!(bodies("json", "/**/ /* a\n * b */"), ["", "a\n * b "]);
+        assert_eq!(bodies("toml", "\u{feff}# bom\na#b = 1"), ["bom", "b = 1"]);
+    }
+
+    #[test]
+    fn yaml_keeps_the_comments_before_the_first_scanner_error() {
+        for (broken, expected) in [
+            ("other: \"unclosed # hidden\n# hidden\n", &[][..]),
+            ("other: 'unclosed # hidden\n# hidden\n", &[]),
+            ("other: ['a\nk2: v # hidden\n", &[]),
+            ("map: {a:[ \"x # hidden\", b: 2}\n", &[]),
+            ("other: value\n  bad: |\n    # hidden\n", &[]),
+            ("other: |x\n  # hidden\n", &[]),
+            ("other\n", &[]),
+            ("\tother: v # tab\n", &[]),
+            ("other: {a: 1 # open\n", &["open"]),
+        ] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let source = format!("# Real.\nkey: v # same\n{broken}").replace('\n', ending);
+                let mut found = bodies("yaml", &source);
+                assert_eq!(found.drain(..2).collect::<Vec<_>>(), ["Real.", "same"]);
+                assert_eq!(found, expected, "{broken} {ending:?}");
+            }
+        }
+        let uri = "untitled:comment".parse().unwrap();
+        let mut source = "key:\n".to_owned();
+        for index in 0..120 {
+            source.push_str(&format!("  # between {index}\n"));
+        }
+        source.push_str("  value # last\n");
+        assert_eq!(Comments::parse("yaml", &uri, &source).0.len(), 121);
+    }
+
+    #[test]
+    fn json_on_a_single_line_is_read_in_one_pass() {
+        let mut source = String::from("{");
+        for index in 0.. {
+            if source.len() >= 1 << 20 {
+                break;
+            }
+            source.push_str(&format!("\"key{index}\":\"value {index}\","));
+        }
+        source.push_str("} // note");
+        let started = std::time::Instant::now();
+        assert_eq!(bodies("json", &source), ["note"]);
+        // One pass takes milliseconds. Looking for the line end again at each
+        // string took minutes in a debug build.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    // Valid YAML: each quoted value continues one column deeper than its key.
+    fn yaml_values_continued_one_column_deeper() -> Vec<String> {
+        ['"', '\'']
+            .into_iter()
+            .flat_map(|quote| {
+                [
+                    format!("# before\nb: {quote}multi\n line{quote} # value\nc: 1 # after\n"),
+                    format!(
+                        "# before\na:\n  b: {quote}multi\n   line{quote} # value\n  c: 1 # after\n"
+                    ),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn yaml_keeps_the_comments_before_a_value_continued_one_column_deeper() {
+        for source in yaml_values_continued_one_column_deeper() {
+            assert_eq!(bodies("yaml", &source)[0], "before", "{source}");
+        }
+    }
+
+    #[test]
+    #[ignore = "granit-parser 1.3 rejects this valid YAML; resolved by granit-parser 2.0"]
+    fn yaml_reads_past_a_value_continued_one_column_deeper() {
+        for source in yaml_values_continued_one_column_deeper() {
+            assert_eq!(
+                bodies("yaml", &source),
+                ["before", "value", "after"],
+                "{source}"
+            );
+        }
+    }
+
     #[test]
     fn rust_tokens_ignore_literals_and_shebang_and_wait_for_closed_blocks() {
         let text = concat!(
@@ -498,6 +785,9 @@ mod tests {
             ("csharp", "\u{85}"),
             ("csharp", "\u{2028}"),
             ("csharp", "\u{2029}"),
+            ("json", "\n"),
+            ("json", "\r\n"),
+            ("jsonc", "\r"),
         ] {
             let uri = "untitled:comment".parse().unwrap();
             let text = format!("  // first{ending}  // second");
@@ -529,6 +819,9 @@ mod tests {
             ("csharp", "\u{85}"),
             ("csharp", "\u{2028}"),
             ("csharp", "\u{2029}"),
+            ("json", "\n"),
+            ("jsonc", "\r\n"),
+            ("json", "\r"),
         ] {
             let text = [
                 "  // first  ",

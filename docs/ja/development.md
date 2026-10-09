@@ -22,6 +22,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 依存関係のバージョンは `major.minor` のCargo互換範囲で指定します。特定のバージョンに固定する場合は、互換性上の理由を記録してください。更新時は `cargo update` によるロックファイルの差分を確認し、上記の検証とネイティブ・WASM両方のリリースビルドを実行してください。Oxcの関連クレートは同じリリース系列に揃えます。`zed_extension_api` の更新時は、対象ZedのAPI対応も確認してください。
 
-新しいコード言語のコメント抽出には、Tree-sitterの文法を第一候補として検証します。既存のRust用字句解析器とJavaScript／TypeScript用Oxcは継続して使用します。
+新しいコード言語のコメント抽出には、Tree-sitterの文法を第一候補として検証します。JSON、TOML、YAMLではコメントが字句だけで決まるため、文法ではなく字句の読み取りを使います。既存のRust用字句解析器とJavaScript／TypeScript用Oxcは継続して使用します。
 
 現在のバージョン固定の例外は `unicode-ident = "=1.0.24"` です。Rustの字句解析器とUnicodeテーブルの版を揃えるために固定しています。字句解析器と関連するUnicodeテーブルが同じ版に対応した時点で、固定を外してまとめて更新してください。
+
+`granit-parser` 1.3 は、引用符付きの複数行のYAMLの値で、継続行がキーより1桁だけ深い正しい書き方をエラーにします。そのため、その値から後ろのコメントを抽出できません。上流では修正済みで、2.0で公開される見込みです。2.0へ更新するときは、`comments` の機能フラグを有効にし、テスト `yaml_reads_past_a_value_continued_one_column_deeper` の `ignore` を外し、`docs/languages.md` と `docs/ja/languages.md` からこの制限の文を消してください。

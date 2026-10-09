@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, and Python, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
+Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, JSON, JSONC, YAML, and TOML, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
 The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Without provider settings, the extension runs in mock mode: it translates only the bundled samples into Japanese and sends no text to an external service.
 
@@ -28,7 +28,7 @@ cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --lock
 
 In Zed's Extensions view, choose `Install Dev Extension` and select **`crates/zed-extension`** in the checkout. See [Zed's development extension instructions](https://zed.dev/docs/extensions/developing-extensions).
 
-If you list language servers explicitly for C#, C, C++, or Python, see [Language server settings](docs/languages.md#language-server-settings).
+If you list language servers explicitly for C#, C, C++, Python, JSON, JSONC, YAML, or TOML, see [Language server settings](docs/languages.md#language-server-settings).
 
 ## Minimal settings
 
@@ -55,7 +55,7 @@ This example selects mock mode. To translate your own text, replace `provider` w
 
 To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). C/C++ samples are available in [samples/comment.c](samples/comment.c) and [samples/comment.cpp](samples/comment.cpp), including Doxygen comments.
 
-For Python comments and docstrings, use [samples/comment.py](samples/comment.py). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
+For Python comments and docstrings, use [samples/comment.py](samples/comment.py). For JSON, YAML, and TOML comments, use [samples/comment.jsonc](samples/comment.jsonc), [samples/comment.yaml](samples/comment.yaml), and [samples/comment.toml](samples/comment.toml). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
 
 Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
 
@@ -74,6 +74,7 @@ The rules of these operations are described under [Usage](docs/usage.md).
 ## Before you send text
 
 - Merely passing over a comment can consume provider usage once Zed sends a Hover request.
+- If a comment contains a credential, the credential is sent with it.
 - With `markdown_auto_translate` set to `true`, selecting Markdown prose just to copy it can also send it for translation.
 - Mock mode sends no text to an external service.
 
