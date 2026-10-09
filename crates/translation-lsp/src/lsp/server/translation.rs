@@ -54,7 +54,16 @@ impl<P: TranslationProvider> Server<P> {
             .check(original.len(), setting)
             .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))?;
         if request.reuses_completed()
-            && let Some(preview) = self.cache.exact(&target.uri, target.range, tab)
+            && let Some(preview) = self
+                .cache
+                .exact(&target.uri, target.range, tab)
+                .or_else(|| {
+                    if request.explicit() {
+                        self.cache.exact(&target.uri, target.range, !tab)
+                    } else {
+                        None
+                    }
+                })
         {
             self.next_ticket += 1;
             self.cache.insert(

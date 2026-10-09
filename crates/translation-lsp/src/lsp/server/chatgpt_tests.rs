@@ -4311,3 +4311,136 @@ async fn retry_action_refreshes_failed_range_without_discarding_readable_transla
     );
     assert!(server.cache.failed_range(&uri, cursor.start).is_none());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_outputs_reuse_completed_ranges_without_automatic_hover_promotion() {
+    for tab_first in [false, true] {
+        let (fixture, mut server, connection, client, completions, uri) =
+            range_server(Settings::default()).await;
+        let target = range_target(&server, &uri, 0);
+        let request = |tab| {
+            if tab {
+                TranslationRequest::Document
+            } else {
+                TranslationRequest::Reply(1.into(), PendingReply::Command)
+            }
+        };
+        server
+            .queue_translation(target.clone(), request(tab_first))
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        let opened = |client: &Connection| {
+            client.receiver.try_iter().find_map(|m| match m {
+                Message::Request(r) if r.method == "window/showDocument" => {
+                    Some(r.params["uri"].clone())
+                }
+                _ => None,
+            })
+        };
+        let first_uri = opened(&client);
+        if tab_first {
+            let hover = server
+                .hover(
+                    2.into(),
+                    parse(json!({"textDocument":{"uri":uri},"position":target.range.start}))
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(hover, Some(Value::Null));
+        }
+        server
+            .queue_translation(target.clone(), request(!tab_first))
+            .unwrap();
+        let second_uri = opened(&client);
+        assert!(
+            server.scheduler.translations.is_empty(),
+            "Switching outputs must not enqueue another translation"
+        );
+        assert_eq!(response_calls(&fixture), 1);
+        assert_eq!(
+            server
+                .cache
+                .exact(&uri, target.range, true)
+                .unwrap()
+                .translation,
+            server
+                .cache
+                .exact(&uri, target.range, false)
+                .unwrap()
+                .translation
+        );
+        server
+            .queue_translation(target, TranslationRequest::Document)
+            .unwrap();
+        assert_eq!(
+            opened(&client),
+            first_uri.or(second_uri),
+            "Reused outputs must preserve the temporary file identity"
+        );
+        assert_eq!(response_calls(&fixture), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_selection_and_retry_do_not_reuse_tab_results() {
+    for retry in [false, true] {
+        let (fixture, mut server, connection, client, completions, uri) =
+            range_server(Settings::default()).await;
+        let target = range_target(&server, &uri, 0);
+        server
+            .queue_translation(target.clone(), TranslationRequest::Document)
+            .unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        client.receiver.try_iter().for_each(drop);
+        let request = if retry {
+            TranslationRequest::Reply(1.into(), PendingReply::Retry)
+        } else {
+            TranslationRequest::Selection
+        };
+        server.queue_translation(target, request).unwrap();
+        server
+            .finish(&connection, next(&completions).await)
+            .unwrap();
+        assert_eq!(response_calls(&fixture), 2);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cross_output_reuse_checks_input_limits_and_document_freshness() {
+    let settings = Settings::from_options(Some(
+        json!({"translation_limits":{"input_kib":{"hover":1}}}),
+    ))
+    .unwrap();
+    let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
+    let source = "A".repeat(1500);
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "markdown".into(), source.clone()),
+    );
+    let mut target = range_target(&server, &uri, 0);
+    target.range = server.documents[&uri].full_range().unwrap();
+    server
+        .queue_translation(target.clone(), TranslationRequest::Document)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    client.receiver.try_iter().for_each(drop);
+    let error = server
+        .queue(1.into(), target.clone(), PendingReply::Command)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams as i32);
+    assert!(server.cache.exact(&uri, target.range, false).is_none());
+    assert_eq!(response_calls(&fixture), 1);
+    server.notification(&connection, lsp_server::Notification::new(DidChangeTextDocument::METHOD.into(), json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"Changed."}]}))).unwrap();
+    let error = server
+        .queue_translation(target, TranslationRequest::Document)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ContentModified as i32);
+    assert!(server.cache.latest(&uri).is_none());
+    assert_eq!(response_calls(&fixture), 1);
+}
