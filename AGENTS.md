@@ -12,16 +12,18 @@ relative to the repository root.
   `src/providers/` owns translation providers and authentication;
   `src/text/` owns comment extraction and Markdown input eligibility.
 - `crates/translation-lsp/tests/stdio.rs`: integration tests for the LSP protocol.
-- `README.md`: canonical English usage and development documentation.
-  `README.ja.md` provides the Japanese version. Consult the relevant section for
-  settings, installation, supported behavior, or dependency compatibility.
+- `README.md` and `docs/`: canonical English usage and development documentation.
+  `README.md` is the entry point; `docs/` holds the details. `README.ja.md` and
+  `docs/ja/` provide the Japanese version under the same file names. Consult the
+  relevant page for settings, installation, supported behavior, or dependency
+  compatibility.
 
 ## Engineering conventions
 
 - Use Rust Edition 2024 and workspace resolver 3. Prioritize dependency updates
   over preserving an older minimum Rust version. Raise the affected manifest
-  requirements and update the READMEs when dependencies require newer Rust;
-  verify the resulting build compatibility.
+  requirements and update the affected pages in both languages when dependencies
+  require newer Rust; verify the resulting build compatibility.
 - Use named module files with matching subdirectories, such as `providers.rs`
   and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.
 - Keep providers replaceable through `TranslationProvider` and generic static
@@ -30,10 +32,12 @@ relative to the repository root.
   use OS-neutral editor action names in shared instructions. Keep all three
   platforms in CI, and distinguish build checks from actual Zed verification.
 - Follow `.editorconfig` and rustfmt. Keep UI labels in English independently of
-  the translation target language. Update both READMEs for user-facing changes.
+  the translation target language. Update the affected pages in both languages
+  for user-facing changes.
 - Use `major.minor` Cargo compatibility ranges and track `Cargo.lock`. Any exact
   pin needs a documented compatibility reason. Keep Oxc crates on the same release
-  line; consult the README's Unicode compatibility note before lexer updates.
+  line; consult the Unicode compatibility note in `docs/development.md` before
+  lexer updates.
 - When updating `zed_extension_api`, verify the intended Zed host supports that
   API version as well as checking the WASM build.
 

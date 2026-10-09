@@ -1,0 +1,158 @@
+# 設定
+
+[English](../configuration.md)
+
+このページでは、`lsp.translation-lsp` の設定を説明します。プロバイダーごとの項目は、[ChatGPT](providers/chatgpt.md) と [Anthropic API](providers/anthropic.md) のページにあります。
+
+## 設定の全体例
+
+拡張ID・言語サーバーの設定キー・ネイティブ実行ファイル名は `translation-lsp` です。
+
+既存のZed設定の `lsp` に次の項目を追加し、`binary.path` をビルドした実行ファイルの絶対パスへ置き換えます。モデルは、接続するアカウントで使えるものを指定してください。下記のモデルと推論強度は設定例です。
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "binary": {
+        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
+        "arguments": []
+      },
+      "initialization_options": {
+        "target_language": "ja",
+        "source_language": "auto",
+        "hover_timeout_ms": 20000,
+        "selection_timeout_ms": 30000,
+        "document_timeout_ms": 180000,
+        "markdown_auto_translate": true,
+        "selection_debounce_ms": 450,
+        "translation_limits": {
+          "input_kib": {
+            "hover": 16,
+            "document": 1024
+          },
+          "output_kib": 4096
+        },
+        "provider": {
+          "name": "chatgpt",
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "low"
+        }
+      }
+    }
+  }
+}
+```
+
+## サーバーのパス
+
+`binary.path` は言語サーバーを動かすOSの絶対パスにします。Windowsでは `.exe` まで指定してください。
+
+| OS | `binary.path` の例 |
+| --- | --- |
+| Windows | `C:/Users/you/src/translation-lsp/target/release/translation-lsp.exe` |
+| macOS | `/Users/you/src/translation-lsp/target/release/translation-lsp` |
+| Linux | `/home/you/src/translation-lsp/target/release/translation-lsp` |
+
+WindowsのパスもJSON内では `/` で区切れます。バックスラッシュを使う場合は1文字ごとに `\\` と記述してください。空白を含むパスでも、値の中にシェル用の引用符を追加しません。
+
+`binary.path` を省略すると、作業ツリーのPATHにある `translation-lsp` を探します。
+
+### 言語サーバーの一覧
+
+対応言語の `language_servers` を明示している場合は、既存の配列へ `"translation-lsp"` を追加してください。言語ごとの設定は[言語サーバーの設定](languages.md#言語サーバーの設定)にあります。
+
+## 翻訳する言語
+
+画面上の表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。
+
+## タイミング
+
+翻訳のタイミング設定は省略できます。
+
+| 設定 | 既定値 | 指定できる値 | 動作 |
+| --- | --- | --- | --- |
+| `hover_timeout_ms` | `20000` | 整数 `1000`〜`120000`、両端を含む | ホバー要求ごとの受信時からの応答期限。キュー待ちを含む。 |
+| `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 保持した手動選択・Markdownバックグラウンド翻訳の実行期限。ワーカー（翻訳処理を実行するタスク）へ渡した時点から計る。 |
+| `document_timeout_ms` | `180000` | 整数 `1000`〜`600000`、両端を含む | 別タブに開く文書・選択範囲の実行期限。ワーカーへ渡した時点から計り、キュー待ちは別。 |
+| `markdown_auto_translate` | `true` | 真偽値 | 安定したMarkdownの文章選択からバックグラウンド翻訳を始める。`false` でも手動選択翻訳とコメントのホバーを使える。 |
+| `selection_debounce_ms` | `450` | 整数 `100`〜`2000`、両端を含む | ネイティブサーバーが新しい選択を観測してから待つ時間。Zed側の観測待ちは別に加わる。 |
+
+## サイズの上限
+
+翻訳量の上限は `initialization_options.translation_limits` にまとめます。値は正の整数で、単位はKiB（1 KiB = UTF-8の1024バイト）です。文字数やトークン数ではありません。各階層のオブジェクトや項目を省略すると、その項目の既定値を補います。
+
+| `translation_limits` 内の設定 | 既定値 | 対象 |
+| --- | --- | --- |
+| `input_kib.hover` | `16` | 新たに開始するコメントのホバー、Markdownバックグラウンド翻訳、手動選択のホバープレビュー。 |
+| `input_kib.document` | `1024` | 別タブに開く全文・選択範囲の翻訳。 |
+| `output_kib` | `4096` | 表示先によらず、完成した訳文。 |
+
+例えば `"translation_limits": {"input_kib": {"document": 2048}}` とすると、文書入力の上限だけを2 MiBに変更します。ゼロ・負数・小数・null・未知の項目・数値以外は設定エラーになります。サーバーの実行環境で表現できない大きさも拒否します。変更後は言語サーバーを再起動してください。
+
+明示実行で入力上限を超えると、実際のサイズ・上限・設定名を表示します。上限を超える自動選択は翻訳を開始しません。既に翻訳済みのキャッシュは、新しい翻訳要求を送らずに閲覧できます。
+
+## 受付とキャッシュの上限
+
+受付とキャッシュの上限も `translation_limits` の中で調整できます。
+
+```json
+"translation_limits": {
+  "work": { "admitted": 8, "concurrent": 2, "documents": 1, "automatic": 3, "hover_waiters": 16 },
+  "cache": { "entries": 64, "capacity_kib": 16384 }
+}
+```
+
+`admitted` は実行・待機の合計で、取り消しを指示したワーカーも終了通知までは数えます。`concurrent` は全翻訳の同時実行数、`documents` はタブ翻訳として実行枠を割り当てる同時処理数、`automatic` は手動・タブ翻訳の依頼がなく、コメントのホバーや自動選択によって保持する処理数、`hover_waiters` は個々のホバー応答待ちの上限です。件数は正の整数とし、`documents <= concurrent <= admitted` と `automatic < admitted` を満たす必要があります。明示依頼の受付余地を残す制約であり、実行枠を常に空けておくものではありません。同時実行数を増やすと翻訳プロバイダー（翻訳サービスや模擬実装）への同時要求も増えます。
+
+`cache.entries` は成功・失敗・タブ用を合わせたすべての文書の項目数です。`cache.capacity_kib` は保存する文章の合計容量で、プロセス全体のメモリ上限ではありません。1件の最大結果を格納できるよう、実効容量はこの値と `output_kib` の大きい方になります。メタデータ、原文、処理中の入力、一時ファイルはこの文章容量に含めません。既定値は連続して読む用途の出発点であり、翻訳プロバイダーや機器の測定上限ではありません。省略した入れ子の項目は既定値を使い、変更後は言語サーバーを再起動してください。
+
+## 設定できる最大値
+
+次の値が**設定できる最大値**です。上記の既定値とは別であり、超過する設定は黙って切り下げず、起動時に拒否します。
+
+| `translation_limits` 内の設定 | 最大値 |
+| --- | --- |
+| `input_kib.hover` | `1024`（1 MiB） |
+| `input_kib.document`、`output_kib` | 各 `16384`（16 MiB） |
+| `work.admitted` | `64` |
+| `work.concurrent`、`work.documents` | 各 `8` |
+| `work.automatic` | `63`、かつ `admitted` 未満 |
+| `work.hover_waiters` | `256` |
+| `cache.entries` | `4096` |
+| `cache.capacity_kib` | `262144`（256 MiB） |
+
+組み合わせにも制限があります。`max(input_kib.hover, input_kib.document) × work.admitted` は `262144` KiB（256 MiB）以下、`output_kib × work.concurrent` は `65536` KiB（64 MiB）以下にします。例えば文書入力16 MiB・受付64件は拒否され、この入力上限では受付16件までです。出力16 MiBなら同時実行は4件までです。現在キューが空でも、設定上の最大負荷を検証します。
+
+これらはサーバー側の資源保護の基準であり、機器の実測限界や翻訳プロバイダーが処理できる量を表すものではありません。入力の合計容量で受付済み原文を制限し、出力はSSEのエスケープや複数の訳文スナップショットを保持する余地を残すため、より小さくしています。入力の個別上限は大きな文書を許容しつつ、自動・選択範囲のホバー用入力を厳しめに制限します。件数の上限は、小さな文章を大量に指定した場合のスケジューラ・キャッシュの走査も制限します。キャッシュ文章は別枠で最大256 MiBです。開いている原文、パーサー、メモリ管理、通信バッファ、一時ファイルなどの費用もあるため、**プロセス全体のメモリ保証値ではありません**。既定値は変更していません。これを超えて利用する場合は、Zedの設定による回避ではなく、サーバーの基準自体の見直しが必要です。
+
+通信側の制限は、JSONのエスケープ・訳文の重複送信・SSEイベントの付加情報を考慮して `output_kib` に連動します。訳文のサイズとは別に通信処理量を制限し、最大量のメモリを先に確保することはありません。
+
+設定値を増やしても、モデルの入力・出力上限や翻訳期限は増えません。長文も一つの要求で送信し、自動分割は行いません。失敗・未完了・上限超過の結果を完成訳として表示・保存しません。
+
+## 設定エラーと再起動
+
+未知の項目、型の違う値、範囲外の数値は、英語の設定エラーを返して言語サーバーの起動を止めます。項目を省略すると既定値を使います。
+
+設定を変更したら言語サーバーを再起動してください。設定変更は、実行中のサーバーには反映されません。[Zedの言語サーバー設定](https://zed.dev/docs/configuring-languages#configuring-language-servers)に従います。
+
+## 翻訳モデルを変更する
+
+1. Zedのコマンドパレットで `zed: open settings file` を実行します。
+2. `lsp.translation-lsp.initialization_options.provider.model` を、使いたいモデルの識別名に変更します。
+3. 必要に応じて、プロバイダーのほかの項目を指定します。項目は [ChatGPT](providers/chatgpt.md#設定項目) と [Anthropic API](providers/anthropic.md#設定項目) のページにあります。
+4. 設定を保存します。この拡張を使う文書で、コマンドパレットから `editor: restart language server` を実行します。
+
+拡張は設定したモデルの識別名をそのまま翻訳APIへ送り、別のモデルへ自動で切り替えません。そのモデルと推論強度をアカウントで使えるかどうかは、APIが判断します。
+
+翻訳には通常のテキスト出力を使います。ChatGPTアカウントまたはAnthropicのAPIキーで利用可能なモデルを選んでください。要求が失敗しても、拡張が別モデルへ切り替えることはありません。
+
+### タブ翻訳だけ別のモデルを使う
+
+タブに開く翻訳だけ別のモデルを使うには、`provider.document` を追加します。`Translate selection to … and open in tab` と `Translate document to … and open in tab` は、そこに書いたモデルと設定で送ります。コメントのホバー、自動選択、手動の選択翻訳、再試行は、外側の `provider` の値を使い続けます。
+
+`provider.document.model` は必須です。`provider.document` のほかの値は省略でき、外側の設定を引き継ぎません。省略した値は、外側に何を書いていても、その項目の既定値になります。
+
+`provider.document` で別のプロバイダーを選ぶことはできません。`provider.document` を設定すると、[受付と実行枠](behavior.md#受付と実行枠)のとおり、タブ翻訳と範囲翻訳を別の処理として扱います。
+
+`provider.document` の中に書ける値と設定例は、各プロバイダーのページにあります。[ChatGPT](providers/chatgpt.md#タブ翻訳だけ別のモデルを使う) と [Anthropic API](providers/anthropic.md#タブ翻訳だけ別のモデルを使う) を参照してください。
