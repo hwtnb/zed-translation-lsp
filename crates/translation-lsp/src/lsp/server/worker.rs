@@ -14,6 +14,7 @@ pub(super) enum Task {
     },
     Translation {
         intent: crate::providers::Intent,
+        output: Output,
         generation: u64,
         text: String,
         target_language: String,
@@ -122,6 +123,7 @@ async fn run_operation<P: TranslationProvider>(
                 .map(Outcome::Administration),
             Task::Translation {
                 intent,
+                output,
                 text,
                 target_language,
                 context,
@@ -129,7 +131,7 @@ async fn run_operation<P: TranslationProvider>(
             } => {
                 provider.check_admission(context, *generation)?;
                 provider
-                    .translate(*intent, text, target_language, context.clone())
+                    .translate(*intent, *output, text, target_language, context.clone())
                     .await
                     .map(Outcome::Translation)
             }

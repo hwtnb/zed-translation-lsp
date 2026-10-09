@@ -35,15 +35,21 @@ pub(crate) enum ConfigError {
         setting: &'static str,
         maximum_bytes: usize,
     },
-    #[error("provider.model must not contain whitespace")]
-    ModelWhitespace,
+    #[error("{setting} must not contain whitespace")]
+    ModelWhitespace { setting: &'static str },
+    #[error("{setting} is required")]
+    Required { setting: &'static str },
     #[error("{setting} must be one of {choices}")]
     Choice {
         setting: &'static str,
         choices: &'static str,
     },
-    #[error("provider.thinking must not be false when provider.effort is {effort}")]
-    ThinkingRequired { effort: &'static str },
+    // `scope` is the table holding both settings: `provider` or `provider.document`.
+    #[error("{scope}.thinking must not be false when {scope}.effort is {effort}")]
+    ThinkingRequired {
+        scope: &'static str,
+        effort: &'static str,
+    },
 }
 
 #[derive(Debug)]

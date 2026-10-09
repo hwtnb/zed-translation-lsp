@@ -246,6 +246,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             deadline,
             task: Task::Translation {
                 intent: crate::providers::Intent::Automatic,
+                output: Output::Range,
                 generation: 0,
                 text: "Read this.".into(),
                 target_language: "ja".into(),
@@ -1389,12 +1390,14 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     let (first, second) = tokio::join!(
         provider.translate(
             crate::providers::Intent::Automatic,
+            crate::providers::Output::Range,
             "First source.",
             "ja",
             context.clone()
         ),
         provider.translate(
             crate::providers::Intent::Automatic,
+            crate::providers::Output::Range,
             "Second source.",
             "ja",
             context
@@ -1416,6 +1419,7 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     let retry = provider
         .translate(
             crate::providers::Intent::Automatic,
+            crate::providers::Output::Range,
             "Retry source.",
             "ja",
             provider.context().unwrap(),
@@ -2556,8 +2560,7 @@ async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_tic
     wait_held(&tail, 2).await;
     markdown_actions(&mut server, &uri, Range::default());
     let canceled = server
-        .scheduler
-        .ticket(&range_target(&server, &uri, 2))
+        .range_ticket(&range_target(&server, &uri, 2))
         .unwrap();
     server
         .cancel_range(&connection, canceled, ErrorCode::RequestCanceled)
@@ -3966,7 +3969,7 @@ async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_b
     markdown_actions(&mut server, &uri, first.range);
     server.selection.as_mut().unwrap().start = Some(Instant::now());
     server.expire(&connection).unwrap();
-    let old = server.scheduler.ticket(&first).unwrap();
+    let old = server.range_ticket(&first).unwrap();
     wait_held(&tail, 1).await;
     markdown_actions(&mut server, &uri, Range::default());
     let adjusted = Range::new(Position::new(0, 0), Position::new(0, 5));

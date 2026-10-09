@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::config::{AnthropicEffort, limits::SizeLimit};
 
 use super::{
-    Capabilities, Context, Intent, Translated, TranslationProvider,
+    Capabilities, Context, Intent, Output, OutputOptions, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     error::{Error, Service},
     prompt, transport,
@@ -64,14 +64,20 @@ impl std::fmt::Debug for ApiKey {
     }
 }
 
+// The model and options one output sends.
+#[derive(Clone)]
+pub(crate) struct ModelOptions {
+    pub model: String,
+    pub effort: AnthropicEffort,
+    pub thinking: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct AnthropicProvider {
     client: reqwest::Client,
     // Read once at startup. A missing key is reported at admission, not here.
     key: Result<ApiKey, Error>,
-    model: String,
-    effort: AnthropicEffort,
-    thinking: bool,
+    options: OutputOptions<ModelOptions>,
     source_language: String,
     output_limit: SizeLimit,
     api: String,
@@ -80,9 +86,7 @@ pub(crate) struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(
-        model: String,
-        effort: AnthropicEffort,
-        thinking: bool,
+        options: OutputOptions<ModelOptions>,
         source_language: String,
         output_limit: SizeLimit,
     ) -> Result<Self, Error> {
@@ -92,9 +96,7 @@ impl AnthropicProvider {
                 .build()
                 .map_err(|_| Error::failed("Could not prepare the Anthropic HTTP client"))?,
             key: ApiKey::parse(std::env::var(API_KEY_VARIABLE).ok()),
-            model,
-            effort,
-            thinking,
+            options,
             source_language,
             output_limit,
             api: API.into(),
@@ -107,14 +109,25 @@ impl AnthropicProvider {
         Self {
             client: transport::client_builder().build().unwrap(),
             key: ApiKey::parse(key.map(str::to_owned)),
-            model: "claude-haiku-5-5".into(),
-            effort: AnthropicEffort::Low,
-            thinking: false,
+            options: OutputOptions::new(
+                ModelOptions {
+                    model: "claude-haiku-5-5".into(),
+                    effort: AnthropicEffort::Low,
+                    thinking: false,
+                },
+                None,
+            ),
             source_language: "auto".into(),
             output_limit: crate::config::limits::TranslationLimits::default().output_kib,
             api,
             admission: Admission::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_options(mut self, options: OutputOptions<ModelOptions>) -> Self {
+        self.options = options;
+        self
     }
 
     fn key(&self) -> Result<&ApiKey, Error> {
@@ -162,6 +175,7 @@ impl TranslationProvider for AnthropicProvider {
     async fn translate(
         &self,
         intent: Intent,
+        output: Output,
         text: &str,
         target_language: &str,
         context: Context,
@@ -170,14 +184,16 @@ impl TranslationProvider for AnthropicProvider {
         let key = self.key()?;
         let generation = self.admission.admit(&(), intent)?;
         let secrets = [&*key.text, text];
+        let options = self.options.get(output);
+        let configured = self.options.configured(output);
         let request = json!({
-            "model": self.model,
+            "model": options.model,
             "max_tokens": MAX_OUTPUT_TOKENS.min(self.output_limit.bytes()),
             "stream": true,
             "system": prompt::instructions(target_language, &self.source_language),
             "messages": [{"role": "user", "content": text}],
-            "output_config": {"effort": self.effort},
-            "thinking": {"type": if self.thinking { "adaptive" } else { "disabled" }},
+            "output_config": {"effort": options.effort},
+            "thinking": {"type": if options.thinking { "adaptive" } else { "disabled" }},
         });
         // Dropping this future on cancellation or expiry drops the request or
         // response it is awaiting, which closes the connection.
@@ -200,9 +216,9 @@ impl TranslationProvider for AnthropicProvider {
                 };
                 let retry_after = transport::retry_delay(response.headers());
                 let result = if response.status().is_success() {
-                    response::text(response, &secrets, self.output_limit).await
+                    response::text(response, &secrets, self.output_limit, configured).await
                 } else {
-                    Err(response::failure(response, &secrets).await)
+                    Err(response::failure(response, &secrets, configured).await)
                 };
                 Attempt {
                     result,

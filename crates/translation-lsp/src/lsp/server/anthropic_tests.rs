@@ -8,6 +8,8 @@ use crate::providers::{
 };
 use serde_json::json;
 
+mod document;
+
 async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
     let receiver = receiver.clone();
     tokio::task::spawn_blocking(move || {

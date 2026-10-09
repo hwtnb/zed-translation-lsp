@@ -7,6 +7,7 @@ use super::SERVICE;
 use crate::{
     config::limits::{SizeLimit, SizeSetting},
     providers::{
+        Output,
         error::{Cause, Error, RemoteError, RemoteKind},
         sse,
         transport::{network_error, safe},
@@ -19,29 +20,47 @@ const KEY_ADVICE: &str = concat!(
 );
 const BILLING_ADVICE: &str =
     "Check the Billing page in the Claude Console at https://platform.claude.com/";
-const MODEL_ADVICE: &str = "Check provider.model";
+
+#[derive(Clone, Copy)]
+enum Advice {
+    Key,
+    Billing,
+    Model,
+}
+
+impl Advice {
+    // `configured` is the output whose settings named the request's model.
+    fn text(self, configured: Output) -> &'static str {
+        match (self, configured) {
+            (Self::Key, _) => KEY_ADVICE,
+            (Self::Billing, _) => BILLING_ADVICE,
+            (Self::Model, Output::Range) => "Check provider.model",
+            (Self::Model, Output::Document) => "Check provider.document.model",
+        }
+    }
+}
 
 // Documented status and `error.type` pairs. A stream error arrives after HTTP
 // 200, so the type is matched first and the status covers bodies without one.
-const FAILURES: [(u16, &str, RemoteKind, Option<&str>); 9] = [
+const FAILURES: [(u16, &str, RemoteKind, Option<Advice>); 9] = [
     (
         401,
         "authentication_error",
         RemoteKind::Configuration,
-        Some(KEY_ADVICE),
+        Some(Advice::Key),
     ),
     (
         402,
         "billing_error",
         RemoteKind::UsageLimit,
-        Some(BILLING_ADVICE),
+        Some(Advice::Billing),
     ),
     (403, "permission_error", RemoteKind::NotEligible, None),
     (
         404,
         "not_found_error",
         RemoteKind::Configuration,
-        Some(MODEL_ADVICE),
+        Some(Advice::Model),
     ),
     (400, "invalid_request_error", RemoteKind::Failed, None),
     (413, "request_too_large", RemoteKind::Failed, None),
@@ -56,6 +75,7 @@ fn remote_error(
     detail: Option<&str>,
     request_id: Option<&str>,
     secrets: &[&str],
+    configured: Output,
 ) -> Error {
     let detail = detail
         .filter(|detail| !detail.trim().is_empty())
@@ -82,7 +102,7 @@ fn remote_error(
         code: error_type.map(|value| safe(value, secrets, 128)),
         param: None,
         request_id: request_id.map(|value| safe(value, secrets, 128)),
-        advice,
+        advice: advice.map(|advice| advice.text(configured)),
     }
     .into()
 }
@@ -94,7 +114,11 @@ fn request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(super) async fn failure(mut response: reqwest::Response, secrets: &[&str]) -> Error {
+pub(super) async fn failure(
+    mut response: reqwest::Response,
+    secrets: &[&str],
+    configured: Output,
+) -> Error {
     let status = response.status().as_u16();
     let request_id = request_id(response.headers());
     let mut bytes = Vec::new();
@@ -128,6 +152,7 @@ pub(super) async fn failure(mut response: reqwest::Response, secrets: &[&str]) -
             .as_deref()
             .or_else(|| body.get("request_id").and_then(Value::as_str)),
         secrets,
+        configured,
     )
 }
 
@@ -135,6 +160,7 @@ pub(super) async fn text(
     response: reqwest::Response,
     secrets: &[&str],
     output_limit: SizeLimit,
+    configured: Output,
 ) -> Result<String, Error> {
     let status = response.status().as_u16();
     let request_id = request_id(response.headers());
@@ -156,6 +182,7 @@ pub(super) async fn text(
                     error.message.as_deref(),
                     request_id.as_deref().or(reported.as_deref()),
                     secrets,
+                    configured,
                 )
                 .in_stream(SERVICE, "error".into(), String::new()))
             }

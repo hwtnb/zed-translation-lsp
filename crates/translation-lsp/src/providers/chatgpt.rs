@@ -17,8 +17,8 @@ use serde_json::json;
 use crate::config::{ReasoningEffort, limits::SizeLimit};
 
 use super::{
-    AuthUiState, Capabilities, Context, Intent, Interaction, ProviderCommand, Translated,
-    TranslationProvider,
+    AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
+    ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     error::{Error, ErrorKind},
     prompt, transport,
@@ -73,12 +73,18 @@ pub(crate) fn management_commands(state: AuthUiState) -> Vec<ProviderCommand> {
         .collect()
 }
 
+// The model and options one output sends.
+#[derive(Clone)]
+pub(crate) struct ModelOptions {
+    pub model: String,
+    pub effort: Option<ReasoningEffort>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ChatGptProvider {
     auth: Auth,
     responses: reqwest::Client,
-    model: String,
-    effort: Option<ReasoningEffort>,
+    options: OutputOptions<ModelOptions>,
     source_language: String,
     output_limit: SizeLimit,
     api: String,
@@ -87,8 +93,7 @@ pub(crate) struct ChatGptProvider {
 
 impl ChatGptProvider {
     pub fn new(
-        model: String,
-        effort: Option<ReasoningEffort>,
+        options: OutputOptions<ModelOptions>,
         source_language: String,
         output_limit: SizeLimit,
     ) -> Result<Self, Error> {
@@ -96,8 +101,7 @@ impl ChatGptProvider {
         Ok(Self {
             auth: Auth::production(http)?,
             responses: Http::responses_client()?,
-            model,
-            effort,
+            options,
             source_language,
             output_limit,
             api: "https://api.openai.com/v1".into(),
@@ -111,12 +115,23 @@ impl ChatGptProvider {
             auth,
             responses: Http::responses_client().unwrap(),
             api,
-            model,
-            effort: Some(ReasoningEffort::Low),
+            options: OutputOptions::new(
+                ModelOptions {
+                    model,
+                    effort: Some(ReasoningEffort::Low),
+                },
+                None,
+            ),
             source_language: "auto".into(),
             output_limit: crate::config::limits::TranslationLimits::default().output_kib,
             admission: Admission::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_options(mut self, options: OutputOptions<ModelOptions>) -> Self {
+        self.options = options;
+        self
     }
 
     async fn unchanged<T>(
@@ -152,6 +167,7 @@ impl ChatGptProvider {
         target: &str,
         expected: &AccountKey,
         intent: Intent,
+        output: Output,
     ) -> Result<Translated, Error> {
         let generation = self.admission.admit(expected, intent)?;
         let access = match self.auth.access(expected).await {
@@ -171,14 +187,15 @@ impl ChatGptProvider {
                     access.credentials.id_token.as_str(),
                     body,
                 ];
+                let options = self.options.get(output);
                 let mut request = json!({
-                    "model": self.model,
+                    "model": options.model,
                     "store": false,
                     "stream": true,
                     "instructions": prompt::instructions(target, &self.source_language),
                     "input": [{"role": "user", "content": body}]
                 });
-                if let Some(effort) = self.effort {
+                if let Some(effort) = options.effort {
                     request["reasoning"] = json!({"effort": effort});
                 }
                 self.admission
@@ -259,6 +276,7 @@ impl TranslationProvider for ChatGptProvider {
     async fn translate(
         &self,
         intent: Intent,
+        output: Output,
         text: &str,
         target: &str,
         context: Context,
@@ -266,7 +284,7 @@ impl TranslationProvider for ChatGptProvider {
         let Context::ChatGpt(key) = context else {
             return Err(account_changed());
         };
-        self.request(text, target, &key, intent).await
+        self.request(text, target, &key, intent, output).await
     }
 
     async fn administer(&self, command: &str, ui: &impl Interaction) -> Result<String, Error> {
@@ -282,6 +300,9 @@ impl TranslationProvider for ChatGptProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod document_tests;
 
 #[cfg(test)]
 mod tests {
@@ -380,6 +401,7 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -432,6 +454,7 @@ mod tests {
                 let result = provider
                     .translate(
                         crate::providers::Intent::Automatic,
+                        crate::providers::Output::Range,
                         "Retry after a temporary failure.",
                         "ja",
                         provider.context().unwrap(),
@@ -488,7 +511,13 @@ mod tests {
                 "synthetic-model".into(),
             );
             let error = provider
-                .translate(intent, "Read this.", "ja", provider.context().unwrap())
+                .translate(
+                    intent,
+                    crate::providers::Output::Range,
+                    "Read this.",
+                    "ja",
+                    provider.context().unwrap(),
+                )
                 .await
                 .err()
                 .unwrap();
@@ -520,6 +549,7 @@ mod tests {
             );
             let request = provider.translate(
                 crate::providers::Intent::Automatic,
+                crate::providers::Output::Range,
                 "Read this.",
                 "ja",
                 provider.context().unwrap(),
@@ -569,6 +599,7 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Read this.",
                     "ja",
                     provider.context().unwrap(),
@@ -612,6 +643,7 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     source,
                     "ja",
                     provider.context().unwrap(),
@@ -718,6 +750,7 @@ mod tests {
             let error = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     source,
                     "ja",
                     provider.context().unwrap(),
@@ -837,6 +870,7 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     body,
                     "ja",
                     provider.context().unwrap(),
@@ -928,6 +962,7 @@ mod tests {
             let error = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -995,7 +1030,13 @@ mod tests {
                 kind
             );
             let translated = provider
-                .translate(Intent::Explicit, "Try again.", "ja", context.clone())
+                .translate(
+                    Intent::Explicit,
+                    Output::Range,
+                    "Try again.",
+                    "ja",
+                    context.clone(),
+                )
                 .await
                 .unwrap();
             assert_eq!(translated.context, context);
@@ -1029,12 +1070,13 @@ mod tests {
             let mut provider =
                 ChatGptProvider::synthetic(auth, format!("{}/v1", fixture.base), model.into());
             if !supported {
-                provider.effort = None;
+                provider.options.range.effort = None;
             }
             let context = provider.context().unwrap();
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Retry only when the remote service reports a transient failure.",
                     "ja",
                     context.clone(),
@@ -1064,6 +1106,7 @@ mod tests {
                     provider
                         .translate(
                             crate::providers::Intent::Automatic,
+                            crate::providers::Output::Range,
                             "Translate this.",
                             "ja",
                             context
@@ -1116,6 +1159,7 @@ mod tests {
             let result = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Translate this.",
                     "ja",
                     provider.context().unwrap(),
@@ -1176,6 +1220,7 @@ mod tests {
         let translated = provider
             .translate(
                 crate::providers::Intent::Automatic,
+                crate::providers::Output::Range,
                 "Translate this.",
                 "ja",
                 provider.context().unwrap(),
@@ -1214,6 +1259,7 @@ mod tests {
             let translated = provider
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     body,
                     "ja",
                     provider.context().unwrap(),
@@ -1236,6 +1282,7 @@ mod tests {
         let key = provider.context().unwrap();
         let translation = provider.translate(
             crate::providers::Intent::Automatic,
+            crate::providers::Output::Range,
             "Translate this.",
             "ja",
             key,

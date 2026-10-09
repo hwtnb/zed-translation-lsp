@@ -41,11 +41,14 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::{
-    config::{ProviderSettings, Settings, anthropic_thinking},
+    config::{
+        AnthropicDocument, AnthropicEffort, ChatgptDocument, ProviderSettings, ReasoningEffort,
+        Settings, anthropic_thinking,
+    },
     providers::{
-        AuthUiState, Context, Interaction, Translated, TranslationProvider,
-        anthropic::AnthropicProvider,
-        chatgpt::ChatGptProvider,
+        AuthUiState, Context, Interaction, Output, OutputOptions, Translated, TranslationProvider,
+        anthropic::{self, AnthropicProvider},
+        chatgpt::{self, ChatGptProvider},
         error::{Error as ProviderError, ErrorKind},
         mock::{MockOptions, MockProvider},
     },
@@ -156,10 +159,10 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
         ProviderSettings::Chatgpt {
             model,
             reasoning_effort,
+            document,
         } => {
             let provider = ChatGptProvider::new(
-                model,
-                reasoning_effort,
+                chatgpt_options(model, reasoning_effort, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
             )?;
@@ -169,18 +172,54 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
             model,
             effort,
             thinking,
+            document,
         } => {
-            let thinking = anthropic_thinking(&model, effort, thinking);
             let provider = AnthropicProvider::new(
-                model,
-                effort,
-                thinking,
+                anthropic_options(model, effort, thinking, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
             )?;
             serve_initialized(connection, settings, ui, provider)
         }
     }
+}
+
+// What each output sends. An effort omitted under `provider.document` stays
+// omitted for tabs, whatever the range sends.
+fn chatgpt_options(
+    model: String,
+    reasoning_effort: Option<ReasoningEffort>,
+    document: Option<ChatgptDocument>,
+) -> OutputOptions<chatgpt::ModelOptions> {
+    OutputOptions::new(
+        chatgpt::ModelOptions {
+            model,
+            effort: reasoning_effort,
+        },
+        document.map(|document| chatgpt::ModelOptions {
+            model: document.model,
+            effort: document.reasoning_effort,
+        }),
+    )
+}
+
+// What each output sends. The tab's thinking follows the tab's own model and
+// effort, like every value under `provider.document`.
+fn anthropic_options(
+    model: String,
+    effort: AnthropicEffort,
+    thinking: Option<bool>,
+    document: Option<AnthropicDocument>,
+) -> OutputOptions<anthropic::ModelOptions> {
+    let options = |model: String, effort, thinking| anthropic::ModelOptions {
+        thinking: anthropic_thinking(&model, effort, thinking),
+        model,
+        effort,
+    };
+    OutputOptions::new(
+        options(model, effort, thinking),
+        document.map(|document| options(document.model, document.effort, document.thinking)),
+    )
 }
 
 pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
@@ -429,7 +468,7 @@ impl<P: TranslationProvider> Server<P> {
         activity.waiting = self.selection.as_ref().is_some_and(|selection| {
             selection.start.is_some()
                 && self.target_is_current(&selection.target)
-                && !self.scheduler.ticket(&selection.target).is_some()
+                && self.range_ticket(&selection.target).is_none()
         });
         self.activity.publish(activity, Instant::now());
     }
@@ -598,7 +637,9 @@ impl<P: TranslationProvider> Server<P> {
                 text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
             })
             && !self.scheduler.translations.values().any(|work| {
-                work.target.uri == params.text_document.uri && work.target.range == range
+                work.target.uri == params.text_document.uri
+                    && work.target.range == range
+                    && work.serves(Output::Range, &self.settings)
             })
         {
             add_action(
@@ -833,6 +874,8 @@ fn respond(
 
 #[cfg(test)]
 mod anthropic_tests;
+#[cfg(test)]
+mod chatgpt_options_tests;
 #[cfg(test)]
 mod chatgpt_tests;
 #[cfg(test)]

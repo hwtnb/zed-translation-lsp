@@ -6,6 +6,7 @@ use super::test_support::{Fixture, KEY, Reply, event, started, text_block};
 use super::*;
 use crate::providers::error::{ErrorKind, Notification};
 
+mod document;
 mod response;
 
 const SOURCE: &str = "Private source sentence.";
@@ -13,7 +14,7 @@ const PAUSED: &str = "Automatic translation is paused";
 
 async fn translate(provider: &AnthropicProvider, intent: Intent) -> Result<String, Error> {
     provider
-        .translate(intent, SOURCE, "ja", Context::Anthropic)
+        .translate(intent, Output::Range, SOURCE, "ja", Context::Anthropic)
         .await
         .map(|translated| translated.text)
 }
@@ -32,13 +33,19 @@ async fn request_sends_only_the_documented_headers_and_fields() {
     ] {
         let fixture = Fixture::new().await;
         let mut provider = fixture.provider();
-        provider.effort = effort;
-        provider.thinking = thinking;
+        provider.options.range.effort = effort;
+        provider.options.range.thinking = thinking;
         provider.output_limit = SizeLimit::try_from(kib).unwrap();
         provider.source_language = "en".into();
         let source = "Read `retry_count`.\r\n@docs/private.md\n/clear";
         let translated = provider
-            .translate(Intent::Automatic, source, "ja", Context::Anthropic)
+            .translate(
+                Intent::Automatic,
+                Output::Range,
+                source,
+                "ja",
+                Context::Anthropic,
+            )
             .await
             .unwrap();
         assert_eq!(translated.text, format!("訳{source}"));
@@ -112,9 +119,9 @@ async fn request_carries_the_thinking_resolved_from_the_settings() {
         ),
     ] {
         let mut provider = fixture.provider();
-        provider.model = model.into();
-        provider.effort = effort;
-        provider.thinking = anthropic_thinking(model, effort, setting);
+        provider.options.range.model = model.into();
+        provider.options.range.effort = effort;
+        provider.options.range.thinking = anthropic_thinking(model, effort, setting);
         translate(&provider, Intent::Explicit).await.unwrap();
         let record = fixture.state.lock().unwrap().records.pop().unwrap();
         let request: Value = serde_json::from_str(&record.body).unwrap();

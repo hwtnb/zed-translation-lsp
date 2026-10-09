@@ -56,6 +56,43 @@ pub(crate) enum Intent {
     Explicit,
 }
 
+// What a translation is for: a range read in place, or a tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Output {
+    Range,
+    Document,
+}
+
+// A provider's request options for each output. `provider.document` gives tab
+// translations their own; without it, both outputs send the same options.
+#[derive(Clone)]
+pub(crate) struct OutputOptions<T> {
+    range: T,
+    document: Option<T>,
+}
+
+impl<T> OutputOptions<T> {
+    pub fn new(range: T, document: Option<T>) -> Self {
+        Self { range, document }
+    }
+
+    pub fn get(&self, output: Output) -> &T {
+        match (output, &self.document) {
+            (Output::Document, Some(document)) => document,
+            _ => &self.range,
+        }
+    }
+
+    // The output whose settings `output` is sent with.
+    pub fn configured(&self, output: Output) -> Output {
+        if self.document.is_some() {
+            output
+        } else {
+            Output::Range
+        }
+    }
+}
+
 pub(crate) struct Translated {
     pub text: String,
     pub context: Context,
@@ -88,6 +125,7 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
     fn translate(
         &self,
         intent: Intent,
+        output: Output,
         text: &str,
         target_language: &str,
         context: Context,

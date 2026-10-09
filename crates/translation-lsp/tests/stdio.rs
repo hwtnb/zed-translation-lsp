@@ -525,6 +525,10 @@ fn anthropic_settings_errors_name_the_setting_at_initialization() {
             json!({"name": "anthropic", "model": " "}),
             "provider.model must be nonempty",
         ),
+        (
+            json!({"name": "anthropic", "document": {"effort": "high"}}),
+            "provider.document.model is required",
+        ),
     ] {
         let mut client = Client::spawn(&[], false, false);
         let error = client
@@ -535,6 +539,31 @@ fn anthropic_settings_errors_name_the_setting_at_initialization() {
             .unwrap_err();
         assert_eq!(error.code, -32602);
         assert!(error.message.starts_with(message), "{}", error.message);
+        client.notify("exit", Value::Null);
+        assert!(!client.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn settings_written_as_arrays_are_rejected_at_initialization() {
+    for options in [
+        json!([]),
+        json!({"translation_limits": {"work": []}}),
+        json!({"provider": ["anthropic"]}),
+        json!({"provider": {"name": "chatgpt", "model": "m", "document": ["synthetic-tab", "low"]}}),
+    ] {
+        let mut client = Client::spawn(&[], false, false);
+        let error = client
+            .call(
+                "initialize",
+                json!({"capabilities": {}, "initializationOptions": options}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert_eq!(
+            error.message,
+            "Invalid translation settings: check field names and value types"
+        );
         client.notify("exit", Value::Null);
         assert!(!client.child.wait().unwrap().success());
     }

@@ -14,6 +14,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
+            _output: Output,
             text: &str,
             _: &str,
             context: Context,
@@ -53,6 +54,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         let task = if ticket < 4 {
             Task::Translation {
                 intent: crate::providers::Intent::Automatic,
+                output: Output::Range,
                 generation: 0,
                 text: format!("source {ticket}"),
                 target_language: "ja".into(),
@@ -123,6 +125,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
+            _output: Output,
             text: &str,
             target: &str,
             context: Context,
@@ -323,6 +326,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
+            _output: Output,
             text: &str,
             _: &str,
             context: Context,

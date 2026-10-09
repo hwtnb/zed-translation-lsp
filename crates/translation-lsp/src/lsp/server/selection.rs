@@ -71,11 +71,16 @@ impl<P: TranslationProvider> Server<P> {
         });
     }
 
+    // Automatic selection only ever joins a range operation.
+    pub(super) fn range_ticket(&self, target: &TranslationTarget) -> Option<u64> {
+        self.scheduler.ticket(target, Output::Range, &self.settings)
+    }
+
     pub(super) fn can_start_selection(&self, selection: &Selection) -> bool {
         if !self.administrations.is_empty() {
             return false;
         }
-        if self.scheduler.ticket(&selection.target).is_some() {
+        if self.range_ticket(&selection.target).is_some() {
             return true;
         }
         let replacing = self
@@ -109,7 +114,7 @@ impl<P: TranslationProvider> Server<P> {
             return;
         }
         if let Some(previous) = self.adjusting_ticket.take()
-            && self.scheduler.ticket(&target) != Some(previous)
+            && self.range_ticket(&target) != Some(previous)
         {
             self.scheduler.retire_automatic(previous);
         }
@@ -117,7 +122,7 @@ impl<P: TranslationProvider> Server<P> {
             .queue_translation(target.clone(), TranslationRequest::Selection)
             .is_ok()
         {
-            self.adjusting_ticket = self.scheduler.ticket(&target);
+            self.adjusting_ticket = self.range_ticket(&target);
         }
     }
 

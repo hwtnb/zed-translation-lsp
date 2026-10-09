@@ -26,6 +26,14 @@ impl TranslationRequest {
         )
     }
 
+    pub fn output(&self) -> Output {
+        if matches!(self, Self::Document) {
+            Output::Document
+        } else {
+            Output::Range
+        }
+    }
+
     pub fn reuses_completed(&self) -> bool {
         !matches!(self, Self::Reply(_, PendingReply::Retry))
     }
@@ -74,6 +82,12 @@ impl Translation {
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
     }
+    // With `provider.document`, tab operations and range operations never
+    // share work, even for the same target. Without it, one operation serves
+    // every output.
+    pub fn serves(&self, output: Output, settings: &Settings) -> bool {
+        !settings.provider.separates_documents() || self.document == (output == Output::Document)
+    }
 }
 
 #[derive(Default)]
@@ -86,10 +100,16 @@ pub(super) struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn ticket(&self, target: &TranslationTarget) -> Option<u64> {
-        self.translations
-            .iter()
-            .find_map(|(&ticket, work)| (&work.target == target).then_some(ticket))
+    // The operation a request for `output` joins.
+    pub fn ticket(
+        &self,
+        target: &TranslationTarget,
+        output: Output,
+        settings: &Settings,
+    ) -> Option<u64> {
+        self.translations.iter().find_map(|(&ticket, work)| {
+            (&work.target == target && work.serves(output, settings)).then_some(ticket)
+        })
     }
 
     pub fn at(&self, uri: &Uri, position: Position) -> Option<TranslationTarget> {
@@ -334,6 +354,7 @@ mod tests {
         };
         let task = Task::Translation {
             intent: crate::providers::Intent::Explicit,
+            output: Output::Range,
             generation: 0,
             text: "source".into(),
             target_language: "ja".into(),
@@ -503,6 +524,7 @@ mod shared_outputs_tests {
             };
             let task = Task::Translation {
                 intent: crate::providers::Intent::Explicit,
+                output: Output::Range,
                 generation: 0,
                 text: "source".into(),
                 target_language: "ja".into(),
@@ -545,5 +567,169 @@ mod shared_outputs_tests {
                 .at(&"file:///shared.md".parse().unwrap(), Position::new(2, 3))
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod separate_outputs_tests {
+    use super::*;
+
+    fn settings(separate: bool) -> Settings {
+        let mut provider = serde_json::json!({"name": "anthropic"});
+        if separate {
+            provider["document"] = serde_json::json!({"model": "synthetic-model"});
+        }
+        Settings::from_options(Some(serde_json::json!({
+            "provider": provider,
+            "translation_limits": {"work": {"concurrent": 3, "documents": 1}}
+        })))
+        .unwrap()
+    }
+
+    fn target(line: u32) -> TranslationTarget {
+        TranslationTarget {
+            uri: "file:///separate.md".parse().unwrap(),
+            version: 1,
+            session: 1,
+            range: Range::new(Position::new(line, 0), Position::new(line, 5)),
+            target_language: "ja".into(),
+        }
+    }
+
+    fn add(
+        scheduler: &mut Scheduler,
+        ticket: u64,
+        line: u32,
+        request: TranslationRequest,
+        settings: &Settings,
+        now: Instant,
+    ) {
+        let task = Task::Translation {
+            intent: crate::providers::Intent::Explicit,
+            output: request.output(),
+            generation: 0,
+            text: "source".into(),
+            target_language: "ja".into(),
+            context: Context::Anthropic,
+        };
+        scheduler
+            .insert(
+                ticket,
+                PreparedTranslation {
+                    target: target(line),
+                    context: Context::Anthropic,
+                    is_comment: false,
+                    task,
+                },
+                request,
+                settings,
+                now,
+            )
+            .unwrap();
+    }
+
+    fn manual() -> TranslationRequest {
+        TranslationRequest::Reply(0.into(), PendingReply::Command)
+    }
+
+    #[test]
+    fn tab_settings_give_one_target_a_tab_operation_and_a_range_operation() {
+        let now = Instant::now();
+        let separate = settings(true);
+        let mut scheduler = Scheduler::default();
+        let (jobs, mut received) = queue::channel(3);
+        add(
+            &mut scheduler,
+            1,
+            0,
+            TranslationRequest::Document,
+            &separate,
+            now,
+        );
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, &separate),
+            Some(1)
+        );
+        assert_eq!(scheduler.ticket(&target(0), Output::Range, &separate), None);
+        add(&mut scheduler, 2, 0, manual(), &separate, now);
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, &separate),
+            Some(1)
+        );
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Range, &separate),
+            Some(2)
+        );
+        assert_eq!(scheduler.admitted(), 2);
+
+        // Each takes an execution slot, and the tab limit still applies to tabs.
+        add(
+            &mut scheduler,
+            3,
+            1,
+            TranslationRequest::Document,
+            &separate,
+            now,
+        );
+        scheduler.dispatch(&jobs, &separate, now).unwrap();
+        let dispatched: Vec<_> = std::iter::from_fn(|| received.try_recv().ok())
+            .map(|job| (job.ticket, matches!(job.task, Task::Translation { output, .. } if output == Output::Document)))
+            .collect();
+        assert_eq!(dispatched, [(1, true), (2, false)]);
+        assert_eq!(scheduler.dispatched.len(), 2);
+        assert!(scheduler.translations[&3].started.is_none());
+
+        // Hover and automatic selection join the range operation only.
+        scheduler
+            .join(
+                2,
+                TranslationRequest::Reply(7.into(), PendingReply::Hover(Position::new(0, 2))),
+                &separate,
+                now,
+            )
+            .unwrap();
+        scheduler
+            .join(2, TranslationRequest::Selection, &separate, now)
+            .unwrap();
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Range, &separate),
+            Some(2)
+        );
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, &separate),
+            Some(1)
+        );
+        assert_eq!(
+            scheduler
+                .at(&target(0).uri, Position::new(0, 2))
+                .map(|found| found.range),
+            Some(target(0).range)
+        );
+        scheduler.remove(2);
+        assert!(scheduler.at(&target(0).uri, Position::new(0, 2)).is_none());
+
+        // Canceling one leaves the other, and its slot returns only on termination.
+        assert_eq!(scheduler.ticket(&target(0), Output::Range, &separate), None);
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, &separate),
+            Some(1)
+        );
+        assert_eq!(scheduler.admitted(), 3);
+        scheduler.terminated(2);
+        assert_eq!(scheduler.admitted(), 2);
+    }
+
+    #[test]
+    fn without_tab_settings_one_operation_serves_every_output() {
+        let now = Instant::now();
+        let shared = settings(false);
+        for first in [TranslationRequest::Document, manual()] {
+            let mut scheduler = Scheduler::default();
+            add(&mut scheduler, 1, 0, first, &shared, now);
+            for output in [Output::Range, Output::Document] {
+                assert_eq!(scheduler.ticket(&target(0), output, &shared), Some(1));
+                assert_eq!(scheduler.ticket(&target(1), output, &shared), None);
+            }
+        }
     }
 }

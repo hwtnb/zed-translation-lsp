@@ -38,7 +38,8 @@ impl<P: TranslationProvider> Server<P> {
         let original = document
             .selection(target.range)
             .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
-        let tab = matches!(request, TranslationRequest::Document);
+        let output = request.output();
+        let tab = output == Output::Document;
         let (limit, setting) = if tab {
             (
                 self.settings.translation_limits.input_kib.document,
@@ -58,7 +59,8 @@ impl<P: TranslationProvider> Server<P> {
                 .cache
                 .exact(&target.uri, target.range, tab)
                 .or_else(|| {
-                    if request.explicit() {
+                    // Each output keeps its own results when tabs have their own settings.
+                    if request.explicit() && !self.settings.provider.separates_documents() {
                         self.cache.exact(&target.uri, target.range, !tab)
                     } else {
                         None
@@ -98,7 +100,7 @@ impl<P: TranslationProvider> Server<P> {
             request,
             TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry)
         );
-        if let Some(ticket) = self.scheduler.ticket(&target) {
+        if let Some(ticket) = self.scheduler.ticket(&target, output, &self.settings) {
             let generation = if request.explicit() {
                 Some(
                     self.provider
@@ -147,6 +149,7 @@ impl<P: TranslationProvider> Server<P> {
             .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
         let task = Task::Translation {
             intent,
+            output,
             text: input.text,
             target_language: target.target_language.clone(),
             context: context.clone(),

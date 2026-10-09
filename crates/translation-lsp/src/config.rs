@@ -28,6 +28,8 @@ pub(crate) enum ProviderSettings {
     Chatgpt {
         model: String,
         reasoning_effort: Option<ReasoningEffort>,
+        #[serde(default, deserialize_with = "explicit")]
+        document: Option<ChatgptDocument>,
     },
     Anthropic {
         #[serde(default = "default_anthropic_model")]
@@ -35,9 +37,58 @@ pub(crate) enum ProviderSettings {
         #[serde(default)]
         effort: AnthropicEffort,
         // `None` when omitted. `anthropic_thinking` chooses the value to send.
-        #[serde(default, deserialize_with = "explicit_bool")]
+        #[serde(default, deserialize_with = "explicit")]
         thinking: Option<bool>,
+        #[serde(default, deserialize_with = "explicit")]
+        document: Option<AnthropicDocument>,
     },
+}
+
+// `provider.document`: the model and options for translations opened in a
+// tab. An omitted field takes its own default here and inherits nothing from
+// the surrounding provider settings.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChatgptDocument {
+    pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AnthropicDocument {
+    pub model: String,
+    #[serde(default)]
+    pub effort: AnthropicEffort,
+    #[serde(default, deserialize_with = "explicit")]
+    pub thinking: Option<bool>,
+}
+
+impl ProviderSettings {
+    // Tab translations run apart from range translations exactly when
+    // `provider.document` is present, whatever its values are.
+    pub fn separates_documents(&self) -> bool {
+        match self {
+            Self::Mock {} => false,
+            Self::Chatgpt { document, .. } => document.is_some(),
+            Self::Anthropic { document, .. } => document.is_some(),
+        }
+    }
+
+    // Decoding reports a missing field as the same generic error as any other
+    // mismatch. Name the one field that `provider.document` requires.
+    fn check_document_model(options: &Value) -> Result<(), ConfigError> {
+        let provider = &options["provider"];
+        if (provider["name"] == "chatgpt" || provider["name"] == "anthropic")
+            && let Value::Object(document) = &provider["document"]
+            && !document.contains_key("model")
+        {
+            return Err(ConfigError::Required {
+                setting: "provider.document.model",
+            });
+        }
+        Ok(())
+    }
 }
 
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-5-5";
@@ -46,11 +97,11 @@ fn default_anthropic_model() -> String {
     DEFAULT_ANTHROPIC_MODEL.into()
 }
 
-// Unlike `Option<bool>`, this rejects an explicit `null`.
-fn explicit_bool<'de, D: serde::Deserializer<'de>>(
+// Unlike a plain `Option`, this rejects an explicit `null`.
+fn explicit<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<Option<bool>, D::Error> {
-    bool::deserialize(deserializer).map(Some)
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 // An omitted setting turns thinking off only where that is known to be
@@ -110,14 +161,19 @@ impl AnthropicEffort {
     // ChatGPT-only `none` and `minimal`.
     fn check_choice(options: &Value) -> Result<(), ConfigError> {
         let provider = &options["provider"];
-        if provider["name"] == "anthropic"
-            && let effort @ Value::String(_) = &provider["effort"]
-            && Self::deserialize(effort).is_err()
-        {
-            return Err(ConfigError::Choice {
-                setting: "provider.effort",
-                choices: Self::CHOICES,
-            });
+        if provider["name"] != "anthropic" {
+            return Ok(());
+        }
+        for (effort, setting) in [
+            (&provider["effort"], "provider.effort"),
+            (&provider["document"]["effort"], "provider.document.effort"),
+        ] {
+            if matches!(effort, Value::String(_)) && Self::deserialize(effort).is_err() {
+                return Err(ConfigError::Choice {
+                    setting,
+                    choices: Self::CHOICES,
+                });
+            }
         }
         Ok(())
     }
@@ -144,7 +200,9 @@ impl Settings {
         let settings = match options {
             None | Some(Value::Null) => Self::default(),
             Some(options) => {
+                ProviderSettings::check_document_model(&options)?;
                 AnthropicEffort::check_choice(&options)?;
+                reject_arrays(&options)?;
                 serde_json::from_value(options)?
             }
         };
@@ -188,35 +246,79 @@ impl Settings {
                 });
             }
         }
-        if let ProviderSettings::Chatgpt { model, .. } | ProviderSettings::Anthropic { model, .. } =
-            &settings.provider
-        {
-            if !bounded(model, 256) {
-                return Err(ConfigError::Text {
-                    setting: "provider.model",
-                    maximum_bytes: 256,
-                });
+        match &settings.provider {
+            ProviderSettings::Mock {} => (),
+            ProviderSettings::Chatgpt {
+                model, document, ..
+            } => {
+                check_model("provider.model", model)?;
+                if let Some(document) = document {
+                    check_model("provider.document.model", &document.model)?;
+                }
             }
-            if model.chars().any(char::is_whitespace) {
-                return Err(ConfigError::ModelWhitespace);
+            ProviderSettings::Anthropic {
+                model,
+                effort,
+                thinking,
+                document,
+            } => {
+                check_model("provider.model", model)?;
+                check_thinking("provider", *effort, *thinking)?;
+                if let Some(document) = document {
+                    check_model("provider.document.model", &document.model)?;
+                    check_thinking("provider.document", document.effort, document.thinking)?;
+                }
             }
-        }
-        if let ProviderSettings::Anthropic {
-            effort,
-            thinking: Some(false),
-            ..
-        } = &settings.provider
-            && let Some(effort) = effort.requires_thinking()
-        {
-            return Err(ConfigError::ThinkingRequired { effort });
         }
         Ok(settings)
     }
 }
 
+// No setting takes an array. Derived decoding would read one as the fields of
+// a table in declaration order, which would turn that order into a settings
+// format. Reject arrays before decoding, wherever they appear.
+fn reject_arrays(options: &Value) -> Result<(), ConfigError> {
+    match options {
+        Value::Array(_) => Err(ConfigError::Decode(serde::de::Error::custom(
+            "settings do not take arrays",
+        ))),
+        Value::Object(fields) => fields.values().try_for_each(reject_arrays),
+        _ => Ok(()),
+    }
+}
+
+fn check_model(setting: &'static str, model: &str) -> Result<(), ConfigError> {
+    if !bounded(model, 256) {
+        return Err(ConfigError::Text {
+            setting,
+            maximum_bytes: 256,
+        });
+    }
+    if model.chars().any(char::is_whitespace) {
+        return Err(ConfigError::ModelWhitespace { setting });
+    }
+    Ok(())
+}
+
+fn check_thinking(
+    scope: &'static str,
+    effort: AnthropicEffort,
+    thinking: Option<bool>,
+) -> Result<(), ConfigError> {
+    if thinking == Some(false)
+        && let Some(effort) = effort.requires_thinking()
+    {
+        return Err(ConfigError::ThinkingRequired { scope, effort });
+    }
+    Ok(())
+}
+
 fn bounded(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
+
+#[cfg(test)]
+mod document_tests;
 
 #[cfg(test)]
 mod tests {
@@ -240,6 +342,69 @@ mod tests {
         );
         assert!(!error.to_string().contains("synthetic-secret"));
         assert!(!format!("{error:?}").contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
+        let tab = "synthetic-tab";
+        for options in [
+            json!([]),
+            json!([{}]),
+            json!([[16, 1024], 4096]),
+            json!({"provider": ["anthropic"]}),
+            json!({"provider": ["chatgpt", "m"]}),
+            json!({"provider": ["chatgpt", "m", "low"]}),
+            json!({"provider": ["mock"]}),
+            json!({"provider": [{"name": "mock"}]}),
+            json!({"provider": {"name": "chatgpt", "model": "m", "document": [tab, "low"]}}),
+            json!({"provider": {"name": "chatgpt", "model": "m", "document": [tab]}}),
+            json!({"provider": {"name": "chatgpt", "model": "m", "document": [{"model": tab}]}}),
+            json!({"provider": {"name": "anthropic", "document": [tab, "low", true]}}),
+            json!({"provider": {"name": "anthropic", "document": [tab]}}),
+            json!({"provider": {"name": "anthropic", "document": []}}),
+            json!({"translation_limits": []}),
+            json!({"translation_limits": [[16, 1024], 4096]}),
+            json!({"translation_limits": {"input_kib": [16, 1024]}}),
+            json!({"translation_limits": {"input_kib": []}}),
+            json!({"translation_limits": {"work": []}}),
+            json!({"translation_limits": {"work": [8, 2, 1, 3, 16]}}),
+            json!({"translation_limits": {"cache": [64]}}),
+            json!({"translation_limits": {"cache": [64, 16384]}}),
+            // Nor in place of a single value.
+            json!({"target_language": ["ja"]}),
+            json!({"hover_timeout_ms": [20000]}),
+            json!({"translation_limits": {"output_kib": [4096]}}),
+            json!({"provider": {"name": "chatgpt", "model": ["m"]}}),
+            json!({"provider": {"name": "anthropic", "effort": ["low"]}}),
+            json!({"provider": {"name": "anthropic", "document": {"model": [tab]}}}),
+        ] {
+            let error = Settings::from_options(Some(options.clone()))
+                .err()
+                .unwrap_or_else(|| panic!("Accepted {options}"));
+            assert!(matches!(error, ConfigError::Decode(_)), "{options}");
+            assert_eq!(
+                error.to_string(),
+                "Invalid translation settings: check field names and value types"
+            );
+            assert!(!format!("{error:?}").contains(tab));
+        }
+        // The same values written as tables are settings.
+        for options in [
+            json!({}),
+            json!({"provider": {"name": "anthropic", "document": {"model": tab, "effort": "low", "thinking": true}}}),
+            json!({"provider": {"name": "chatgpt", "model": "m", "document": {"model": tab, "reasoning_effort": "low"}}}),
+            json!({"translation_limits": {"input_kib": {"hover": 16, "document": 1024}, "work": {}, "cache": {"entries": 64}}}),
+        ] {
+            assert!(Settings::from_options(Some(options)).is_ok());
+        }
+        // The named checks still report before the generic error.
+        let error = Settings::from_options(Some(json!({
+            "provider": {"name": "anthropic", "document": {"effort": "high"}},
+            "translation_limits": []
+        })))
+        .err()
+        .unwrap();
+        assert_eq!(error.to_string(), "provider.document.model is required");
     }
 
     #[test]
@@ -443,6 +608,7 @@ mod tests {
             model,
             effort,
             thinking,
+            ..
         } = anthropic(json!({})).unwrap().provider
         else {
             panic!("Expected Anthropic settings")
@@ -454,6 +620,7 @@ mod tests {
             model,
             effort,
             thinking,
+            ..
         } = anthropic(json!({"model": "claude-opus-5", "effort": "max", "thinking": true}))
             .unwrap()
             .provider
@@ -513,7 +680,7 @@ mod tests {
         }
         assert!(matches!(
             anthropic(json!({"model": "claude haiku"})).err().unwrap(),
-            ConfigError::ModelWhitespace
+            ConfigError::ModelWhitespace { .. }
         ));
         for fields in [
             json!({"api_key": "synthetic-secret"}),
@@ -573,6 +740,7 @@ mod tests {
                 model,
                 effort,
                 thinking,
+                ..
             } = Settings::from_options(Some(json!({"provider": provider})))
                 .unwrap()
                 .provider

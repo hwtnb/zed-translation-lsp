@@ -434,6 +434,7 @@ mod tests {
             Duration::from_secs(5),
             provider.translate(
                 crate::providers::Intent::Automatic,
+                crate::providers::Output::Range,
                 "Shared source.",
                 "ja",
                 context.clone(),
@@ -464,6 +465,7 @@ mod tests {
         let stale = provider
             .translate(
                 crate::providers::Intent::Automatic,
+                crate::providers::Output::Range,
                 "Stale source.",
                 "ja",
                 context,

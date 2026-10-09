@@ -80,6 +80,7 @@ impl TranslationProvider for MockProvider {
     async fn translate(
         &self,
         _intent: crate::providers::Intent,
+        _output: crate::providers::Output,
         text: &str,
         target_language: &str,
         context: Context,
@@ -126,6 +127,7 @@ mod tests {
             MockProvider::default()
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     "Any text",
                     "ja",
                     Context::Mock
@@ -138,6 +140,7 @@ mod tests {
                 MockProvider::default()
                     .translate(
                         crate::providers::Intent::Automatic,
+                        crate::providers::Output::Range,
                         &text.replace('\n', "\r\n"),
                         "ja",
                         Context::Mock
@@ -150,6 +153,7 @@ mod tests {
             MockProvider::default()
                 .translate(
                     crate::providers::Intent::Automatic,
+                    crate::providers::Output::Range,
                     COMMENT_BODY,
                     "en",
                     Context::Mock

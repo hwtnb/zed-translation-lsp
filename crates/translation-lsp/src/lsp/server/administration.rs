@@ -31,10 +31,18 @@ impl<P: TranslationProvider> Server<P> {
             })
             .collect();
         ranges.sort_by_key(|(ticket, _)| *ticket);
+        // A range can hold a tab operation next to a range operation only when
+        // they are kept apart, so only then does the title tell them apart.
+        let separate = self.settings.provider.separates_documents();
         for (&ticket, work) in ranges {
             add(
                 format!(
-                    "Cancel translation of lines {}-{}",
+                    "Cancel {} of lines {}-{}",
+                    if separate && work.document {
+                        "tab translation"
+                    } else {
+                        "translation"
+                    },
                     work.target.range.start.line + 1,
                     work.target.range.end.line + 1
                 ),
