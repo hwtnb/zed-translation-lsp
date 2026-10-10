@@ -6,7 +6,7 @@ description = "Translate code comments and selected text with ChatGPT or the Ant
 
 [language_servers.translation-lsp]
 name = "Translation LSP"
-languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "JSON", "JSONC", "YAML", "TOML", "Markdown", "Plain Text"]
+languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "JSON", "JSONC", "YAML", "TOML", "Shell Script", "PowerShell", "Dockerfile", "Docker Compose", "Markdown", "Plain Text"]
 
 [language_servers.translation-lsp.language_ids]
 Rust = "rust"
@@ -21,5 +21,9 @@ JSON = "json"
 JSONC = "jsonc"
 YAML = "yaml"
 TOML = "toml"
+"Shell Script" = "shellscript"
+PowerShell = "powershell"
+Dockerfile = "dockerfile"
+"Docker Compose" = "dockercompose"
 Markdown = "markdown"
 "Plain Text" = "plaintext"

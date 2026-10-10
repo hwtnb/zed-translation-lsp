@@ -24,6 +24,8 @@ Specify dependencies with Cargo compatibility ranges written as `major.minor`. D
 
 Evaluate Tree-sitter grammars first when adding comment extraction for a code language. JSON, TOML, and YAML comments are decided by tokens alone, so read them with a lexer instead of a grammar. Keep the existing lexer for Rust and Oxc for JavaScript and TypeScript.
 
+Shell script and Dockerfile comments are read by the server's own readers. PowerShell is read with the lexer of `pwsh-parser`. The shell reader does not recurse: it keeps what is open on a stack of its own, so only memory limits the depth of nesting.
+
 The current exception to compatibility ranges is `unicode-ident = "=1.0.24"`, pinned to keep the Rust lexer and Unicode tables on the same Unicode version. Remove the pin and update them together when the lexer and related Unicode tables support the same version.
 
 `granit-parser` 1.3 reports an error for a valid multi-line quoted YAML value whose continuation lines are indented only one column deeper than its key, so comments from that value on are unavailable. Upstream has fixed this, and the fix is expected in 2.0. When updating to 2.0, enable its `comments` feature, remove the `ignore` attribute from the `yaml_reads_past_a_value_continued_one_column_deeper` test, and delete the sentence about this limit from `docs/languages.md` and `docs/ja/languages.md`.

@@ -10,7 +10,10 @@ use rust_lexer::DocStyle;
 mod c_family;
 mod csharp;
 mod data;
+mod dockerfile;
+mod powershell;
 mod python;
+mod shell;
 mod syntax;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,7 +23,8 @@ enum LineKind {
     CSharp(u8),
     CFamily(&'static str),
     Python,
-    Data(u8),
+    // Ends at CR or LF, after an opening of this many bytes.
+    Plain(u8),
 }
 
 enum Kind {
@@ -32,6 +36,49 @@ enum Kind {
 struct Comment {
     range: Range<usize>,
     kind: Kind,
+}
+
+impl Comment {
+    fn line(range: Range<usize>, opening: u8) -> Self {
+        Self {
+            range,
+            kind: Kind::Line(LineKind::Plain(opening)),
+        }
+    }
+}
+
+impl Kind {
+    // The kind of a `#` line comment, if the source is one.
+    fn hash_line(source: &str) -> Option<Self> {
+        (source.starts_with('#') && !source.contains(['\r', '\n']))
+            .then_some(Self::Line(LineKind::Plain(1)))
+    }
+}
+
+// Keeps the ranges that a parser from outside reported, while each holds a
+// comment and follows the one before. A range reported twice counts once. Any
+// other range ends the list, so that no body is cut from a misjudged place.
+fn checked(
+    text: &str,
+    ranges: impl IntoIterator<Item = Range<usize>>,
+    kind: impl Fn(&str) -> Option<Kind>,
+) -> Vec<Comment> {
+    let mut comments: Vec<Comment> = Vec::new();
+    for range in ranges {
+        let last = comments.last().map(|comment| &comment.range);
+        if last == Some(&range) {
+            continue;
+        }
+        let kind = text
+            .get(range.clone())
+            .filter(|_| last.is_none_or(|last| last.end <= range.start))
+            .and_then(&kind);
+        let Some(kind) = kind else {
+            break;
+        };
+        comments.push(Comment { range, kind });
+    }
+    comments
 }
 
 // Store only source byte spans and syntax kinds. Bodies and LSP coordinates are
@@ -52,8 +99,25 @@ impl Comments {
         if language_id == "rust" {
             return Self(rust::parse(text));
         }
-        if matches!(language_id, "json" | "jsonc" | "yaml" | "toml") {
+        if matches!(
+            language_id,
+            "json" | "jsonc" | "yaml" | "toml" | "dockercompose"
+        ) {
             return Self(data::parse(language_id, text));
+        }
+        if matches!(language_id, "shellscript" | "powershell" | "dockerfile") {
+            // Read these as if a byte order mark were not there.
+            let mark = if text.starts_with('\u{feff}') { 3 } else { 0 };
+            let text = &text[mark..];
+            let mut comments = match language_id {
+                "shellscript" => shell::parse(text),
+                "powershell" => powershell::parse(text),
+                _ => dockerfile::parse(text),
+            };
+            for comment in &mut comments {
+                comment.range = comment.range.start + mark..comment.range.end + mark;
+            }
+            return Self(comments);
         }
 
         Self(javascript::parse(language_id, uri, text))
@@ -118,7 +182,7 @@ impl Comments {
                 Kind::Line(
                     LineKind::JavaScript(opening)
                     | LineKind::CSharp(opening)
-                    | LineKind::Data(opening),
+                    | LineKind::Plain(opening),
                 )
                 | Kind::Block { opening, .. } => opening,
             } as usize;
@@ -530,7 +594,13 @@ mod tests {
 
     #[test]
     fn hash_line_groups_break_on_blank_code_and_indent() {
-        for (language, code) in [("yaml", "a: 1 # inline"), ("toml", "a = 1 # inline")] {
+        for (language, code) in [
+            ("yaml", "a: 1 # inline"),
+            ("toml", "a = 1 # inline"),
+            ("dockercompose", "a: 1 # inline"),
+            ("shellscript", "a=1 # inline"),
+            ("powershell", "$a = 1 # inline"),
+        ] {
             for ending in ["\n", "\r\n", "\r"] {
                 let text = [
                     "# first  ",
@@ -719,6 +789,683 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    // The source of each comment, before grouping.
+    fn sources(language: &str, uri: &str, text: &str) -> Vec<String> {
+        Comments::parse(language, &uri.parse().unwrap(), text)
+            .0
+            .iter()
+            .map(|comment| text[comment.range.clone()].to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn reported_ranges_are_kept_only_while_each_holds_a_comment_after_the_last() {
+        let text = "# one\n日本 # two\n# three\n";
+        let two = text.find("# two").unwrap();
+        let three = text.find("# three").unwrap();
+        let kept = |ranges: Vec<Range<usize>>| {
+            checked(text, ranges, Kind::hash_line)
+                .into_iter()
+                .map(|comment| comment.range)
+                .collect::<Vec<_>>()
+        };
+        let all = vec![0..5, two..two + 5, three..three + 7];
+        assert_eq!(kept(all.clone()), all);
+        // A range reported twice counts once.
+        assert_eq!(kept(vec![0..5, 0..5, two..two + 5, two..two + 5]), all[..2]);
+        for wrong in [
+            // Not at a `#`.
+            two + 1..two + 5,
+            two - 1..two + 5,
+            // Inside a character.
+            7..two + 5,
+            two..two + 6 + 2,
+            // Across a line break.
+            two..three + 7,
+            // Before the last comment, or past the end.
+            0..3,
+            three..text.len() + 1,
+            usize::MAX - 1..usize::MAX,
+        ] {
+            assert_eq!(
+                kept(vec![0..5, wrong.clone(), three..three + 7]),
+                all[..1],
+                "{wrong:?}"
+            );
+        }
+    }
+
+    fn shell(text: &str) -> Vec<String> {
+        sources("shellscript", "untitled:comment", text)
+    }
+
+    #[test]
+    fn shell_comments_exclude_strings_expansions_and_here_documents() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let text = [
+                "#!/bin/sh",
+                "# Leading",
+                "# group.",
+                "echo \"# string\" '# raw' $'# ansi \\' c' ${x#y} ${x:-# z} $# a#b # inline",
+                "echo $(( 1 # 2 )) $[ 1 # 2 ] ; (( x # 3 )) ;# arithmetic",
+                "cat <<EOF | grep \"# pattern\" }#x ]#x # operator",
+                "# here-document $x $(echo # y",
+                ")",
+                "EOF",
+                "cat <<-'EOF' <<\\B <<\"C D\" # three",
+                "\t# quoted here-document",
+                "\tEOF",
+                "# second",
+                "B",
+                "# third",
+                "C D",
+                "cat <<< word # here-string",
+                "echo a \\",
+                "  | cat # continued",
+                "x=$(echo y # nested",
+                ") `echo z # backquoted",
+                "` \"$(echo \"$(echo # deep",
+                ")\" # deeper",
+                ")\" <(echo # process",
+                ")",
+                "if true; then # keyword",
+                "  : # indented",
+                "fi",
+                "#!later",
+            ]
+            .join(ending);
+            assert_eq!(
+                shell(&text),
+                [
+                    "# Leading",
+                    "# group.",
+                    "# inline",
+                    "# arithmetic",
+                    "# operator",
+                    "# three",
+                    "# here-string",
+                    "# continued",
+                    "# nested",
+                    "# backquoted",
+                    "# deep",
+                    "# deeper",
+                    "# process",
+                    "# keyword",
+                    "# indented",
+                    "#!later",
+                ],
+                "{ending:?}"
+            );
+            assert_eq!(
+                body_at("shellscript", &text, "# Leading").1,
+                format!("Leading{ending}group.")
+            );
+        }
+    }
+
+    #[test]
+    fn shell_reads_unclosed_text_to_the_end_and_checks_no_structure() {
+        let all = ["# before", "# inside", "# after"];
+        for (text, kept) in [
+            // A quotation, an expansion, or a here-document that nothing
+            // closes runs to the end.
+            (
+                "# before\necho \"open\n# inside\necho\n# after\n",
+                &all[..1],
+            ),
+            ("# before\necho 'open\n# inside\necho\n# after\n", &all[..1]),
+            (
+                "# before\necho $'open\n# inside\necho\n# after\n",
+                &all[..1],
+            ),
+            (
+                "# before\necho ${open\n# inside\necho\n# after\n",
+                &all[..1],
+            ),
+            (
+                "# before\necho $((open\n# inside\necho\n# after\n",
+                &all[..1],
+            ),
+            ("# before\ncat <<EOF\n# inside\necho\n# after\n", &all[..1]),
+            // Commands go on inside a substitution that nothing closes.
+            ("# before\necho $(open\n# inside\necho\n# after\n", &all[..]),
+            ("# before\necho `open\n# inside\necho\n# after\n", &all[..]),
+            // Keywords and parentheses need no partner.
+            ("# before\necho a\nfi\n# inside\n)\n# after\n", &all[..]),
+            (
+                "# before\nif true; then\n# inside\necho\n# after\n",
+                &all[..],
+            ),
+            ("# before\nf() {\n# inside\necho\n# after\n", &all[..]),
+            (
+                "# before\ncase x in\n# inside\na) echo ;;\n# after\n",
+                &all[..],
+            ),
+            (
+                "# before\n# inside\nif ) cat <<EOF\n# not\nEOF\n# after\n",
+                &all[..],
+            ),
+        ] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(shell(&text), kept, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_follows_bash_on_what_is_data() {
+        for (text, kept) in [
+            // A here-document goes on after a line that a backslash joins to
+            // the next one, and after a delimiter with a blank behind it.
+            ("cat <<EOF\na \\\nEOF\n# not\nEOF\n# 1\n", 1),
+            ("cat <<EOF\na \\\\\nEOF\n# 1\n", 1),
+            ("cat <<'EOF'\na \\\nEOF\n# 1\n", 1),
+            ("cat <<EOF\nEO\\\nF\n# 1\n", 1),
+            ("cat <<EOF\nEOF \n# not\nEOF\n# 1\n", 1),
+            ("cat <<-EOF\n \tEOF\n\t# not\n\tEOF\n# 1\n", 1),
+            ("cat <<E\"O\"F <<''\n# not\nEOF\n# not\n\n# 1\n", 1),
+            // A word after the operator is not a comment for its `#`.
+            ("cat <<EOF }#x ]#x a#b # 1\n# not\nEOF\n", 1),
+            // Inside `$( )`, the body also ends at a line that starts with
+            // the delimiter and holds `)`.
+            ("x=$(cat <<EOF\n# not\nEOF) # 1\n# 2\n", 2),
+            ("( cat <<EOF\n# not\nEOF) # not\nEOF\n) # 1\n", 1),
+            // `$((` runs to where its parentheses balance, arithmetic or not.
+            (
+                "echo $((echo a # not\n) ; echo b) $(( $(echo # 1\n) )) # 2\n",
+                2,
+            ),
+            ("cat >(( x # not )) <(( y # not )) # 1\n", 1),
+            ("echo $[ 1 # not ] $[ $(echo # 1\n) ] # 2\n", 2),
+            ("for ((i = 0; i < 2; i++)); do (( x # not )); done # 1\n", 1),
+            // Without a second `)` right after the first one that balances,
+            // `((` opens two subshells.
+            ("((echo a); (echo \"b)\")) # 1\n", 1),
+            ("(( $(echo # 1\n) ) ; echo ) # 2\n", 2),
+            ("if ((( a == b - 2 )) && (( c )) ); then : # 1\nfi\n", 1),
+            // The `)` of a `case` pattern does not close `$( )`, and `case`
+            // is no keyword everywhere.
+            (
+                "x=\"$(case $y in a|esac) : # 1\n;; (b|esac) ;& c) ;;& esac)\" # 2\n",
+                2,
+            ),
+            (
+                "x=\"$(echo case; for i do case $i in a) : # 1\n;; esac; done)\" # 2\n",
+                2,
+            ),
+            ("x=\"$(time -p case $y in a) : # 1\n;; esac)\" # 2\n", 2),
+            ("x=\"$(function f case $y in a) : # 1\n;; esac)\" # 2\n", 2),
+            ("x=\"$(f() case $y in a) : # 1\n;; esac)\" # 2\n", 2),
+            ("f ( ) ( : # 1\n) # 2\n", 2),
+            ("x=$(x=(case a); [[ case == b ]]; echo a >f case) # 1\n", 1),
+            (
+                "x=$(if a; then case $y in a) case $z in b) ;; esac ;; esac; fi) # 1\n",
+                1,
+            ),
+            // A pattern after `=~` holds `(` and `|`, and a pattern holds
+            // groups.
+            ("[[ $x =~ (a|b # not ) && $y =~ a|#not ]] # 1\n", 1),
+            ("[[ $x =~|#not ]] # 1\n", 1),
+            ("[[ $x == @(a| # not ) ]] # 1\n", 1),
+            // The subscript of an assignment runs to its `]`.
+            ("a[1 # not ]=x b[ # not ]=y # 1\necho a[ # 2\n", 2),
+            (
+                "x=(a) y[ # not ]=1 # 1\n>f z[ # not ]=1 # 2\nx=1 >f y[ # 3\n",
+                3,
+            ),
+            ("<<< a x[ # not ]=1 # 1\n", 1),
+            ("arr=([[ a (b # not ) ]] # 1\n c)#not # 2\n", 2),
+            ("arr=([a # not ]=b # 1\n) # 2\n", 2),
+            // `$$` is one parameter, so no `$'…'` starts in it.
+            ("echo $$'a\\'b' # not ' # 1\n", 1),
+            ("echo ${x:-$'a\\'# not'} \"$'a' # not \" # 1\n", 1),
+            // A quotation inside `${ }` or a string, and its escapes.
+            ("echo ${x:-'}' # not } \"a \\\" # not\" # 1\n", 1),
+            // A backslash joins two lines, inside a word too.
+            ("echo a\\\n# not\n# 1\n", 1),
+            ("x=\"$(ca\\\nse $y in a) : # 1\n;; esac)\" # 2\n", 2),
+            ("echo a \\\n\\\n# 1\n", 1),
+        ] {
+            let expected: Vec<_> = (1..=kept).map(|number| format!("# {number}")).collect();
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(shell(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_takes_no_comment_from_a_pattern_of_zsh() {
+        for (text, kept) in [
+            ("[[ $x == (#b)(*)=(*) ]] && print $match # 1\n", 1),
+            ("print -l *(.N) **/*(#qN) (a|b)# <-> <1-9>(#c2) # 1\n", 1),
+            (
+                "[[ $x = <-># ]] && print ([[:space:]]|)# (a # not\n) # 1\n",
+                1,
+            ),
+            ("[[ $x == (a|b)# && $y != (c # not\n) ]] && print # 1\n", 1),
+            ("print ${(j:,:)x} ${x:#a*} ${#x} $#x ${x%%#*} # 1\n", 1),
+            ("(( #x > 1 )) && print $(( [#16] 255 )) # 1\n", 1),
+            (
+                "case $x in\n((#i)*.bz2|(#i)*.bzip2)\n# 1\n;;\n(#b)(*)x) : # 2\n;|\n(a) : ;;\nesac # 3\n",
+                3,
+            ),
+            // The words of a loop and of an array can hold comments.
+            ("for file (\n# 1\n/a # 2\n); do :; done # 3\n", 3),
+            ("x=( ${(f)\"$(print a # 1\n)\"} (#i)b* *(/) ) # 2\n", 2),
+            // Right after `(`, `)`, or `|`, bash reads a comment where zsh
+            // can read a pattern. Neither is returned.
+            ("(#not\necho a)#not\necho b |#not\ncat # 1\n", 1),
+            ("(# don't\necho a) # 1\n", 1),
+            ("x=$(# not\necho a) # 1\n", 1),
+            ("echo a;# 1\necho b &# 2\n", 2),
+            // For bash, `!#not` is a word.
+            ("echo a &!#not\necho b &! # 1\n", 1),
+        ] {
+            let expected: Vec<_> = (1..=kept).map(|number| format!("# {number}")).collect();
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(shell(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_returns_a_comment_in_backquotes_when_a_line_break_ends_it() {
+        for (text, kept) in [
+            ("echo `echo a # not` # 1\n", 1),
+            ("echo `echo a # 1\n` \"`echo \"a # not\" # 2\n`\" # 3\n", 3),
+            ("echo `cat <<EOF\n# not\nEOF\n# 1\n` # 2\n", 2),
+            // The backquote ends the command, whatever is open there.
+            ("echo `echo 'a` # 1\n", 1),
+            // The shell removes some backslashes before it reads the
+            // command. Nothing is returned after one of them.
+            ("echo `echo a # 1\necho \\\\ # not\n: # not\n` # 2\n", 2),
+        ] {
+            let expected: Vec<_> = (1..=kept).map(|number| format!("# {number}")).collect();
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(shell(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_stops_where_it_cannot_tell_how_a_shell_reads_on() {
+        for text in [
+            // bash reads `((` as two subshells here, and reads their text
+            // again as commands, which hold a comment or a `case`.
+            "((echo a # not\n); (echo b))",
+            "((case $x in a) echo ;; esac); echo b)",
+            // bash 5.3 reads commands in `${ }`.
+            "echo ${ echo a; }",
+            // A backslash joins the two halves of an operator.
+            "cat <\\\n<EOF\n# not\nEOF",
+            "echo \"$\\\n(echo \")\" # not\n)\"",
+            // bash keeps the expansion in a delimiter as it is written.
+            "cat <<E$x\n# not\nE$x",
+            // bash reads the body after the rest of the line.
+            "echo $(cat <<EOF)\n# not\nEOF",
+            // zsh can begin a here-document inside the group of a pattern,
+            // and takes a group into the delimiter of one.
+            "echo x(cat <<EOF\n# not\nEOF)",
+            "cat <<EOF(a)\n# not\nEOF",
+            // zsh reads one pattern here, and bash a command.
+            "x=$(case $y in (a)echo ;; esac)",
+            // A `)` that bash rejects.
+            "x=$(case $y in a) echo ) ;; esac)",
+        ] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = format!("# before\n{text}\n# after\n").replace('\n', ending);
+                assert_eq!(shell(&text), ["# before"], "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_reads_deep_nesting_and_long_input_in_one_pass() {
+        let depth = 200_000;
+        let megabyte = 1 << 20;
+        let nested = |open: &str, inside: &str, close: &str| {
+            format!(
+                "echo {}{inside}{}\n# note",
+                open.repeat(depth),
+                close.repeat(depth)
+            )
+        };
+        let line = "x=1; echo \"$x\" | grep a && : # note\n";
+        let texts = [
+            nested("$(", "", ")"),
+            nested("(", ":", ")").replacen("echo ", "", 1),
+            nested("$((", "1", "))"),
+            nested("${a[", "1", "]}"),
+            nested("\"$(", "", ")\""),
+            format!(
+                "cat {}\n{}# note",
+                "<<E ".repeat(depth),
+                "E\n".repeat(depth)
+            ),
+            line.repeat(megabyte / line.len()),
+            format!("{}\n# note", "echo \"a\" 'b'; ".repeat(megabyte / 14)),
+            // Other things that nest or repeat.
+            nested("( ", ":", " )").replacen("echo ", "", 1),
+            nested("{ ", ":", "; }").replacen("echo ", "", 1),
+            nested("$(case x in a) ", ":", ";; esac)"),
+            nested("<(", "", ")"),
+            nested("x=(", "", ")"),
+            nested("${a:-", "", "}"),
+            nested("a[", "", "]").replacen("echo ", "", 1),
+            format!(
+                "[[ {}a{} ]]\n# note",
+                "( ".repeat(depth),
+                " )".repeat(depth)
+            ),
+            format!("cat <<E\n{}b\nE\n# note", "a \\\n".repeat(megabyte / 4)),
+            format!("cat <<E\n{}\nE\n# note", "\\".repeat(megabyte)),
+            format!(
+                "{}\n# note",
+                "echo `echo a # note\n`\n".repeat(megabyte / 21)
+            ),
+            format!("{}\n# note", "(#b)".repeat(megabyte / 4)),
+            format!("{}\n# note", "f() { :; }; ".repeat(megabyte / 12)),
+            format!("{}\n# note", "<1 ".repeat(megabyte / 3)),
+        ];
+        let uri = "untitled:comment".parse().unwrap();
+        let started = std::time::Instant::now();
+        for text in &texts {
+            let comments = Comments::parse("shellscript", &uri, text);
+            let last = comments
+                .0
+                .last()
+                .map(|comment| &text[comment.range.clone()]);
+            assert_eq!(last, Some("# note"), "{:?}", &text[..40]);
+            assert_eq!(comments.0.len(), text.matches("# note").count());
+        }
+        // Each takes milliseconds when read once, on a stack that the heap holds.
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn shell_ranges_are_bytes_of_the_source_after_other_scripts_and_a_byte_order_mark() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let text = [
+                "greeting=\"日本語😀\" # 挨拶😀",
+                "x=$(echo \"é😀\" # 中😀",
+                ") # 後",
+                "cat <<終 # 区切り",
+                "# 本文😀",
+                "終",
+                "  # 一行目",
+                "  # 二行目😀",
+            ]
+            .join(ending);
+            assert_eq!(
+                shell(&text),
+                [
+                    "# 挨拶😀",
+                    "# 中😀",
+                    "# 後",
+                    "# 区切り",
+                    "# 一行目",
+                    "# 二行目😀"
+                ],
+                "{ending:?}"
+            );
+            assert_eq!(
+                body_at("shellscript", &text, "# 一行目"),
+                (
+                    format!("# 一行目{ending}  # 二行目😀"),
+                    format!("一行目{ending}二行目😀")
+                )
+            );
+        }
+        // The mark is not part of the first comment, nor of the shebang.
+        assert_eq!(shell("\u{feff}# one\necho # two\n"), ["# one", "# two"]);
+        assert_eq!(shell("\u{feff}#!/bin/sh\n# one\n"), ["# one"]);
+    }
+
+    #[test]
+    fn powershell_comments_exclude_strings_requires_and_the_shebang() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let text = [
+                "#!/usr/bin/env pwsh",
+                "#Requires -Version 7",
+                "# Leading",
+                "# group.",
+                "  #requires -Modules X",
+                "$a = \"# string 日本語\" # inline 😀",
+                "<# block",
+                "   comment #>",
+                "$b = @\"",
+                "# here-string 😀",
+                "\"@ # after",
+                "$c = '# raw' <# inner #> ; $d = $(Get-Date # nested",
+                ")",
+                "function f { # brace",
+                "}",
+                "#!later",
+            ]
+            .join(ending);
+            assert_eq!(
+                sources("powershell", "file:///a.ps1", &text),
+                [
+                    "# Leading".to_owned(),
+                    "# group.".to_owned(),
+                    "# inline 😀".to_owned(),
+                    format!("<# block{ending}   comment #>"),
+                    "# after".to_owned(),
+                    "<# inner #>".to_owned(),
+                    "# nested".to_owned(),
+                    "# brace".to_owned(),
+                    "#!later".to_owned(),
+                ],
+                "{ending:?}"
+            );
+            assert_eq!(
+                bodies("powershell", &text),
+                [
+                    format!("Leading{ending}group."),
+                    "inline 😀".to_owned(),
+                    format!("block{ending}   comment "),
+                    "after".to_owned(),
+                    "inner ".to_owned(),
+                    "nested".to_owned(),
+                    "brace".to_owned(),
+                    "!later".to_owned(),
+                ],
+                "{ending:?}"
+            );
+            // An unclosed block comment, string, or here-string hides the rest.
+            for open in [
+                "<# open",
+                "$a = \"open",
+                "$a = 'open",
+                "$a = @\"",
+                "$a = @'",
+            ] {
+                let text = ["# before", open, "# inside", "# after"].join(ending);
+                assert_eq!(
+                    sources("powershell", "file:///a.ps1", &text),
+                    ["# before"],
+                    "{open}"
+                );
+                let uri = "file:///a.ps1".parse().unwrap();
+                let comments = Comments::parse("powershell", &uri, &text);
+                assert!(comments.at(&text, text.find(open).unwrap()).is_none());
+            }
+        }
+        assert_eq!(
+            sources(
+                "powershell",
+                "file:///a.ps1",
+                "\u{feff}#!/usr/bin/env pwsh\n#REQUIRES -Version 7\n# one\n"
+            ),
+            ["# one"]
+        );
+        assert_eq!(
+            sources("powershell", "file:///a.ps1", "\u{feff}# one\n<##>\n"),
+            ["# one", "<##>"]
+        );
+    }
+
+    // The example of the request, with tabs before the lines that `<<-` strips.
+    const DOCKERFILE: &str = concat!(
+        "# syntax=docker/dockerfile:1\n",
+        "# escape=\\\n",
+        "# c1\n",
+        "FROM a # not\n",
+        "RUN echo x \\\n",
+        "  # c2\n",
+        "  && echo y\n",
+        "RUN <<EOF\n",
+        "# not\n",
+        "echo z\n",
+        "EOF\n",
+        "ENV A=\"# not\"\n",
+        "  # c3\n",
+        "COPY <<-'EOT' /x\n",
+        "\t# not\n",
+        "\tEOT\n",
+        "RUN cat <<< \"x\"\n",
+        "# c4\n",
+        "RUN echo \"a <<EOF b\"\n",
+        "# c5\n",
+    );
+
+    #[test]
+    fn dockerfile_comments_are_whole_lines_outside_directives_and_here_documents() {
+        for ending in ["\n", "\r\n", "\r"] {
+            assert_eq!(
+                bodies("dockerfile", &DOCKERFILE.replace('\n', ending)),
+                ["c1", "c2", "c3", "c4", "c5"],
+                "{ending:?}"
+            );
+            let text = [
+                "# first  ",
+                "#",
+                "# \tthird🚀",
+                "",
+                "# separate",
+                "FROM a",
+                "  # indented",
+                "# alone",
+                "#!keep",
+            ]
+            .join(ending);
+            assert_eq!(
+                bodies("dockerfile", &text),
+                [
+                    format!("first  {ending}{ending}\tthird🚀"),
+                    "separate".to_owned(),
+                    "indented".to_owned(),
+                    format!("alone{ending}!keep"),
+                ],
+                "{ending:?}"
+            );
+        }
+        for (text, expected) in [
+            // Directives stop at the first comment, blank line, or instruction.
+            (
+                "# Syntax = x\n#check=skip=all\n# c1\n# escape=`\nFROM a\n",
+                &["# c1", "# escape=`"][..],
+            ),
+            ("# c1\n# syntax=x\nFROM a\n", &["# c1", "# syntax=x"]),
+            ("\n# syntax=x\nFROM a\n", &["# syntax=x"]),
+            ("FROM a\n# syntax=x\n", &["# syntax=x"]),
+            ("# other=x\n# syntax=x\n", &["# other=x", "# syntax=x"]),
+            ("# syntax=\n# c1\n", &["# syntax=", "# c1"]),
+            ("#!/usr/bin/env docker\n# syntax=x\n# c1\n", &["# c1"]),
+            ("\u{feff}# syntax=x\n# c1\n", &["# c1"]),
+            // The escape directive names the continuation character.
+            (
+                "# escape=`\nRUN a `\n  <<EOF\n# not\nEOF\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "# escape=`\nRUN a \\\n# c1\nRUN <<EOF\n# not\nEOF\n",
+                &["# c1"],
+            ),
+            // Comments and blank lines between continued lines do not end the instruction.
+            (
+                "RUN a \\\n\n  # c1\n  <<EOF\n# not\nEOF\n# c2\n",
+                &["# c1", "# c2"],
+            ),
+            (
+                "RUN a \\\\\n# c1\nRUN b \\  \n# c2\n <<X\n# not\nX\n# c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            ("RUN <<E\\\nOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            // Here-documents are read in order, each to its own line.
+            (
+                "RUN <<A 3<<-\"B C\" x\n# not\nA\n\t# not\n\tB C\n# c1\n",
+                &["# c1"],
+            ),
+            ("RUN <<A\n# not\nB\n A\nA \n# not\nA\n# c1\n", &["# c1"]),
+            ("COPY <<-EOT /x\n  # not\n  EOT\n# not\n", &[]),
+            ("RUN <<EOF\n# not\n", &[]),
+            ("ONBUILD RUN <<EOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("add <<EOF /x\n# not\nEOF\n# c1\n", &["# c1"]),
+            // Not here-documents: other instructions, other operators, and quoted text.
+            ("ENV A=1 <<EOF\n# c1\nEOF\n# c2\n", &["# c1", "# c2"]),
+            ("RUNNER <<EOF\n# c1\n", &["# c1"]),
+            ("RUN cat <<<EOF && echo $((1<<2)) a<<EOF\n# c1\n", &["# c1"]),
+            ("RUN echo 'a <<EOF b'\n# c1\nEOF\n# c2\n", &["# c1", "# c2"]),
+            (
+                "RUN echo \"a <<EOF b\"\n# c1\nEOF\n# c2\n",
+                &["# c1", "# c2"],
+            ),
+            ("RUN echo \\<<EOF b\n# c1\nEOF\n# c2\n", &["# c1", "# c2"]),
+            ("RUN cat <<< EOF\n# c1\nEOF\n# c2\n", &["# c1", "# c2"]),
+            // An escaped quote does not open a string.
+            ("RUN echo \\\" <<EOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            // Two escape characters at the end of a line do not continue it.
+            ("ENV A=b\\\\\nRUN <<EOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN [\"sh\", \"-c\", \"cat <<EOF\"]\n# c1\n", &["# c1"]),
+            ("RUN << \n# c1\n", &["# c1"]),
+            // Other scripts before and inside comments.
+            (
+                "# 日本語😀\nRUN echo \"é😀 # not\" \\\n  # 継続😀\n  && true\nCOPY <<終 /x\n# not 😀\n終\n  # 後😀",
+                &["# 日本語😀", "# 継続😀", "# 後😀"],
+            ),
+        ] {
+            assert_eq!(
+                sources("dockerfile", "file:///Dockerfile", text),
+                expected,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dockerfile_long_lines_and_many_here_documents_are_read_in_one_pass() {
+        let megabyte = 1 << 20;
+        let line = format!("RUN echo {}\n# note", "\"a\" b <<<c ".repeat(megabyte / 11));
+        let documents = format!(
+            "{}# note",
+            "RUN <<A 3<<-B\n# not\nA\n\t# not\n\tB\n".repeat(megabyte / 32)
+        );
+        let operators = format!(
+            "RUN {}\n{}# note",
+            "<<A ".repeat(megabyte / 6),
+            "A\n".repeat(megabyte / 6)
+        );
+        let continued = format!("{}b\n# note", "RUN a \\\n".repeat(megabyte / 8));
+        let started = std::time::Instant::now();
+        for text in [line, documents, operators, continued] {
+            assert!(text.len() >= megabyte - 64);
+            assert_eq!(bodies("dockerfile", &text), ["note"]);
+        }
+        // Each takes milliseconds when read once.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn docker_compose_is_read_as_yaml() {
+        assert_eq!(bodies("dockercompose", YAML), bodies("yaml", YAML));
+        assert!(!bodies("dockercompose", YAML).is_empty());
     }
 
     #[test]

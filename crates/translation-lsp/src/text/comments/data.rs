@@ -1,15 +1,15 @@
-use std::{borrow::Cow, ops::Range};
+use std::borrow::Cow;
 
 use granit_parser::{Scanner, StrInput, TokenType};
 use toml_parser::{Source, lexer::TokenKind};
 
-use super::{Comment, Kind, LineKind};
+use super::{Comment, Kind};
 
 // Comments in these formats are decided by tokens alone, so read tokens and
 // leave the structure unchecked. Errors in the structure then hide nothing.
 pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
     match language_id {
-        "yaml" => yaml(text),
+        "yaml" | "dockercompose" => yaml(text),
         "toml" => toml(text),
         _ => json(text),
     }
@@ -47,7 +47,7 @@ fn json(text: &str) -> Vec<Comment> {
             }
             b'/' if bytes.get(index + 1) == Some(&b'/') => {
                 index = line_end(index);
-                comments.push(line(start..index, 2));
+                comments.push(Comment::line(start..index, 2));
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 // An unclosed block comment hides the rest of the document.
@@ -83,7 +83,7 @@ fn toml(text: &str) -> Vec<Comment> {
         for token in Source::new(&source[offset..]).lex() {
             let span = offset + token.span().start()..offset + token.span().end();
             match token.kind() {
-                TokenKind::Comment => comments.push(line(span, 1)),
+                TokenKind::Comment => comments.push(Comment::line(span, 1)),
                 // The lexer keeps a quote inside a bare token, as in `r"# x"`,
                 // as part of that token. Read on from the quote instead, so
                 // that the text after it stays a string.
@@ -106,13 +106,6 @@ fn yaml(text: &str) -> Vec<Comment> {
         .map_while(Result::ok)
         .filter(|token| matches!(token.token_type(), TokenType::Comment(_)))
         .filter_map(|token| token.span().byte_range())
-        .map(|range| line(range, 1))
+        .map(|range| Comment::line(range, 1))
         .collect()
-}
-
-fn line(range: Range<usize>, opening: u8) -> Comment {
-    Comment {
-        range,
-        kind: Kind::Line(LineKind::Data(opening)),
-    }
 }

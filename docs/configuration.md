@@ -91,7 +91,7 @@ UI labels are in English regardless of `target_language`. `target_language` defa
 
 | Setting inside `features` | What it turns on or off | Language IDs |
 | --- | --- | --- |
-| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `json`, `jsonc`, `yaml`, `toml` |
+| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose` |
 | `automatic_selection` | Starting a translation after a stable Markdown selection. | `markdown` |
 | `selection_action` | The `Translate selection to …` Code Action. | Every language ID in the table below |
 | `document_action` | The `Translate selection to … and open in tab` and `Translate document to … and open in tab` Code Actions. | `markdown`, `plaintext` |
@@ -131,6 +131,10 @@ The keys of `languages` are the following language IDs, in lowercase:
 | JSONC | `jsonc` |
 | YAML | `yaml` |
 | TOML | `toml` |
+| Shell Script | `shellscript` |
+| PowerShell | `powershell` |
+| Dockerfile | `dockerfile` |
+| Docker Compose | `dockercompose` |
 | Markdown | `markdown` |
 | Plain Text | `plaintext` |
 

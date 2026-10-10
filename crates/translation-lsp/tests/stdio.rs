@@ -1498,8 +1498,16 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         ("file:///general.jsonc", "jsonc", "{\"s\": \"// string\"}"),
         ("file:///general.yaml", "yaml", "s: \"# string\""),
         ("file:///general.toml", "toml", "s = \"# string\""),
+        ("file:///general.sh", "shellscript", "s=\"# string\""),
+        ("file:///general.ps1", "powershell", "$s = \"# string\""),
+        ("file:///Dockerfile", "dockerfile", "ENV s=\"# string\""),
+        ("file:///compose.yaml", "dockercompose", "s: \"# string\""),
     ] {
-        let comment = if matches!(language, "yaml" | "toml") {
+        let hash = matches!(
+            language,
+            "yaml" | "toml" | "shellscript" | "powershell" | "dockerfile" | "dockercompose"
+        );
+        let comment = if hash {
             COMMENT.replace("//", "#")
         } else {
             COMMENT.to_owned()
@@ -1530,8 +1538,12 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "csharp" => format!("var t = @\"{comment}\";"),
             // JSON strings cannot span lines.
             "json" | "jsonc" => format!("[\n\"{}\"]", comment.replace('\n', " ")),
-            "yaml" => format!("t: \"{comment}\""),
+            "yaml" | "dockercompose" => format!("t: \"{comment}\""),
             "toml" => format!("t = \"\"\"{comment}\"\"\""),
+            "shellscript" => format!("t=\"{comment}\""),
+            "powershell" => format!("$t = \"{comment}\""),
+            // The lines of a here-document belong to its instruction.
+            "dockerfile" => format!("RUN <<EOF\n{comment}\nEOF"),
             _ => format!("const t = `{comment}`;"),
         };
         client.change(uri, 2, json!([{"text": literal}]));
@@ -2472,6 +2484,26 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
             "toml",
             include_str!("../../../samples/comment.toml"),
         ),
+        (
+            "file:///comment.sh",
+            "shellscript",
+            include_str!("../../../samples/comment.sh"),
+        ),
+        (
+            "file:///comment.ps1",
+            "powershell",
+            include_str!("../../../samples/comment.ps1"),
+        ),
+        (
+            "file:///Dockerfile",
+            "dockerfile",
+            include_str!("../../../samples/Dockerfile"),
+        ),
+        (
+            "file:///compose.yaml",
+            "dockercompose",
+            include_str!("../../../samples/compose.yaml"),
+        ),
     ] {
         for ending in ["\n", "\r\n", "\r"] {
             let source = source.replace('\n', ending);
@@ -2500,6 +2532,44 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
             client.close(uri);
         }
     }
+    client.finish(true);
+}
+
+#[test]
+fn shell_hover_ranges_count_utf16_units_after_japanese_and_emoji() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///utf16.sh";
+    let inline = "# 日本語のコメント😀";
+    let comment = COMMENT.replace("//", "#");
+    let source = format!(
+        "greeting=\"日本語😀\"; answer=$(echo \"é😀\") {inline}\n    {comment}\necho \"$greeting\"\n"
+    );
+    client.open(uri, "shellscript", &source, 1);
+    let range = range_for(&source, &comment);
+    for point in ["start", "end"] {
+        assert_preview(
+            &client.hover(uri, range[point].clone()),
+            &comment,
+            COMMENT_JA,
+            &range,
+        );
+    }
+    // The mock translates the sample text only. The range of the comment it
+    // refuses comes back as the retry target.
+    let range = range_for(&source, inline);
+    // 50 bytes and 37 characters come before the comment.
+    assert_eq!(range["start"]["character"], 39);
+    assert_eq!(range["end"]["character"], 51);
+    let hover = client.request_hover(uri, range["end"].clone());
+    assert_error(client.receive(hover, TIMEOUT), -32803);
+    let actions = client.actions(uri, json!({"start": range["start"], "end": range["start"]}));
+    let retry = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["command"]["command"] == "translation-lsp.retry")
+        .unwrap();
+    assert_eq!(retry["command"]["arguments"][0]["range"], range);
     client.finish(true);
 }
 
@@ -2668,7 +2738,8 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
         (
             json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
             "features.languages keys must be one of rust, javascript, typescript, \
-             typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, markdown, plaintext",
+             typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, shellscript, \
+             powershell, dockerfile, dockercompose, markdown, plaintext",
         ),
         (
             json!({"features": {"languages": {"rust": {"document_action": false}}}}),

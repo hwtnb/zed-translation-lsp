@@ -91,7 +91,7 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 
 | `features` 内の設定 | 切り替える機能 | 言語ID |
 | --- | --- | --- |
-| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`json`、`jsonc`、`yaml`、`toml` |
+| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose` |
 | `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
 | `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
 | `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
@@ -131,6 +131,10 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 | JSONC | `jsonc` |
 | YAML | `yaml` |
 | TOML | `toml` |
+| Shell Script | `shellscript` |
+| PowerShell | `powershell` |
+| Dockerfile | `dockerfile` |
+| Docker Compose | `dockercompose` |
 | Markdown | `markdown` |
 | Plain Text | `plaintext` |
 

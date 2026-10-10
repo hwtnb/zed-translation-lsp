@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::error::ConfigError;
 
 // The language IDs that `extension.toml` registers, in its order.
-pub(super) const LANGUAGE_IDS: [&str; 14] = [
+pub(super) const LANGUAGE_IDS: [&str; 18] = [
     "rust",
     "javascript",
     "typescript",
@@ -19,6 +19,10 @@ pub(super) const LANGUAGE_IDS: [&str; 14] = [
     "jsonc",
     "yaml",
     "toml",
+    "shellscript",
+    "powershell",
+    "dockerfile",
+    "dockercompose",
     "markdown",
     "plaintext",
 ];
@@ -293,8 +297,8 @@ mod tests {
                 assert_eq!(
                     error.to_string(),
                     "features.languages keys must be one of rust, javascript, typescript, \
-                     typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, markdown, \
-                     plaintext"
+                     typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, \
+                     shellscript, powershell, dockerfile, dockercompose, markdown, plaintext"
                 );
                 assert_eq!(format!("{error:?}"), error.to_string());
             }
@@ -311,7 +315,7 @@ mod tests {
 
     #[test]
     fn a_feature_is_accepted_only_for_the_languages_it_runs_in() {
-        let comments = &LANGUAGE_IDS[..12];
+        let comments = &LANGUAGE_IDS[..16];
         for (feature, name, language_ids) in [
             (Feature::CommentHover, "comment_hover", comments),
             (
@@ -363,7 +367,7 @@ mod tests {
             message(json!({"languages": {"markdown": {"comment_hover": false}}})),
             "features.languages.markdown.comment_hover is not available; comment_hover applies \
              to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, json, \
-             jsonc, yaml, toml"
+             jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose"
         );
     }
 }
