@@ -1,7 +1,4 @@
-use std::borrow::Cow;
-
 use granit_parser::{Scanner, StrInput, TokenType};
-use toml_parser::{Source, lexer::TokenKind};
 
 use super::{Comment, Kind};
 
@@ -15,14 +12,16 @@ pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
     }
 }
 
+// Where the line of this offset ends: at CR, LF, or the end of the text.
+fn line_end(bytes: &[u8], from: usize) -> usize {
+    bytes[from..]
+        .iter()
+        .position(|byte| matches!(byte, b'\r' | b'\n'))
+        .map_or(bytes.len(), |length| from + length)
+}
+
 fn json(text: &str) -> Vec<Comment> {
     let bytes = text.as_bytes();
-    let line_end = |from: usize| {
-        bytes[from..]
-            .iter()
-            .position(|byte| matches!(byte, b'\r' | b'\n'))
-            .map_or(bytes.len(), |length| from + length)
-    };
     let mut comments = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
@@ -46,7 +45,7 @@ fn json(text: &str) -> Vec<Comment> {
                 }
             }
             b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                index = line_end(index);
+                index = line_end(bytes, index);
                 comments.push(Comment::line(start..index, 2));
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
@@ -69,35 +68,56 @@ fn json(text: &str) -> Vec<Comment> {
     comments
 }
 
+// Outside the four kinds of strings, every `#` starts a comment, and every
+// quote starts a string: also in the middle of a bare value, as in `r"# x"`.
 fn toml(text: &str) -> Vec<Comment> {
-    // The lexer ends an unclosed one-line string at LF only. Preserve all byte
-    // offsets when accepting the editor's standalone CR and CRLF lines.
-    let source = if text.contains('\r') {
-        Cow::Owned(text.replace('\r', "\n"))
-    } else {
-        Cow::Borrowed(text)
-    };
+    let bytes = text.as_bytes();
     let mut comments = Vec::new();
-    let mut offset = 0;
-    'lex: loop {
-        for token in Source::new(&source[offset..]).lex() {
-            let span = offset + token.span().start()..offset + token.span().end();
-            match token.kind() {
-                TokenKind::Comment => comments.push(Comment::line(span, 1)),
-                // The lexer keeps a quote inside a bare token, as in `r"# x"`,
-                // as part of that token. Read on from the quote instead, so
-                // that the text after it stays a string.
-                TokenKind::Atom => {
-                    if let Some(quote) = source[span.clone()].find(['"', '\'']) {
-                        offset = span.start + quote;
-                        continue 'lex;
+    let mut index = 0;
+    while index < bytes.len() {
+        let start = index;
+        match bytes[index] {
+            b'#' => {
+                index = line_end(bytes, index);
+                comments.push(Comment::line(start..index, 1));
+            }
+            quote @ (b'"' | b'\'') => {
+                let delimiter = [quote; 3];
+                let multiline = bytes[index..].starts_with(&delimiter);
+                index += if multiline { 3 } else { 1 };
+                loop {
+                    match bytes.get(index) {
+                        // An unclosed multi-line string hides the rest of the document.
+                        None => break,
+                        // An unclosed one-line string ends at its line.
+                        Some(b'\r' | b'\n') if !multiline => break,
+                        // In a basic string, a backslash hides a quote or another backslash.
+                        Some(b'\\') if quote == b'"' => {
+                            index += 1;
+                            index += usize::from(matches!(bytes.get(index), Some(b'\\' | b'"')));
+                        }
+                        Some(&byte) if byte == quote && !multiline => {
+                            index += 1;
+                            break;
+                        }
+                        Some(_) if multiline && bytes[index..].starts_with(&delimiter) => {
+                            index += 3;
+                            // Up to two more quotes belong to the string.
+                            index += bytes[index..]
+                                .iter()
+                                .take(2)
+                                .take_while(|byte| **byte == quote)
+                                .count();
+                            break;
+                        }
+                        Some(_) => index += 1,
                     }
                 }
-                _ => {}
             }
+            _ => index += 1,
         }
-        return comments;
     }
+    comments
 }
 
 fn yaml(text: &str) -> Vec<Comment> {

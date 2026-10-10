@@ -57,9 +57,24 @@ Manual selection translation remains available.
 
 ### PowerShell
 
-PowerShell supports `#` comments and `<# ... #>` block comments. Adjacent line comments of the same indentation are translated together, and each block comment is handled separately. A shebang on the first line and `#Requires` lines are skipped. Text inside single-quoted strings, double-quoted strings, and here-strings is not treated as a comment. A comment inside `$( ... )` within a double-quoted string is not an automatic target.
+PowerShell supports `#` comments and `<# ... #>` block comments. Adjacent line comments of the same indentation are translated together, and each block comment is handled separately. A shebang on the first line and `#Requires` lines are skipped.
 
-An unclosed block comment waits until closed. An unclosed string or here-string hides the comments after it. Manual selection translation remains available.
+A `#` or `<#` starts a comment at the start of a line, after a blank, and after `(`, `)`, `{`, `}`, `,`, `;`, `|`, or `&`. It also does right after a string, a `${ ... }`, or a block comment that began at one of these places. A `#` after a backtick does not start a comment. Text inside single-quoted strings, double-quoted strings, here-strings, and `${ ... }` is not treated as a comment, and neither is the text after `--%`, up to the end of its line or to a `|` or `&&` outside double quotes. The other quotation marks that PowerShell accepts, such as `‘`, `’`, `“`, and `”`, work as `'` and `"` do. A comment inside `$( ... )` within a double-quoted string is not an automatic target.
+
+Where a `#` follows other text with no blank between, as in `a#b` or `$x#text`, PowerShell reads a comment or a part of an argument, depending on the statement around it. The server does not decide between the two, and nothing on that line from the `#` on is an automatic target.
+
+An unclosed block comment waits until closed. An unclosed string, here-string, or `${` hides the comments after it.
+
+Extraction stops at the following, where the server cannot tell how PowerShell reads on. The comments before that point remain available.
+
+- `<#`, a here-string, or `--%` right after other text, as in `$x=@"`.
+- `$( ... )` right after other text, as in `a=$( ... )`, when it holds `#`, a backtick, `${`, `--%`, a here-string, or a string with a parenthesis in it.
+- A backtick after a letter, a digit, `_`, `.`, `\`, `+`, or `#` and before a quote, `$`, `@`, `<`, or `-`, as in ``a`"b``. A type name such as ``List`1`` holds a backtick that escapes nothing.
+- `${` right after another `$` inside a word, as in `a$${b}`.
+- A string, here-string, block comment, `${ ... }`, or `$( ... )` that starts after a `#` of the kind above and ends on a later line.
+- A here-string in double quotes whose ending line comes inside a `$( ... )` of its own.
+
+Manual selection translation remains available.
 
 ### Dockerfile and Docker Compose
 
@@ -68,6 +83,17 @@ In a Dockerfile, a comment is a line whose first character after its indentation
 Parser directives are skipped: the lines `# syntax=...`, `# escape=...`, and `# check=...` at the top of the file, before any other comment, blank line, or instruction. A shebang on the first line is skipped too.
 
 The lines of a here-document are not comments. A here-document follows a `RUN`, `COPY`, or `ADD` instruction that has a word starting with `<<` or `<<-`, and runs to the line that holds only its delimiter. With `<<-`, tabs before the delimiter on that line are ignored. A here-document without that line runs to the end of the file. `<<<` does not start a here-document, and neither does `<<` inside quotes.
+
+The delimiter is read as BuildKit reads it. Quotes around it or around a part of it are removed. A backslash is removed outside quotes and kept in single quotes. In double quotes it is removed only before `"`, `$`, or another backslash, so the delimiter of `<<"E\OF"` is `E\OF`. The escape directive does not change this.
+
+BuildKit has no here-document in the following places, and reads the lines after them as instructions and comments. The server reads a here-document there as well, and takes a line as a comment only where both readings do.
+
+- `<<-` followed by a blank and a word, as in `<<- EOF`. The word is the delimiter.
+- An instruction with an unclosed quote, or with a `${` that BuildKit rejects, after a word that starts with `<<`. That word gives the delimiter.
+- An empty delimiter, as in `<<""`. The here-document ends at an empty line.
+- A delimiter that holds `<`, as in `<<"a<b"`.
+
+Extraction stops where the delimiter cannot be read: where the unclosed quote or the rejected `${` is in the word of `<<` or in its delimiter, and where that word holds a `${name ... }` with more than a name, as in `<<EOF${x:-y}`. The comments before that point remain available.
 
 Docker Compose files are read as YAML, by the rules under [JSON, YAML, and TOML](#json-yaml-and-toml).
 

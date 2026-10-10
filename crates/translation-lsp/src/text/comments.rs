@@ -47,40 +47,6 @@ impl Comment {
     }
 }
 
-impl Kind {
-    // The kind of a `#` line comment, if the source is one.
-    fn hash_line(source: &str) -> Option<Self> {
-        (source.starts_with('#') && !source.contains(['\r', '\n']))
-            .then_some(Self::Line(LineKind::Plain(1)))
-    }
-}
-
-// Keeps the ranges that a parser from outside reported, while each holds a
-// comment and follows the one before. A range reported twice counts once. Any
-// other range ends the list, so that no body is cut from a misjudged place.
-fn checked(
-    text: &str,
-    ranges: impl IntoIterator<Item = Range<usize>>,
-    kind: impl Fn(&str) -> Option<Kind>,
-) -> Vec<Comment> {
-    let mut comments: Vec<Comment> = Vec::new();
-    for range in ranges {
-        let last = comments.last().map(|comment| &comment.range);
-        if last == Some(&range) {
-            continue;
-        }
-        let kind = text
-            .get(range.clone())
-            .filter(|_| last.is_none_or(|last| last.end <= range.start))
-            .and_then(&kind);
-        let Some(kind) = kind else {
-            break;
-        };
-        comments.push(Comment { range, kind });
-    }
-    comments
-}
-
 // Store only source byte spans and syntax kinds. Bodies and LSP coordinates are
 // produced for the requested group, rather than for every comment in a document.
 pub(crate) struct Comments(Vec<Comment>);
@@ -675,6 +641,8 @@ mod tests {
             ("toml", "a = \"unclosed # hidden\n# after", &["after"]),
             ("toml", "a = 'unclosed # hidden\n# after", &["after"]),
             ("toml", "a = \"x\\\" # hidden\n# after", &["after"]),
+            // A backslash hides nothing in a literal string.
+            ("toml", "a = 'x\\' # same\n# after", &["same", "after"]),
             ("toml", "\"k\\q # hidden\" = 1 # after", &["after"]),
             ("toml", "a = \"\"\"unclosed\n# hidden\nb = 1 # hidden", &[]),
             ("toml", "a = '''unclosed\n# hidden\nb = 1 # hidden", &[]),
@@ -798,43 +766,6 @@ mod tests {
             .iter()
             .map(|comment| text[comment.range.clone()].to_owned())
             .collect()
-    }
-
-    #[test]
-    fn reported_ranges_are_kept_only_while_each_holds_a_comment_after_the_last() {
-        let text = "# one\n日本 # two\n# three\n";
-        let two = text.find("# two").unwrap();
-        let three = text.find("# three").unwrap();
-        let kept = |ranges: Vec<Range<usize>>| {
-            checked(text, ranges, Kind::hash_line)
-                .into_iter()
-                .map(|comment| comment.range)
-                .collect::<Vec<_>>()
-        };
-        let all = vec![0..5, two..two + 5, three..three + 7];
-        assert_eq!(kept(all.clone()), all);
-        // A range reported twice counts once.
-        assert_eq!(kept(vec![0..5, 0..5, two..two + 5, two..two + 5]), all[..2]);
-        for wrong in [
-            // Not at a `#`.
-            two + 1..two + 5,
-            two - 1..two + 5,
-            // Inside a character.
-            7..two + 5,
-            two..two + 6 + 2,
-            // Across a line break.
-            two..three + 7,
-            // Before the last comment, or past the end.
-            0..3,
-            three..text.len() + 1,
-            usize::MAX - 1..usize::MAX,
-        ] {
-            assert_eq!(
-                kept(vec![0..5, wrong.clone(), three..three + 7]),
-                all[..1],
-                "{wrong:?}"
-            );
-        }
     }
 
     fn shell(text: &str) -> Vec<String> {
@@ -1311,6 +1242,181 @@ mod tests {
         );
     }
 
+    fn powershell(text: &str) -> Vec<String> {
+        sources("powershell", "file:///a.ps1", text)
+    }
+
+    #[test]
+    fn powershell_takes_comments_where_a_token_starts_and_none_from_quoted_text() {
+        let cases: &[(&str, &[&str])] = &[
+            // After a blank, and after a character that ends every token.
+            (
+                "a #c1\n(#c2\n)#c3\n{#c4\n}#c5\n,#c6\n;#c7\n|#c8\n&#c9",
+                &[
+                    "#c1", "#c2", "#c3", "#c4", "#c5", "#c6", "#c7", "#c8", "#c9",
+                ],
+            ),
+            // After a string, a `${ }`, or a block comment that began a token.
+            (
+                "\"s\"#c1\n's'#c2\n${a}#c3\n<# b #>#c4\n@(1)#c5\n@{}#c6",
+                &["#c1", "#c2", "#c3", "<# b #>", "#c4", "#c5", "#c6"],
+            ),
+            // Not inside a word, nor after a backtick. A backtick before a line break continues the line.
+            (
+                "Write-Host a#n\nhttp://a/#n\n`#n # c1\n$x = 1 `\n  # c2",
+                &["# c1", "# c2"],
+            ),
+            // Two quotes in a row, and a quote after a backtick, do not end a string.
+            (
+                "'it''s # n' # c1\n\"a \"\"# n\"\" b\" # c2\n\"a `\" # n\" # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // Other quotation marks work as `'` and `"`, also mixed.
+            (
+                "\u{2018}# n\u{2019} # c1\n\u{201c}# n\u{201d} # c2\n\u{201a}# n\u{201b} # c3\n\u{201e}# n\" # c4\n'# n\u{2019}\u{2019} # n\u{2018} # c5",
+                &["# c1", "# c2", "# c3", "# c4", "# c5"],
+            ),
+            // A here-string ends at a line that starts with its quote and `@`.
+            (
+                "@\"\n# n\n \"@ # n\n\"@ # c1\n@'\n# n\n\"@ # n\n'@ # c2\n@\u{201c} x\n# n\n\u{201d}@ # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // A `$( )` in a string ends where its parentheses do, whatever the quotes in it.
+            (
+                "\"a $(')' # n\n) b\" # c1\n\"$(\"# n\")\" # c2\n\"$(\"\"# n\"\")\" # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // The name in `${ }` runs to the first `}` without a backtick.
+            ("${a # n} # c1\n${b`} # n} # c2", &["# c1", "# c2"]),
+            // After `--%`, a line is text up to `|` or `&&` outside double quotes.
+            (
+                "cmd --% a # n \"|\" # n | b # c1\ncmd \u{2014}\u{2013}% # n && b # c2\ncmd --% # n\n# c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // A `$( )` or `@( )` that starts a token holds commands.
+            (
+                "$x = $(\n# c1\n'# n' ) # c2\n$y = @(\n\"# n\" # c3\n)",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // A `$( )` after other text may hold strings without parentheses.
+            (
+                "a=$(b 'c' \"d\") # c1\n!$(a) # c2\n-Skip:$($x -lt 7) # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // A backtick escapes a quote, but is part of a type name.
+            (
+                "cmd `\"$a`\" # c1\ncmd --a=`\"x#n`\" # c2\n[List`1]$x # c3\ncmd `\"x # c4`\"",
+                &["# c1", "# c2", "# c3", "# c4`\""],
+            ),
+            // Blanks of other scripts and a NUL end a token. A byte order mark is a blank only where a token starts.
+            (
+                "a\u{a0}#c1\na\u{3000}#c2\na\u{85}#c3\na\u{b}#c4\na\u{c}#c5\na\0#c6\na \u{feff}#c7\na\u{feff}#n\n#c8",
+                &["#c1", "#c2", "#c3", "#c4", "#c5", "#c6", "#c7", "#c8"],
+            ),
+            // In single quotes, a backtick and `$(` are text. In an argument, `@"` and `--%` are.
+            // A backtick before a blank or a line break escapes nothing.
+            (
+                "'a`' # c1\n'a $(' # c2\n`a@\" # n\" # c3\n`a--% # c4\na ` #c5\na `\n#c6",
+                &["# c1", "# c2", "# c3", "# c4", "#c5", "#c6"],
+            ),
+            // A block comment needs both of its ends.
+            (
+                "<##> <#\n# n #> # c1\n<#>#> # c2",
+                &["<##>", "<#\n# n #>", "# c1", "<#>#>", "# c2"],
+            ),
+        ];
+        for (text, expected) in cases {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                let expected: Vec<_> = expected
+                    .iter()
+                    .map(|source| source.replace('\n', ending))
+                    .collect();
+                assert_eq!(powershell(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_leaves_out_what_only_one_reading_of_the_text_takes_for_a_comment() {
+        // A `#` after other text starts a comment or not, by what the parser
+        // expects there. Nothing is taken from the rest of that line.
+        let leaves: &[(&str, &[&str])] = &[
+            ("$x#n # n\n# c", &["# c"]),
+            ("$x = 5#n \"n\" <# n #> # n\n# c", &["# c"]),
+            ("a#n --% \"|\" # n\n# c", &["# c"]),
+            ("cmd a` #n # n\n# c", &["# c"]),
+        ];
+        // Where the readings differ for more than a line, and where something
+        // is not closed, the comments before that place are the result.
+        let stops = [
+            "$x#it's\n# n\n' # n",
+            "$x=@\"\n# n\n\"@",
+            "a<# n #>",
+            "x$${a}",
+            "$x--% a",
+            "echo a`\"b`\"",
+            "a$(b # n\n)",
+            "a=$(b ')' c)",
+            "a$(b `) c)",
+            "a$(${b})",
+            "a$(@'\n'@)",
+            "a$(--% b)",
+            "@\"\n$(\n\"@ # n\n)\n\"@",
+            "<# open",
+            "\"open",
+            "'open",
+            "@\"\nopen",
+            "${open",
+            "\"$(open\"",
+        ];
+        for ending in ["\n", "\r\n", "\r"] {
+            for (text, expected) in leaves {
+                let text = text.replace('\n', ending);
+                assert_eq!(&powershell(&text), expected, "{text:?}");
+            }
+            for stop in stops {
+                let text = format!("# before\n{stop}\n# after\n").replace('\n', ending);
+                assert_eq!(powershell(&text), ["# before"], "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_reads_deep_nesting_and_long_input_in_one_pass() {
+        let depth = 200_000;
+        let megabyte = 1 << 20;
+        let nested = |open: &str, inside: &str, close: &str| {
+            format!(
+                "{}{inside}{}\n# note",
+                open.repeat(depth),
+                close.repeat(depth)
+            )
+        };
+        let line = "$x = \"a\" + 'b' | f -g $(h) # note\n";
+        let texts = [
+            nested("\"$(", "", ")\""),
+            nested("(", "1", ")"),
+            nested("{", "", "}"),
+            nested("@(", "", ")"),
+            nested("$(", "", ")"),
+            nested("@{a=", "1", "}"),
+            nested("a$(", "", ")"),
+            line.repeat(megabyte / line.len()),
+            format!("{}\n# note", "f \"a\" 'b'; ".repeat(megabyte / 11)),
+            format!("{}\n# note", "a#b ".repeat(megabyte / 4)),
+            format!("@\"\n{}\n\"@\n# note", "$()\n".repeat(megabyte / 4)),
+        ];
+        let started = std::time::Instant::now();
+        for text in &texts {
+            let found = powershell(text);
+            assert_eq!(found.last().map(String::as_str), Some("# note"));
+            assert_eq!(found.len(), text.matches("# note").count());
+        }
+        // Each takes milliseconds when read once, without a stack.
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
     // The example of the request, with tabs before the lines that `<<-` strips.
     const DOCKERFILE: &str = concat!(
         "# syntax=docker/dockerfile:1\n",
@@ -1440,6 +1546,168 @@ mod tests {
     }
 
     #[test]
+    fn dockerfile_reads_the_delimiter_of_a_here_document_as_buildkit_does() {
+        let cases: &[(&str, &[&str])] = &[
+            // In double quotes, a backslash is removed only before `"`, `$`, and a
+            // backslash. In single quotes it stays, and outside quotes it is removed.
+            (
+                "FROM scratch\nCOPY <<\"E\\OF\" /payload\nEOF\n# not\nE\\OF\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "COPY <<\"E\\\"OF\" /x\nE\\\"OF\n# not\nE\"OF\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "COPY <<\"E\\\\OF\" /x\nE\\\\OF\nEOF\n# not\nE\\OF\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "COPY <<\"E\\$OF\" /x\nE\\$OF\n# not\nE$OF\n# c1\n",
+                &["# c1"],
+            ),
+            ("COPY <<'E\\OF' /x\nEOF\n# not\nE\\OF\n# c1\n", &["# c1"]),
+            ("COPY <<E\\OF /x\nE\\OF\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("COPY <<'E\"O\\\\F' /x\n# not\nE\"O\\\\F\n# c1\n", &["# c1"]),
+            ("COPY <<\"E'O\\nF\" /x\n# not\nE'O\\nF\n# c1\n", &["# c1"]),
+            ("RUN <<\\E\\\"O\\'F\\\\\n# not\nE\"O'F\\\n# c1\n", &["# c1"]),
+            // The escape directive does not change the reading of a delimiter.
+            (
+                "# escape=`\nCOPY <<\"E\\\"O`F\" /x\n# not\nE\"O`F\n# c1\n",
+                &["# c1"],
+            ),
+            // The parts of one word are joined, and a `$` name stays as written.
+            (
+                "RUN <<E\"O\"'F' <<$A <<${B} <<\"$C\"\n# not\nEOF\n# not\n$A\n# not\n${B}\n# not\n$C\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "RUN << \tEOF 3<< -EOF\n# not\nEOF\n# not\n-EOF\n# c1\n",
+                &["# c1"],
+            ),
+            (
+                "RUN a=${b:-c} ${d/e/f} <<EOF\n# not\nEOF\n# c1\n",
+                &["# c1"],
+            ),
+            // An escaped blank belongs to the delimiter.
+            ("RUN <<E\\ OF\n# not\nE OF\n# c1\n", &["# c1"]),
+            // The lexer skips a byte order mark at the start of the delimiter.
+            ("RUN <<\u{feff}EOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            // An error of the lexer leaves the instruction without here-documents, also after the error.
+            ("RUN ${} <<EOF\n# c1\n", &["# c1"]),
+            ("RUN ${a:#b} <<EOF\n# c1\n", &["# c1"]),
+            ("RUN ${a!b} <<EOF\n# c1\n", &["# c1"]),
+            ("RUN \"open <<EOF\n# c1\n", &["# c1"]),
+            // The replacement of `${name/pattern/replacement}` runs to its `}`, and is split into words.
+            ("RUN ${d/e/'} <<EOF '}\n# not\nEOF\n# c1\n", &["# c1"]),
+            // The text of `${name ... }` is split into words once more, whatever its quotes.
+            ("RUN echo ${a:- <<EOF}\n# not\nEOF}\n# c1\n", &["# c1"]),
+            ("RUN echo ${a:-\" <<EOF \"}\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN echo \"${a:- <<EOF}\"\n# c1\n", &["# c1"]),
+            // A string around `${name ... }` stays in the word, and what came before it does not.
+            (
+                "RUN echo ${a:- <<\"E${b:-c}\"}\n# not\nE${b:-c}}\n# c1\n",
+                &["# c1"],
+            ),
+        ];
+        for (text, expected) in cases {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(
+                    &sources("dockerfile", "file:///Dockerfile", &text),
+                    expected,
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dockerfile_hides_what_was_meant_as_a_here_document_where_buildkit_has_none() {
+        let cases: &[(&str, &[&str])] = &[
+            // A blank after `<<-`, and an instruction that the lexer rejects after the word of `<<`.
+            ("RUN cat <<- EOF\n\t# not\n\tEOF\n# c1\n", &["# c1"]),
+            ("RUN <<EOF echo \"it's\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN <<EOF echo ${x\n# not\nEOF\n# c1\n", &["# c1"]),
+            // BuildKit reads this one too.
+            ("RUN cat << EOF\n# not\nEOF\n# c1\n", &["# c1"]),
+            // The delimiter is the next word after any blank, with its quotes removed.
+            (
+                "RUN <<\u{3000}EOF 3<<-\t\"A B\"\n# not\nEOF\n\t# not\n\tA B\n# c1\n",
+                &["# c1"],
+            ),
+            // The next word is no delimiter where it is an operator itself. At the end there is none.
+            ("RUN <<- <<A <<-\n# not\nA\n# c1\n", &["# c1"]),
+            ("RUN <<- <<<A\n# not\n", &[]),
+            // An empty delimiter ends at an empty line.
+            ("RUN <<\"\"\n# not\n\n# c1\n", &["# c1"]),
+            ("RUN <<-'' <<EOF\n# not\n\t\n# not\nEOF\n# c1\n", &["# c1"]),
+            // A delimiter may hold `<` after its first character.
+            (
+                "RUN <<\"a<b\" <<a\\<c\n# not\na<b\n# not\na<c\n# c1\n",
+                &["# c1"],
+            ),
+            ("RUN <<EOF<in\n# not\nEOF\n# not\n", &[]),
+            // After an error of the lexer, the words before it count, and the ones after it do not.
+            ("RUN <<EOF 'open\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN <<EOF ${}\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN <<EOF ${a:-b\n# not\nEOF\n# c1\n", &["# c1"]),
+            ("RUN <<EOF ${a!b} ${a:#b}\n# not\nEOF\n# c1\n", &["# c1"]),
+            (
+                "RUN echo \"open <<EOF\n# c1\nEOF\n# c2\n",
+                &["# c1", "# c2"],
+            ),
+            // A line that one reading hides starts a here-document in the other. A comment is
+            // a line that both readings take for one.
+            ("RUN <<- X\nRUN <<A\nX\n# not\nA\n# c1\n", &["# c1"]),
+            ("RUN <<\"a<b\"\nRUN <<A\na<b\n# not\nA\n# c1\n", &["# c1"]),
+            ("RUN <<X 'open\nRUN <<A\nX\n# not\nA\n# c1\n", &["# c1"]),
+            ("RUN <<X \"open\nRUN <<A\nX\n# not\nA\n# c1\n", &["# c1"]),
+            // BuildKit reads a blank after `<<` itself, so both readings are the same here.
+            ("RUN << X\nRUN <<A\nX\n# c1\nA\n# c2\n", &["# c1", "# c2"]),
+            // A word of `<<` or a delimiter that lost its start to `${name ... }` is not read.
+            ("RUN <<E${x:-y}\n# not\nE${x:-y}\n# not\n", &[]),
+            ("RUN <<\"E${x:+y}\"\n# not\nE${x:+y}\n# not\n", &[]),
+            ("RUN <<- E${x:-y}\n# not\n${x:-y}\n# not\n", &[]),
+        ];
+        // No delimiter can be read from these, so no line after them is taken.
+        let stops = [
+            "RUN <<\"EOF",
+            "RUN <<'EOF",
+            "RUN <<EOF${x",
+            "RUN <<EOF${}",
+            "RUN <<E${x:-y}OF",
+            "RUN <<\"E${x:+y}\"",
+            "RUN 3<<-${x/y/z}",
+            "RUN <<- \"EOF",
+            "RUN <<- E${x:-y}",
+            "RUN <<A <<\"B",
+            "RUN echo ${a:- <<EOF",
+            "RUN ${d/e/\\} <<EOF",
+            "RUN echo ${a:- <<E\\\"}",
+        ];
+        for ending in ["\n", "\r\n", "\r"] {
+            for (text, expected) in cases {
+                let text = text.replace('\n', ending);
+                assert_eq!(
+                    &sources("dockerfile", "file:///Dockerfile", &text),
+                    expected,
+                    "{text:?}"
+                );
+            }
+            for stop in stops {
+                let text =
+                    format!("# before\n{stop}\n# after\nEOF\nB\n# after\n").replace('\n', ending);
+                assert_eq!(
+                    sources("dockerfile", "file:///Dockerfile", &text),
+                    ["# before"],
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dockerfile_long_lines_and_many_here_documents_are_read_in_one_pass() {
         let megabyte = 1 << 20;
         let line = format!("RUN echo {}\n# note", "\"a\" b <<<c ".repeat(megabyte / 11));
@@ -1453,13 +1721,63 @@ mod tests {
             "A\n".repeat(megabyte / 6)
         );
         let continued = format!("{}b\n# note", "RUN a \\\n".repeat(megabyte / 8));
+        let depth = megabyte / 8;
+        let nested = format!(
+            "RUN <<A {}{}\n# not\nA\n# note",
+            "\"${a:-".repeat(depth),
+            "}\"".repeat(depth)
+        );
         let started = std::time::Instant::now();
-        for text in [line, documents, operators, continued] {
+        for text in [line, documents, operators, continued, nested] {
             assert!(text.len() >= megabyte - 64);
             assert_eq!(bodies("dockerfile", &text), ["note"]);
         }
         // Each takes milliseconds when read once.
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn readers_take_time_in_proportion_to_the_text() {
+        // Each sign on its own, and the openings that a reader could read on from.
+        let signs = ")]}([{\"'#\\`=,:-|><&*!%@$; \na";
+        let signs: Vec<_> = signs.chars().map(String::from).collect();
+        let openings = [
+            "a ", "a = ", "[[", "\"\"\"", "'''", "<<E\n", "$(", "${", "$((", "@\"\n", "\"@", "<#",
+            "#>", "--% ", "$x=1 +\n", "'a", "\"a\"@", "\\\n", "${a:-", "\"${a/",
+        ];
+        let pieces: Vec<_> = signs.iter().map(String::as_str).chain(openings).collect();
+        let size = 64 << 10;
+        let uri = "untitled:comment".parse().unwrap();
+        for language in [
+            "powershell",
+            "toml",
+            "dockerfile",
+            "json",
+            "shellscript",
+            "yaml",
+        ] {
+            // A Dockerfile reads words only in an instruction that can have a here-document.
+            let heads: &[&str] = if language == "dockerfile" {
+                &["", "RUN <<E "]
+            } else {
+                &[""]
+            };
+            for (head, piece, tail) in heads.iter().flat_map(|head| {
+                pieces
+                    .iter()
+                    .flat_map(move |piece| ["", "\n", "\nx"].map(|tail| (head, piece, tail)))
+            }) {
+                let text = format!("{head}{}{tail}", piece.repeat(size / piece.len()));
+                let started = std::time::Instant::now();
+                Comments::parse(language, &uri, &text);
+                // One pass takes milliseconds in a debug build. Reading the
+                // rest of the text again at each piece took over 20 seconds.
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(1),
+                    "{language} {head:?} {piece:?} {tail:?}"
+                );
+            }
+        }
     }
 
     #[test]

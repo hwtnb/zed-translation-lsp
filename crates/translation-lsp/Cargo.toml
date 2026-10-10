@@ -21,14 +21,12 @@ oxc_allocator = "0.153"
 oxc_parser = "0.153"
 oxc_span = "0.153"
 pulldown-cmark = { version = "0.13", default-features = false }
-pwsh-parser = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 rust_lexer = { package = "ra-ap-rustc_lexer", version = "0.176" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.53", features = ["rt", "sync", "time", "net", "macros"] }
-toml_parser = { version = "1.1", default-features = false }
 tree-sitter = "0.27"
 tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"

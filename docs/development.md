@@ -24,7 +24,7 @@ Specify dependencies with Cargo compatibility ranges written as `major.minor`. D
 
 Evaluate Tree-sitter grammars first when adding comment extraction for a code language. JSON, TOML, and YAML comments are decided by tokens alone, so read them with a lexer instead of a grammar. Keep the existing lexer for Rust and Oxc for JavaScript and TypeScript.
 
-Shell script and Dockerfile comments are read by the server's own readers. PowerShell is read with the lexer of `pwsh-parser`. The shell reader does not recurse: it keeps what is open on a stack of its own, so only memory limits the depth of nesting.
+JSON, TOML, shell script, PowerShell, and Dockerfile comments are read by the server's own readers, and YAML with the scanner of `granit-parser`. A reader runs on the thread that handles requests, so it must take time in proportion to the size of the text, whatever the text holds. The server's own readers read each part once, without starting again from an earlier place, and do not recurse. The shell and Dockerfile readers keep what is open on a stack of their own, so only memory limits the depth of nesting. The test `readers_take_time_in_proportion_to_the_text` checks the time of all six readers on repeated pieces of text; add a new reader to it.
 
 The current exception to compatibility ranges is `unicode-ident = "=1.0.24"`, pinned to keep the Rust lexer and Unicode tables on the same Unicode version. Remove the pin and update them together when the lexer and related Unicode tables support the same version.
 
