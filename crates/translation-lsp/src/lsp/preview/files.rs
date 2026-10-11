@@ -44,18 +44,17 @@ impl PreviewFiles {
         let extension = if markdown { "md" } else { "txt" };
         let directory =
             std::env::temp_dir().join(format!("translation-lsp-{}", uuid::Uuid::new_v4()));
-        let mut directory_options = fs::DirBuilder::new();
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        {
+        let created = {
             use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            directory_options.mode(0o700);
             options.mode(0o600);
-        }
-        directory_options
-            .create(&directory)
-            .map_err(|_| failed("Could not create the translation preview directory"))?;
+            fs::DirBuilder::new().mode(0o700).create(&directory)
+        };
+        #[cfg(not(unix))]
+        let created = fs::create_dir(&directory);
+        created.map_err(|_| failed("Could not create the translation preview directory"))?;
         let path = directory.join(format!("Translation.{extension}"));
         self.files.push(path.clone());
         let mut file = options

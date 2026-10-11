@@ -829,7 +829,7 @@ fn translation_problems_clear_on_edit_and_fallback_channels_remain_independent()
 #[test]
 fn a_failed_ticket_reports_its_problem_while_another_ticket_remains_busy() {
     let mut client = Client::with_activity(
-        &["--mock-delay-ms", "1000", "--mock-timeout-ms", "120"],
+        &["--mock-delay-ms", "10000", "--mock-timeout-ms", "2000"],
         false,
         true,
     );
