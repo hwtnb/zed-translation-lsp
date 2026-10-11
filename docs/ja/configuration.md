@@ -25,6 +25,7 @@
         "selection_timeout_ms": 30000,
         "document_timeout_ms": 180000,
         "selection_debounce_ms": 450,
+        "comment_parse_timeout_ms": 1000,
         "features": {
           "comment_hover": true,
           "automatic_selection": true,
@@ -150,6 +151,7 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 | `selection_timeout_ms` | `30000` | 整数 `1000`〜`120000`、両端を含む | 保持した手動選択・Markdownバックグラウンド翻訳の実行期限。ワーカー（翻訳処理を実行するタスク）へ渡した時点から計る。 |
 | `document_timeout_ms` | `180000` | 整数 `1000`〜`600000`、両端を含む | 別タブに開く文書・選択範囲の実行期限。ワーカーへ渡した時点から計り、キュー待ちは別。 |
 | `selection_debounce_ms` | `450` | 整数 `100`〜`2000`、両端を含む | ネイティブサーバーが新しい選択を観測してから待つ時間。Zed側の観測待ちは別に加わる。 |
+| `comment_parse_timeout_ms` | `1000` | 整数 `100`〜`60000`、両端を含む | C、C++、C#、Pythonの文書からコメントを読み取る時間の上限。読み取りを始めた時点から計る。[コメントを読み取れなかった文書](languages.md#コメントを読み取れなかった文書)を参照。 |
 
 ## サイズの上限
 

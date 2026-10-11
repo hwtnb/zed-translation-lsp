@@ -52,6 +52,7 @@ use crate::{
         error::{Error as ProviderError, ErrorKind},
         mock::{MockOptions, MockProvider},
     },
+    text::comments::Failure,
 };
 
 use super::{
@@ -712,7 +713,12 @@ impl<P: TranslationProvider> Server<P> {
             .chars()
             .next()
             .is_none_or(char::is_whitespace);
-        let range = document.comment_range(&position.text_document.uri, offset);
+        let range = document.comment_range(
+            &position.text_document.uri,
+            offset,
+            Duration::from_millis(self.settings.comment_parse_timeout_ms),
+        );
+        report_comment_failure(&self.ui, &position.text_document.uri, document)?;
         let eligible = |preview: &Preview| {
             !preview.is_comment
                 || preview.range.end != position.position
@@ -838,6 +844,41 @@ impl<P: TranslationProvider> Drop for Server<P> {
             let _ = worker.join();
         }
     }
+}
+
+// Tells the user once per open document that its comments could not be read.
+// The log names the language and the kind of failure, and nothing of the document.
+fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> RequestResult<()> {
+    let Some(cause) = document.take_comment_failure() else {
+        return Ok(());
+    };
+    let name = uri
+        .path()
+        .as_estr()
+        .split('/')
+        .next_back()
+        .unwrap_or_default();
+    let name = String::from_utf8_lossy(name.decode().as_bytes()).into_owned();
+    let language = &document.language_id;
+    let message = match cause {
+        Failure::TimedOut => {
+            eprintln!("translation preview: reading comments timed out (language {language:?})");
+            format!(
+                "Reading comments in {name} timed out. Comments in this file are not recognized until you reopen it. To allow more time, adjust comment_parse_timeout_ms in Zed settings."
+            )
+        }
+        Failure::Panicked(place) => {
+            let place = place.as_deref().unwrap_or("an unknown place");
+            eprintln!(
+                "translation preview: reading comments panicked (language {language:?}, at {place})"
+            );
+            format!(
+                "Reading comments in {name} failed. Comments in this file are not recognized until you reopen it."
+            )
+        }
+    };
+    ui.warn(&message)
+        .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))
 }
 
 fn provider_failure(error: ProviderError) -> ResponseError {

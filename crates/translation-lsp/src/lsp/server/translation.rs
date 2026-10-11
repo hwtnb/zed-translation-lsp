@@ -144,9 +144,13 @@ impl<P: TranslationProvider> Server<P> {
             .provider
             .admit(&context, intent)
             .map_err(provider_failure)?;
-        let input = document
-            .translation_input(&target.uri, target.range)
-            .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
+        let input = document.translation_input(
+            &target.uri,
+            target.range,
+            Duration::from_millis(self.settings.comment_parse_timeout_ms),
+        );
+        report_comment_failure(&self.ui, &target.uri, document)?;
+        let input = input.map_err(|m| failure(ErrorCode::InvalidParams, m))?;
         let task = Task::Translation {
             intent,
             output,

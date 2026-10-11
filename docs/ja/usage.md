@@ -44,6 +44,13 @@ Markdownの訳文は一時的な `.md` ファイルとして開きます。コ�
 
 明示操作の完了・失敗通知にはファイル名と行番号を付けます。自動翻訳の完了ポップアップは出しません。明示した翻訳や管理操作が失敗した場合は、エラー通知を確認してください。
 
+文書のコメントを読み取れなかった場合は、次のどちらかの警告を表示します。同じ文書では、開き直すまで1回だけです。`<file>` はファイル名です。[コメントを読み取れなかった文書](languages.md#コメントを読み取れなかった文書)を参照してください。
+
+| 警告 | 原因 |
+| --- | --- |
+| `Reading comments in <file> timed out. Comments in this file are not recognized until you reopen it. To allow more time, adjust comment_parse_timeout_ms in Zed settings.` | 読み取りが `comment_parse_timeout_ms` を超えた。 |
+| `Reading comments in <file> failed. Comments in this file are not recognized until you reopen it.` | 読み取りがサーバーの中で失敗した。 |
+
 ## 取り消しと再試行
 
 1件を止めるには、その範囲にカーソルか選択範囲を置き、コードアクションの `Cancel translation of lines …` を実行します。`provider.document` を設定している場合、タブ翻訳は `Cancel tab translation of lines …` と表示するため、同じ範囲に両方のアクションが並ぶことがあります。片方を取り消しても、もう片方は続きます。

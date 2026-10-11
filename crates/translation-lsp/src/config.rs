@@ -20,6 +20,7 @@ pub(crate) struct Settings {
     pub selection_timeout_ms: u64,
     pub document_timeout_ms: u64,
     pub selection_debounce_ms: u64,
+    pub comment_parse_timeout_ms: u64,
     pub features: Features,
 }
 
@@ -192,6 +193,7 @@ impl Default for Settings {
             selection_timeout_ms: 30_000,
             document_timeout_ms: 180_000,
             selection_debounce_ms: 450,
+            comment_parse_timeout_ms: 1_000,
             features: Features::default(),
         }
     }
@@ -234,6 +236,12 @@ impl Settings {
                 settings.selection_debounce_ms,
                 100,
                 2_000,
+            ),
+            (
+                "comment_parse_timeout_ms",
+                settings.comment_parse_timeout_ms,
+                100,
+                60_000,
             ),
         ] {
             bounded_number(name, value, minimum, maximum)?;
@@ -573,6 +581,7 @@ mod tests {
             assert_eq!(settings.selection_timeout_ms, 30_000);
             assert_eq!(settings.document_timeout_ms, 180_000);
             assert_eq!(settings.selection_debounce_ms, 450);
+            assert_eq!(settings.comment_parse_timeout_ms, 1_000);
         }
         let settings = Settings::from_options(Some(json!({
             "target_language":"en", "provider":{"name":"chatgpt", "model":"gpt-6.1-sol", "reasoning_effort":"low"}
@@ -809,6 +818,7 @@ mod tests {
             ("selection_timeout_ms", 1_000, 120_000),
             ("document_timeout_ms", 1_000, 600_000),
             ("selection_debounce_ms", 100, 2_000),
+            ("comment_parse_timeout_ms", 100, 60_000),
         ] {
             for value in [minimum, maximum] {
                 assert!(Settings::from_options(Some(json!({(field):value}))).is_ok());

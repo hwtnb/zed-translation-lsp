@@ -95,6 +95,10 @@ impl Ui {
         self.show_message(MessageType::INFO, message)
     }
 
+    pub fn warn(&self, message: &str) -> Result<(), Error> {
+        self.show_message(MessageType::WARNING, message)
+    }
+
     pub fn error(&self, message: &str) -> Result<(), Error> {
         self.show_message(MessageType::ERROR, message)
     }

@@ -44,6 +44,13 @@ The spinner disappears when work ends, including cancellation and timeout. Hover
 
 Manual completion and failure notifications identify the file name and lines. Automatic completion does not produce a popup. Check error notifications for failed manual translation or management operations.
 
+When the comments of a document cannot be read, the server shows one of the following warnings, once per document until the document is reopened. `<file>` is the file name. See [Documents whose comments cannot be read](languages.md#documents-whose-comments-cannot-be-read).
+
+| Warning | Cause |
+| --- | --- |
+| `Reading comments in <file> timed out. Comments in this file are not recognized until you reopen it. To allow more time, adjust comment_parse_timeout_ms in Zed settings.` | The reading took longer than `comment_parse_timeout_ms`. |
+| `Reading comments in <file> failed. Comments in this file are not recognized until you reopen it.` | The reading failed inside the server. |
+
 ## Canceling and retrying
 
 To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. With `provider.document`, a tab translation is listed as `Cancel tab translation of lines …`, so one range can offer both actions; canceling one leaves the other running.

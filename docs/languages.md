@@ -109,6 +109,12 @@ Docker Compose files are read as YAML, by the rules under [JSON, YAML, and TOML]
 
 Unclosed block comments wait until closed. If a fatal JS/TS syntax error stops parsing, later comments are unavailable for automatic extraction. Fix the syntax or use manual selection translation.
 
+### Documents whose comments cannot be read
+
+The server reads the comments of a document when a Hover or a translation first needs them, and again after an edit. For C, C++, C#, and Python, the reading stops once it has taken longer than `comment_parse_timeout_ms`, which is 1 second by default. The other languages have no such limit.
+
+When the reading stops at the limit, or fails inside the server, the server keeps running and shows one warning that names the file. From then on no comment is recognized in that document, and editing it does not start another reading. Manual selection translation keeps working there; a selection that is exactly a comment is sent as selected, with its comment marks. Close the document and open it again to have its comments read once more. Other documents are not affected.
+
 ## Language server settings
 
 For C# files, install Zed's [C# language extension](https://github.com/zed-extensions/csharp). Its settings key is `CSharp`. If you configure `languages.CSharp.language_servers` explicitly, add `"translation-lsp"` alongside your existing C# server. This translation extension does not replace Roslyn or OmniSharp.

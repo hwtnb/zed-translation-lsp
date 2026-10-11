@@ -2,7 +2,13 @@ mod javascript;
 mod rust;
 #[cfg(test)]
 use javascript::source_type;
-use std::ops::Range;
+use std::{
+    cell::Cell,
+    ops::Range,
+    panic::{self, AssertUnwindSafe},
+    sync::Once,
+    time::{Duration, Instant},
+};
 
 use lsp_types::Uri;
 use rust_lexer::DocStyle;
@@ -51,25 +57,80 @@ impl Comment {
 // produced for the requested group, rather than for every comment in a document.
 pub(crate) struct Comments(Vec<Comment>);
 
+// Why reading a document gave no comments.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Failure {
+    TimedOut,
+    // Where the panic was raised, as `file:line`.
+    Panicked(Option<String>),
+}
+
+thread_local! {
+    static READING: Cell<bool> = const { Cell::new(false) };
+    static PANICKED_AT: Cell<Option<String>> = const { Cell::new(None) };
+}
+
+// A panic message can quote the text being read. While a thread reads
+// comments, keep only the place of its panic; report every other panic as before.
+fn keep_reading_panics_quiet() {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let report = panic::take_hook();
+        panic::set_hook(Box::new(move |panic| {
+            if READING.get() {
+                PANICKED_AT.set(
+                    panic
+                        .location()
+                        .map(|place| format!("{}:{}", place.file(), place.line())),
+                );
+            } else {
+                report(panic);
+            }
+        }));
+    });
+}
+
 impl Comments {
-    pub fn parse(language_id: &str, uri: &Uri, text: &str) -> Self {
+    // The limit starts here. It stops the Tree-sitter languages; no other
+    // reader can be stopped part way.
+    pub fn parse(
+        language_id: &str,
+        uri: &Uri,
+        text: &str,
+        limit: Duration,
+    ) -> Result<Self, Failure> {
+        let deadline = Instant::now() + limit;
+        keep_reading_panics_quiet();
+        READING.set(true);
+        let read = panic::catch_unwind(AssertUnwindSafe(|| {
+            Self::read(language_id, uri, text, deadline)
+        }));
+        READING.set(false);
+        match read {
+            Ok(Some(comments)) => Ok(Self(comments)),
+            Ok(None) => Err(Failure::TimedOut),
+            Err(_) => Err(Failure::Panicked(PANICKED_AT.take())),
+        }
+    }
+
+    fn read(language_id: &str, uri: &Uri, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
         if language_id == "python" {
-            return Self(python::parse(text));
+            return python::parse(text, deadline);
         }
         if matches!(language_id, "c" | "cpp") {
-            return Self(c_family::parse(language_id, text));
+            return c_family::parse(language_id, text, deadline);
         }
         if language_id == "csharp" {
-            return Self(csharp::parse(text));
+            return csharp::parse(text, deadline);
         }
         if language_id == "rust" {
-            return Self(rust::parse(text));
+            return Some(rust::parse(text));
         }
         if matches!(
             language_id,
             "json" | "jsonc" | "yaml" | "toml" | "dockercompose"
         ) {
-            return Self(data::parse(language_id, text));
+            return Some(data::parse(language_id, text));
         }
         if matches!(language_id, "shellscript" | "powershell" | "dockerfile") {
             // Read these as if a byte order mark were not there.
@@ -83,10 +144,10 @@ impl Comments {
             for comment in &mut comments {
                 comment.range = comment.range.start + mark..comment.range.end + mark;
             }
-            return Self(comments);
+            return Some(comments);
         }
 
-        Self(javascript::parse(language_id, uri, text))
+        Some(javascript::parse(language_id, uri, text))
     }
 
     // A group is a range of comment indices, not a copy of the source or body.
@@ -216,9 +277,13 @@ fn newline_len(text: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    fn parsed(language: &str, uri: &Uri, text: &str) -> Comments {
+        Comments::parse(language, uri, text, Duration::from_secs(60)).unwrap()
+    }
+
     fn body_at(language: &str, text: &str, marker: &str) -> (String, String) {
         let uri: Uri = "untitled:comment".parse().unwrap();
-        let comments = Comments::parse(language, &uri, text);
+        let comments = parsed(language, &uri, text);
         let group = comments.at(text, text.find(marker).unwrap()).unwrap();
         (
             text[comments.range(group.clone())].into(),
@@ -242,7 +307,7 @@ mod tests {
             ("cpp", "foo(\n// Real."),
             ("python", "foo(\n# Real."),
         ] {
-            let comments = Comments::parse(language, &uri, source);
+            let comments = parsed(language, &uri, source);
             assert_eq!(comments.0.len(), 1, "{language}: {source}");
             assert_eq!(comments.body(source, 0..1), "Real.");
         }
@@ -265,7 +330,7 @@ mod tests {
             "        f\"Not a docstring either.\"\n",
         );
         let uri = "untitled:Example".parse().unwrap();
-        let comments = Comments::parse("python", &uri, source);
+        let comments = parsed("python", &uri, source);
         let bodies: Vec<_> = (0..comments.0.len())
             .map(|index| comments.body(source, index..index + 1))
             .collect();
@@ -309,7 +374,7 @@ mod tests {
             "((\"Doc.\"))",
             "('Doc' # explanation\n'.')",
         ] {
-            let comments = Comments::parse("python", &uri, literal);
+            let comments = parsed("python", &uri, literal);
             assert_eq!(comments.0.len(), 1, "{literal}");
             assert_eq!(comments.body(literal, 0..1), "Doc.");
             assert!(comments.at(literal, literal.len()).is_none());
@@ -323,15 +388,23 @@ mod tests {
             "if True:\n    '''Not a docstring.'''",
             "def f():\n    pass\n    '''Not a docstring.'''",
         ] {
-            assert!(
-                Comments::parse("python", &uri, source).0.is_empty(),
-                "{source}"
-            );
+            assert!(parsed("python", &uri, source).0.is_empty(), "{source}");
         }
         let source = "#!/usr/bin/env python\n# Real.\n'''Unclosed\n# Hidden.";
-        let comments = Comments::parse("python", &uri, source);
+        let comments = parsed("python", &uri, source);
         assert_eq!(comments.0.len(), 1);
         assert_eq!(comments.body(source, 0..1), "Real.");
+    }
+
+    #[test]
+    fn python_reads_statements_after_many_comments_in_proportion_to_the_text() {
+        let uri = "untitled:comment".parse().unwrap();
+        let text = format!("{}{}", "# c\n".repeat(10_000), "f()\n".repeat(10_000));
+        let started = Instant::now();
+        assert_eq!(parsed("python", &uri, &text).0.len(), 10_000);
+        // One pass takes a fraction of a second in a debug build. Passing the
+        // comments again for each statement took over 20 seconds.
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -364,7 +437,7 @@ mod tests {
         let uri = "untitled:comment".parse().unwrap();
         for language in ["c", "cpp"] {
             let source = "const char *s = \"// not /* comment */\";\nchar c = '/';\n#if ENABLED\n// Real.\n#endif\n";
-            let comments = Comments::parse(language, &uri, source);
+            let comments = parsed(language, &uri, source);
             assert_eq!(comments.0.len(), 1);
             assert_eq!(comments.body(source, 0..1), "Real.");
             for broken in [
@@ -372,7 +445,7 @@ mod tests {
                 "const char *s = \"unclosed\n// hidden",
             ] {
                 let source = format!("// Real.\n{broken}");
-                let comments = Comments::parse(language, &uri, &source);
+                let comments = parsed(language, &uri, &source);
                 assert_eq!(comments.0.len(), 1, "{language}: {broken}");
             }
             for ending in ["\n", "\r\n", "\r"] {
@@ -392,7 +465,7 @@ mod tests {
             "auto s = R\"tag(unclosed\n// hidden",
         ] {
             let source = format!("// Real.\n{literal}");
-            let comments = Comments::parse("cpp", &uri, &source);
+            let comments = parsed("cpp", &uri, &source);
             assert_eq!(comments.0.len(), 1, "{literal}");
         }
     }
@@ -438,7 +511,7 @@ mod tests {
             "var c = '/';",
         ] {
             let source = format!("{literal}\n// Real comment.");
-            let comments = Comments::parse("csharp", &uri, &source);
+            let comments = parsed("csharp", &uri, &source);
             assert_eq!(comments.0.len(), 1, "{literal}");
             assert_eq!(&source[comments.0[0].range.clone()], "// Real comment.");
         }
@@ -447,7 +520,7 @@ mod tests {
             r####"var s = $@"prefix {1 /* Real comment. */} // literal";"####,
             "var s = $$\"\"\"\n// literal {{1 /* Real comment. */}}\n\"\"\";",
         ] {
-            let comments = Comments::parse("csharp", &uri, source);
+            let comments = parsed("csharp", &uri, source);
             assert_eq!(comments.0.len(), 1);
             assert_eq!(
                 body_at("csharp", source, "Real comment.").1,
@@ -467,7 +540,7 @@ mod tests {
             "var s = \"unclosed // Inside string.",
         ] {
             let source = format!("// Valid before error.\n{broken}");
-            let comments = Comments::parse("csharp", &uri, &source);
+            let comments = parsed("csharp", &uri, &source);
             assert_eq!(comments.0.len(), 1, "{broken}");
             assert_eq!(comments.body(&source, 0..1), "Valid before error.");
         }
@@ -475,7 +548,7 @@ mod tests {
 
     fn bodies(language: &str, text: &str) -> Vec<String> {
         let uri = "untitled:comment".parse().unwrap();
-        let comments = Comments::parse(language, &uri, text);
+        let comments = parsed(language, &uri, text);
         let mut bodies = Vec::new();
         let mut index = 0;
         while index < comments.0.len() {
@@ -549,7 +622,7 @@ mod tests {
                     .collect();
                 assert_eq!(bodies(language, &source), expected, "{language} {ending:?}");
                 let uri = "untitled:comment".parse().unwrap();
-                let comments = Comments::parse(language, &uri, &source);
+                let comments = parsed(language, &uri, &source);
                 for comment in &comments.0 {
                     let token = &source[comment.range.clone()];
                     assert!(!token.contains("not") && !token.ends_with(['\r', '\n']));
@@ -705,7 +778,7 @@ mod tests {
             source.push_str(&format!("  # between {index}\n"));
         }
         source.push_str("  value # last\n");
-        assert_eq!(Comments::parse("yaml", &uri, &source).0.len(), 121);
+        assert_eq!(parsed("yaml", &uri, &source).0.len(), 121);
     }
 
     #[test]
@@ -761,7 +834,7 @@ mod tests {
 
     // The source of each comment, before grouping.
     fn sources(language: &str, uri: &str, text: &str) -> Vec<String> {
-        Comments::parse(language, &uri.parse().unwrap(), text)
+        parsed(language, &uri.parse().unwrap(), text)
             .0
             .iter()
             .map(|comment| text[comment.range.clone()].to_owned())
@@ -1107,7 +1180,7 @@ mod tests {
         let uri = "untitled:comment".parse().unwrap();
         let started = std::time::Instant::now();
         for text in &texts {
-            let comments = Comments::parse("shellscript", &uri, text);
+            let comments = parsed("shellscript", &uri, text);
             let last = comments
                 .0
                 .last()
@@ -1224,7 +1297,7 @@ mod tests {
                     "{open}"
                 );
                 let uri = "file:///a.ps1".parse().unwrap();
-                let comments = Comments::parse("powershell", &uri, &text);
+                let comments = parsed("powershell", &uri, &text);
                 assert!(comments.at(&text, text.find(open).unwrap()).is_none());
             }
         }
@@ -1883,7 +1956,7 @@ mod tests {
             }) {
                 let text = format!("{head}{}{tail}", piece.repeat(size / piece.len()));
                 let started = std::time::Instant::now();
-                Comments::parse(language, &uri, &text);
+                parsed(language, &uri, &text);
                 // One pass takes milliseconds in a debug build. Reading the
                 // rest of the text again at each piece took over 20 seconds.
                 assert!(
@@ -2027,7 +2100,7 @@ mod tests {
                     text.push_str(&piece.repeat(repeats));
                 }
                 let started = std::time::Instant::now();
-                Comments::parse(language, &uri, &text);
+                parsed(language, &uri, &text);
                 assert!(
                     started.elapsed() < std::time::Duration::from_secs(1),
                     "{language} {parts:?}"
@@ -2053,7 +2126,7 @@ mod tests {
             "/// outer\n//! inner\n/* unfinished\n// still block",
         );
         let uri = "file:///sample.rs".parse().unwrap();
-        let comments = Comments::parse("rust", &uri, text);
+        let comments = parsed("rust", &uri, text);
         assert_eq!(
             comments
                 .0
@@ -2082,7 +2155,7 @@ mod tests {
             );
         }
         for unfinished in ["let s = \"// hidden", "let r = r##\"/* hidden"] {
-            assert!(Comments::parse("rust", &uri, unfinished).0.is_empty());
+            assert!(parsed("rust", &uri, unfinished).0.is_empty());
         }
         assert_eq!(
             body_at("rust", "/* outer /* nested */ end */", "/* outer").1,
@@ -2112,7 +2185,7 @@ mod tests {
         ] {
             let uri = "untitled:comment".parse().unwrap();
             let text = format!("  // first{ending}  // second");
-            let comments = Comments::parse(language, &uri, &text);
+            let comments = parsed(language, &uri, &text);
             let group = comments.at(&text, text.find(ending).unwrap()).unwrap();
             assert_eq!(comments.body(&text, group), format!("first{ending}second"));
             assert!(comments.at(&text, text.len()).is_some());
@@ -2121,7 +2194,7 @@ mod tests {
         }
         let uri = "file:///blocks.rs".parse().unwrap();
         let text = "/* left *//* right */";
-        let comments = Comments::parse("rust", &uri, text);
+        let comments = parsed("rust", &uri, text);
         let right = comments.at(text, "/* left */".len()).unwrap();
         assert_eq!(comments.body(text, right), "right ");
         assert!(comments.at(text, text.len()).is_none());
@@ -2165,7 +2238,7 @@ mod tests {
                 assert_eq!(body_at(language, &text, marker).0, marker);
             }
             let uri = "untitled:comment".parse().unwrap();
-            let comments = Comments::parse(language, &uri, &text);
+            let comments = parsed(language, &uri, &text);
             assert!(comments.at(&text, 0).is_none());
             assert!(
                 comments
@@ -2230,7 +2303,7 @@ mod tests {
             }
             text.push_str("// actual 🚀\n/** doc */\n");
             let uri = path.parse().unwrap();
-            let comments = Comments::parse(language, &uri, &text);
+            let comments = parsed(language, &uri, &text);
             let mut expected = vec!["/* expr */"];
             if jsx {
                 expected.push("/* jsx */");
@@ -2257,7 +2330,7 @@ mod tests {
             "/* unclosed\n// later",
         ] {
             let text = format!("// before\n{tail}");
-            let comments = Comments::parse("javascript", &uri, &text);
+            let comments = parsed("javascript", &uri, &text);
             assert_eq!(
                 comments
                     .0
@@ -2299,5 +2372,89 @@ mod tests {
             assert_eq!(source.is_typescript_definition(), definition);
         }
         assert!(source_type("markdown", &"file:///a.jsx".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn the_limit_stops_the_tree_sitter_languages_and_no_other() {
+        let uri: Uri = "file:///sample".parse().unwrap();
+        let text = "// c\n# c\n";
+        for language in ["c", "cpp", "csharp", "python"] {
+            assert_eq!(
+                Comments::parse(language, &uri, text, Duration::ZERO).err(),
+                Some(Failure::TimedOut),
+                "{language}"
+            );
+        }
+        for language in [
+            "rust",
+            "javascript",
+            "typescript",
+            "json",
+            "jsonc",
+            "yaml",
+            "toml",
+            "dockercompose",
+            "shellscript",
+            "powershell",
+            "dockerfile",
+            "markdown",
+        ] {
+            assert!(
+                Comments::parse(language, &uri, text, Duration::ZERO).is_ok(),
+                "{language}"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_stops_near_the_limit_while_parsing_and_while_walking_the_tree() {
+        let uri: Uri = "file:///sample.py".parse().unwrap();
+        // Tree-sitter takes seconds to parse this many continued lines.
+        let limit = Duration::from_millis(100);
+        let start = Instant::now();
+        let read = Comments::parse("python", &uri, &"\\\n".repeat(40 * 1024), limit);
+        let elapsed = start.elapsed();
+        assert_eq!(read.err(), Some(Failure::TimedOut));
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
+
+        // This text is parsed at once. Its hundreds of nodes are made slow to
+        // visit, so the limit passes during the walk.
+        let limit = Duration::from_millis(200);
+        let mut visited = 0;
+        let start = Instant::now();
+        let read = syntax::parse(
+            "f()\n".repeat(100).as_bytes(),
+            tree_sitter_python::LANGUAGE.into(),
+            syntax::Recovery::StopAtLiteral,
+            start + limit,
+            |_| {
+                visited += 1;
+                std::thread::sleep(Duration::from_millis(5));
+                None
+            },
+        );
+        let elapsed = start.elapsed();
+        assert!(read.is_none());
+        assert!(visited > 0);
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
+    }
+
+    #[test]
+    fn a_panic_while_reading_is_a_failure_that_names_its_place_only() {
+        let uri: Uri = "file:///sample.rs".parse().unwrap();
+        // ra-ap-rustc_lexer 0.176 panics on an opening of more than 65,535 dashes.
+        let text = format!("{}\n// Secret.\n", "-".repeat(65_536));
+        let Err(Failure::Panicked(Some(place))) =
+            Comments::parse("rust", &uri, &text, Duration::from_secs(60))
+        else {
+            panic!("Expected a panic");
+        };
+        let (file, line) = place.rsplit_once(':').unwrap();
+        assert!(file.ends_with(".rs"), "{place}");
+        assert!(line.parse::<u32>().is_ok(), "{place}");
+        assert!(!READING.get());
+        assert_eq!(parsed("rust", &uri, "// Read.").0.len(), 1);
     }
 }

@@ -1,20 +1,25 @@
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, collections::HashSet, ops::Range, time::Instant};
 
 use tree_sitter::Node;
 
 use super::{Comment, Kind, LineKind, syntax};
 
-pub(super) fn parse(text: &str) -> Vec<Comment> {
+pub(super) fn parse(text: &str, deadline: Instant) -> Option<Vec<Comment>> {
     let mut source = Cow::Borrowed(text.as_bytes());
     for (index, byte) in text.bytes().enumerate() {
         if byte == b'\r' && text.as_bytes().get(index + 1) != Some(&b'\n') {
             source.to_mut()[index] = b'\n';
         }
     }
+    // The statement that would be the docstring of each body met so far. A body
+    // is met before its statements, so a statement is looked up here instead of
+    // being searched for among the comments that precede it.
+    let mut first_statements = HashSet::new();
     syntax::parse(
         &source,
         tree_sitter_python::LANGUAGE.into(),
         syntax::Recovery::StopAtLiteral,
+        deadline,
         |node| {
             if node.kind() == "comment" {
                 if node.start_byte() == 0 && text.starts_with("#!") {
@@ -29,7 +34,13 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
                     kind: Kind::Line(LineKind::Python),
                 });
             }
-            if node.kind() != "expression_statement" || node.has_error() || !is_docstring(node) {
+            if let Some(statement) = first_statement(node) {
+                first_statements.insert(statement.id());
+            }
+            if node.kind() != "expression_statement"
+                || node.has_error()
+                || !first_statements.contains(&node.id())
+            {
                 return None;
             }
             let expression = sole_expression(node)?;
@@ -42,21 +53,17 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
     )
 }
 
-fn is_docstring(statement: Node<'_>) -> bool {
-    let Some(parent) = statement.parent() else {
-        return false;
+// The first statement of a module, or of the body of a class or a function.
+fn first_statement(owner: Node<'_>) -> Option<Node<'_>> {
+    let body = match owner.kind() {
+        "module" => owner,
+        "class_definition" | "function_definition" => owner
+            .child_by_field_name("body")
+            .filter(|body| body.kind() == "block")?,
+        _ => return None,
     };
-    let is_body = parent.kind() == "module"
-        || parent.kind() == "block"
-            && parent.parent().is_some_and(|owner| {
-                matches!(owner.kind(), "class_definition" | "function_definition")
-                    && owner.child_by_field_name("body") == Some(parent)
-            });
-    is_body
-        && parent
-            .named_children(&mut parent.walk())
-            .find(|child| child.kind() != "comment")
-            == Some(statement)
+    body.named_children(&mut body.walk())
+        .find(|child| child.kind() != "comment")
 }
 
 fn sole_expression(node: Node<'_>) -> Option<Node<'_>> {

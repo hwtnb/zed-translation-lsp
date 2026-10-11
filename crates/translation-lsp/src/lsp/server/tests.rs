@@ -200,7 +200,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
         .documents
         .get_mut(&uri)
         .unwrap()
-        .comment_range(&uri, left_start)
+        .comment_range(&uri, left_start, Duration::from_secs(60))
         .unwrap();
     assert!(
         server

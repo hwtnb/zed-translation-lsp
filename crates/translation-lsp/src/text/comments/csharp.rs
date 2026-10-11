@@ -1,12 +1,13 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Instant};
 
 use super::{Comment, Kind, LineKind, syntax};
 
-pub(super) fn parse(text: &str) -> Vec<Comment> {
+pub(super) fn parse(text: &str, deadline: Instant) -> Option<Vec<Comment>> {
     syntax::parse(
         &parser_source(text),
         tree_sitter_c_sharp::LANGUAGE.into(),
         syntax::Recovery::SkipError,
+        deadline,
         |node| {
             if node.kind() != "comment" {
                 return None;

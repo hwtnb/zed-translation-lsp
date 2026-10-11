@@ -1,8 +1,11 @@
-use std::ops::Range as ByteRange;
+use std::{ops::Range as ByteRange, time::Duration};
 
 use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
 
-use crate::text::{comments::Comments, markdown::prose_ranges};
+use crate::text::{
+    comments::{Comments, Failure},
+    markdown::prose_ranges,
+};
 
 mod indexed_text;
 
@@ -13,13 +16,22 @@ pub(crate) struct TranslationInput {
     pub is_comment: bool,
 }
 
+enum Reading {
+    Pending,
+    Done(Comments),
+    // Kept across edits, so that a text that cannot be read in time is not
+    // read again at every change.
+    Failed,
+}
+
 pub(crate) struct Document {
     pub version: i32,
     // Versions can repeat after didClose/didOpen. This identifies an open lifetime.
     pub session: u64,
     pub language_id: String,
     text: Option<IndexedText>,
-    comments: Option<Comments>,
+    comments: Reading,
+    unreported: Option<Failure>,
     markdown_prose: Option<Vec<ByteRange<usize>>>,
 }
 
@@ -30,7 +42,8 @@ impl Document {
             session,
             language_id,
             text: Some(IndexedText::new(text)),
-            comments: None,
+            comments: Reading::Pending,
+            unreported: None,
             markdown_prose: None,
         }
     }
@@ -40,7 +53,9 @@ impl Document {
         version: i32,
         changes: Vec<TextDocumentContentChangeEvent>,
     ) -> Result<(), &'static str> {
-        self.comments = None;
+        if !matches!(self.comments, Reading::Failed) {
+            self.comments = Reading::Pending;
+        }
         self.markdown_prose = None;
         if version <= self.version {
             self.text = None;
@@ -125,12 +140,35 @@ impl Document {
         Ok(!expected.is_empty() && prose_ranges(&text[selected])? == expected)
     }
 
-    pub fn comment_range(&mut self, uri: &Uri, offset: usize) -> Option<Range> {
+    fn read_comments(&mut self, uri: &Uri, limit: Duration) {
+        if !matches!(self.comments, Reading::Pending) {
+            return;
+        }
+        let Some(text) = self.text.as_ref() else {
+            return;
+        };
+        let read = Comments::parse(&self.language_id, uri, text.as_str(), limit);
+        self.comments = match read {
+            Ok(comments) => Reading::Done(comments),
+            Err(failure) => {
+                self.unreported = Some(failure);
+                Reading::Failed
+            }
+        };
+    }
+
+    // A failure to read this document's comments, the first time it is asked for.
+    pub fn take_comment_failure(&mut self) -> Option<Failure> {
+        self.unreported.take()
+    }
+
+    pub fn comment_range(&mut self, uri: &Uri, offset: usize, limit: Duration) -> Option<Range> {
+        self.read_comments(uri, limit);
         let indexed = self.text.as_ref()?;
         let text = indexed.as_str();
-        let comments = self
-            .comments
-            .get_or_insert_with(|| Comments::parse(&self.language_id, uri, text));
+        let Reading::Done(comments) = &self.comments else {
+            return None;
+        };
         let bytes = comments.range(comments.at(text, offset)?);
         Some(Range::new(
             indexed.position(bytes.start).ok()?,
@@ -142,14 +180,14 @@ impl Document {
         &mut self,
         uri: &Uri,
         range: Range,
+        limit: Duration,
     ) -> Result<TranslationInput, &'static str> {
         let indexed = self.text.as_ref().ok_or("Document is not synchronized")?;
-        let text = indexed.as_str();
         let bytes = indexed.range(range)?;
-        let comments = self
-            .comments
-            .get_or_insert_with(|| Comments::parse(&self.language_id, uri, text));
-        if let Some(group) = comments.at(text, bytes.start)
+        self.read_comments(uri, limit);
+        let text = self.text().ok_or("Document is not synchronized")?;
+        if let Reading::Done(comments) = &self.comments
+            && let Some(group) = comments.at(text, bytes.start)
             && comments.range(group.clone()) == bytes
         {
             return Ok(TranslationInput {
@@ -170,28 +208,30 @@ impl Document {
 mod tests {
     use super::*;
 
+    const LIMIT: Duration = Duration::from_secs(60);
+
     #[test]
     fn comment_cache_is_lazy_and_invalidated_by_edits_and_broken_sync() {
         let uri: Uri = "untitled:sample".parse().unwrap();
         let original = "🚀(); /* `id` */\r\n  // first\r\n  // second";
         let mut document = Document::new(1, 1, "rust".into(), original.into());
-        assert!(document.comments.is_none());
+        assert!(matches!(document.comments, Reading::Pending));
         let group = document
-            .comment_range(&uri, original.find("// second").unwrap())
+            .comment_range(&uri, original.find("// second").unwrap(), LIMIT)
             .unwrap();
         assert_eq!(group, Range::new(Position::new(1, 2), Position::new(2, 11)));
         assert_eq!(
-            document.translation_input(&uri, group).unwrap().text,
+            document.translation_input(&uri, group, LIMIT).unwrap().text,
             "first\r\nsecond"
         );
         assert_eq!(document.text(), Some(original));
-        assert!(document.comments.is_some());
+        assert!(matches!(document.comments, Reading::Done(_)));
         let block = document
-            .comment_range(&uri, original.find("/*").unwrap())
+            .comment_range(&uri, original.find("/*").unwrap(), LIMIT)
             .unwrap();
         assert_eq!(block.start, Position::new(0, 6));
         assert_eq!(
-            document.translation_input(&uri, block).unwrap().text,
+            document.translation_input(&uri, block, LIMIT).unwrap().text,
             "`id` "
         );
         for character in 0..=8 {
@@ -221,18 +261,61 @@ mod tests {
                 }],
             )
             .unwrap();
-        assert!(document.comments.is_none());
-        assert!(document.comment_range(&uri, 9).is_none());
+        assert!(matches!(document.comments, Reading::Pending));
+        assert!(document.comment_range(&uri, 9, LIMIT).is_none());
         let new_range = document
-            .comment_range(&uri, document.text().unwrap().find("// new").unwrap())
+            .comment_range(
+                &uri,
+                document.text().unwrap().find("// new").unwrap(),
+                LIMIT,
+            )
             .unwrap();
         assert_eq!(
-            document.translation_input(&uri, new_range).unwrap().text,
+            document
+                .translation_input(&uri, new_range, LIMIT)
+                .unwrap()
+                .text,
             "new"
         );
         assert!(document.change(2, Vec::new()).is_err());
-        assert!(document.comments.is_none());
-        assert!(document.comment_range(&uri, 0).is_none());
+        assert!(matches!(document.comments, Reading::Pending));
+        assert!(document.comment_range(&uri, 0, LIMIT).is_none());
+    }
+
+    #[test]
+    fn a_failed_reading_leaves_no_comments_until_the_document_is_reopened() {
+        let uri: Uri = "file:///sample.py".parse().unwrap();
+        let text = "# Read.\nvalue = 1\n";
+        let comment = Range::new(Position::new(0, 0), Position::new(0, 7));
+        let changed = |text: &str| {
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.into(),
+            }]
+        };
+        let mut document = Document::new(1, 1, "python".into(), text.into());
+        assert!(document.comment_range(&uri, 0, Duration::ZERO).is_none());
+        assert_eq!(document.take_comment_failure(), Some(Failure::TimedOut));
+        assert_eq!(document.take_comment_failure(), None);
+        // Neither a later request nor an edit reads the text again.
+        assert!(document.comment_range(&uri, 0, LIMIT).is_none());
+        document.change(2, changed(text)).unwrap();
+        assert!(document.comment_range(&uri, 0, LIMIT).is_none());
+        let input = document.translation_input(&uri, comment, LIMIT).unwrap();
+        assert_eq!(input.text, "# Read.");
+        assert!(!input.is_comment);
+        assert!(document.change(2, Vec::new()).is_err());
+        document.change(3, changed(text)).unwrap();
+        assert!(matches!(document.comments, Reading::Failed));
+        assert_eq!(document.take_comment_failure(), None);
+
+        let mut reopened = Document::new(1, 2, "python".into(), text.into());
+        assert_eq!(reopened.comment_range(&uri, 0, LIMIT), Some(comment));
+        let input = reopened.translation_input(&uri, comment, LIMIT).unwrap();
+        assert_eq!(input.text, "Read.");
+        assert!(input.is_comment);
+        assert_eq!(reopened.take_comment_failure(), None);
     }
 
     #[test]
@@ -293,7 +376,7 @@ mod tests {
             let text = format!("const s = '🚀';{ending}  // `id`{ending}  // keep 🚀");
             let mut document = Document::new(1, 1, "javascript".into(), text.clone());
             let range = document
-                .comment_range(&uri, text.find("// keep").unwrap())
+                .comment_range(&uri, text.find("// keep").unwrap(), LIMIT)
                 .unwrap();
             let start = if matches!(ending, "\u{2028}" | "\u{2029}") {
                 Position::new(0, 18)
@@ -306,7 +389,7 @@ mod tests {
                 format!("// `id`{ending}  // keep 🚀")
             );
             assert_eq!(
-                document.translation_input(&uri, range).unwrap().text,
+                document.translation_input(&uri, range, LIMIT).unwrap().text,
                 format!("`id`{ending}keep 🚀")
             );
         }
@@ -320,13 +403,16 @@ mod tests {
         let mut document = Document::new(1, 1, "rust".into(), text);
         let end = document.text().unwrap().len();
         let range = document
-            .comment_range(&uri, end - "/// doc\n".len())
+            .comment_range(&uri, end - "/// doc\n".len(), LIMIT)
             .unwrap();
         assert_eq!(
             range,
             Range::new(Position::new(139_999, 0), Position::new(139_999, 7))
         );
-        assert_eq!(document.translation_input(&uri, range).unwrap().text, "doc");
+        assert_eq!(
+            document.translation_input(&uri, range, LIMIT).unwrap().text,
+            "doc"
+        );
     }
 
     #[test]

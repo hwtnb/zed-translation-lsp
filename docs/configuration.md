@@ -25,6 +25,7 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
         "selection_timeout_ms": 30000,
         "document_timeout_ms": 180000,
         "selection_debounce_ms": 450,
+        "comment_parse_timeout_ms": 1000,
         "features": {
           "comment_hover": true,
           "automatic_selection": true,
@@ -150,6 +151,7 @@ Translation timing options are optional:
 | `selection_timeout_ms` | `30000` | Integer `1000`–`120000`, inclusive | Execution budget from dispatch for retained manual selections and Markdown background translations. |
 | `document_timeout_ms` | `180000` | Integer `1000`–`600000`, inclusive | Execution budget from dispatch for full-document or selection translations opened in a tab; queue time is additional. |
 | `selection_debounce_ms` | `450` | Integer `100`–`2000`, inclusive | Native server's wait after observing a new selection. Zed's own observation delay is additional. |
+| `comment_parse_timeout_ms` | `1000` | Integer `100`–`60000`, inclusive | Limit on reading the comments of a C, C++, C#, or Python document, from the start of the reading. See [Documents whose comments cannot be read](languages.md#documents-whose-comments-cannot-be-read). |
 
 ## Size limits
 

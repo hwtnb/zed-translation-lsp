@@ -1,8 +1,8 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Instant};
 
 use super::{Comment, Kind, LineKind, syntax};
 
-pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
+pub(super) fn parse(language_id: &str, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
     let language = if language_id == "c" {
         tree_sitter_c::LANGUAGE
     } else {
@@ -18,6 +18,7 @@ pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
         &source,
         language.into(),
         syntax::Recovery::StopAtLiteral,
+        deadline,
         |node| {
             if node.kind() != "comment" {
                 return None;

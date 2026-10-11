@@ -249,7 +249,7 @@ impl Client {
                 self.statuses.push(notification.params);
             }
             Message::Notification(notification) if notification.method == "window/showMessage" => {
-                assert!(matches!(notification.params["type"].as_u64(), Some(1 | 3)));
+                assert!(matches!(notification.params["type"].as_u64(), Some(1..=3)));
                 assert!(notification.params["message"].is_string());
                 assert_eq!(notification.params.as_object().unwrap().len(), 2);
                 self.notifications.push(notification.params);
@@ -374,12 +374,12 @@ impl Client {
         self.request("workspace/executeCommand", action)
     }
 
-    fn finish(&mut self, expect_clean_stderr: bool) {
+    fn finish(&mut self, expect_clean_stderr: bool) -> String {
         assert!(self.call("shutdown", Value::Null).unwrap().is_null());
-        self.finish_exit(expect_clean_stderr);
+        self.finish_exit(expect_clean_stderr)
     }
 
-    fn finish_exit(&mut self, expect_clean_stderr: bool) {
+    fn finish_exit(&mut self, expect_clean_stderr: bool) -> String {
         self.notify("exit", Value::Null);
         let start = Instant::now();
         let status = loop {
@@ -404,6 +404,7 @@ impl Client {
         if expect_clean_stderr {
             assert!(stderr.is_empty(), "Unexpected stderr: {stderr}");
         }
+        stderr
     }
 }
 
@@ -2984,4 +2985,212 @@ fn document_action_switch_hides_both_tab_actions_and_refuses_their_command() {
         opened(&mut client, actions[0]["command"].clone());
         client.finish(true);
     }
+}
+
+const NOT_RECOGNIZED: &str = "Comments in this file are not recognized until you reopen it.";
+
+fn timed_hover(client: &mut Client, uri: &str, position: Value) -> (Value, Duration) {
+    let started = Instant::now();
+    let hover = client.hover(uri, position);
+    (hover, started.elapsed())
+}
+
+#[test]
+fn comment_parse_timeout_errors_take_the_form_of_the_other_timing_settings() {
+    for (value, message) in [
+        (
+            json!(99),
+            "comment_parse_timeout_ms must be between 100 and 60000; received 99",
+        ),
+        (
+            json!(60001),
+            "comment_parse_timeout_ms must be between 100 and 60000; received 60001",
+        ),
+        (
+            json!("1000"),
+            "Invalid translation settings: check field names and value types",
+        ),
+        (
+            json!(1000.5),
+            "Invalid translation settings: check field names and value types",
+        ),
+    ] {
+        let mut client = Client::spawn(&[], false, false);
+        let error = client
+            .call(
+                "initialize",
+                json!({"capabilities": {}, "initializationOptions": {"comment_parse_timeout_ms": value}}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert_eq!(error.message, message);
+        client.notify("exit", Value::Null);
+        assert!(!client.child.wait().unwrap().success());
+    }
+    for value in [100, 60000] {
+        let mut client = Client::configured(
+            &[],
+            false,
+            false,
+            json!({"comment_parse_timeout_ms": value}),
+        );
+        client.finish(true);
+    }
+}
+
+#[test]
+fn a_reading_past_its_limit_leaves_the_document_without_comments_until_it_is_reopened() {
+    let limit = Duration::from_millis(100);
+    let comment = "# Retry only if the remote service\n# reports a temporary failure.";
+    let range = range_for(comment, comment);
+    // Tree-sitter takes seconds over this many continued lines.
+    let slow = format!("{comment}\n{}", "\\\n".repeat(40 * 1024));
+    // The text is read, and the failure reported, with comment Hover off too.
+    for comment_hover in [true, false] {
+        let mut client = Client::configured(
+            &[],
+            false,
+            false,
+            json!({"comment_parse_timeout_ms": 100, "features": {"comment_hover": comment_hover}}),
+        );
+        let uri = "file:///work/slow%20%E8%AA%AD.py";
+        client.open(uri, "python", &slow, 1);
+        let (hover, elapsed) = timed_hover(&mut client, uri, range["start"].clone());
+        assert!(hover.is_null());
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
+        assert_eq!(
+            client.notice(),
+            json!({"type": 2, "message": format!(
+                "Reading comments in slow 読.py timed out. {NOT_RECOGNIZED} To allow more time, adjust comment_parse_timeout_ms in Zed settings."
+            )})
+        );
+
+        // Neither a later request nor an edit reads the text again. Reading it
+        // would take the whole limit each time, so one quick answer is enough.
+        let quick = |client: &mut Client| {
+            (0..3).any(|_| {
+                let (hover, elapsed) = timed_hover(client, uri, range["start"].clone());
+                assert!(hover.is_null());
+                elapsed < limit
+            })
+        };
+        assert!(quick(&mut client));
+        let start = json!({"line": 2, "character": 0});
+        client.change(
+            uri,
+            2,
+            json!([{"range": {"start": start, "end": start}, "text": "value = 1\n"}]),
+        );
+        assert!(quick(&mut client));
+
+        // Other documents are read as before, and so is this one once reopened.
+        let other = "file:///work/other.py";
+        client.open(other, "python", comment, 1);
+        client.close(uri);
+        client.open(uri, "python", &format!("{comment}\nvalue = 1\n"), 1);
+        for uri in [other, uri] {
+            let hover = client.hover(uri, range["start"].clone());
+            if comment_hover {
+                assert_preview(&hover, comment, COMMENT_JA, &range);
+            } else {
+                assert!(hover.is_null());
+            }
+        }
+        assert!(client.notifications.is_empty());
+        assert_eq!(
+            client.finish(false),
+            "translation preview: reading comments timed out (language \"python\")\n"
+        );
+    }
+}
+
+#[test]
+fn a_panic_while_reading_comments_keeps_the_server_running_and_the_text_out_of_the_log() {
+    let mut client = Client::new(&[]);
+    // ra-ap-rustc_lexer 0.176 panics on an opening of more than 65,535 dashes.
+    let block = "/* Retry only if the remote service\nreports a temporary failure. */";
+    let sound = format!("{COMMENT_DOCUMENT}{block}\n");
+    let broken = format!("{}\n{sound}", "-".repeat(65_536));
+    let uri = "file:///work/dashes.rs";
+    client.open(uri, "rust", &broken, 1);
+
+    // The first translation reads the comments. Its selection is translated
+    // as it is written, which the mock knows for this comment.
+    let range = range_for(&broken, COMMENT);
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
+    assert_eq!(
+        client.notice(),
+        json!({"type": 2, "message": format!("Reading comments in dashes.rs failed. {NOT_RECOGNIZED}")})
+    );
+    assert!(
+        client.notice()["message"]
+            .as_str()
+            .unwrap()
+            .ends_with(READY)
+    );
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    let block_start = range_for(&broken, block)["start"].clone();
+    assert!(client.hover(uri, block_start).is_null());
+
+    // A document that can be read is read as before.
+    let other = "file:///work/other.rs";
+    client.open(other, "rust", &sound, 1);
+    let range = range_for(&sound, COMMENT);
+    assert_preview(
+        &client.hover(other, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+
+    // The mock knows the block comment without its marks only: its body is
+    // translated where the comment is recognized, and nothing where it is not.
+    for (uri, text, recognized) in [(other, &sound, true), (uri, &broken, false)] {
+        let action = client.action(uri, range_for(text, block));
+        let execution = client.execute(action);
+        assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
+        assert_eq!(client.notice()["type"], if recognized { 3 } else { 1 });
+    }
+    assert!(client.notifications.is_empty());
+
+    let stderr = client.finish(false);
+    let place = stderr
+        .strip_prefix("translation preview: reading comments panicked (language \"rust\", at ")
+        .and_then(|rest| rest.strip_suffix(")\n"))
+        .unwrap_or_else(|| panic!("Unexpected stderr: {stderr}"));
+    assert!(!place.contains('\n') && !place.contains("--"), "{place}");
+    assert!(
+        place.rsplit_once(':').unwrap().1.parse::<u32>().is_ok(),
+        "{place}"
+    );
+}
+
+#[test]
+fn a_megabyte_of_c_is_read_within_the_default_limit() {
+    let mut client = Client::new(&[]);
+    let unit = format!(
+        "/**\n{} */\nint add_values(int left, int right);\n\n",
+        " * Adds two values and returns their sum to the caller.\n".repeat(10)
+    );
+    let comment = "// Retry only if the remote service\n// reports a temporary failure.";
+    let text = format!("{}{comment}\n", unit.repeat(1024 * 1024 / unit.len()));
+    assert!(text.len() > 1_000_000);
+    let uri = "file:///work/large.c";
+    client.open(uri, "c", &text, 1);
+    let range = range_for(&text, comment);
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        comment,
+        COMMENT_JA,
+        &range,
+    );
+    client.finish(true);
 }
