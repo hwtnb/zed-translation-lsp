@@ -1256,10 +1256,10 @@ mod tests {
                     "#c1", "#c2", "#c3", "#c4", "#c5", "#c6", "#c7", "#c8", "#c9",
                 ],
             ),
-            // After a string, a `${ }`, or a block comment that began a token.
+            // After a string or a block comment that began a token.
             (
-                "\"s\"#c1\n's'#c2\n${a}#c3\n<# b #>#c4\n@(1)#c5\n@{}#c6",
-                &["#c1", "#c2", "#c3", "<# b #>", "#c4", "#c5", "#c6"],
+                "\"s\"#c1\n's'#c2\n<# b #>#c3\n@(1)#c4\n@{}#c5",
+                &["#c1", "#c2", "<# b #>", "#c3", "#c4", "#c5"],
             ),
             // Not inside a word, nor after a backtick. A backtick before a line break continues the line.
             (
@@ -1276,21 +1276,19 @@ mod tests {
                 "\u{2018}# n\u{2019} # c1\n\u{201c}# n\u{201d} # c2\n\u{201a}# n\u{201b} # c3\n\u{201e}# n\" # c4\n'# n\u{2019}\u{2019} # n\u{2018} # c5",
                 &["# c1", "# c2", "# c3", "# c4", "# c5"],
             ),
-            // A here-string ends at a line that starts with its quote and `@`.
+            // A here-string starts after a line with blanks only, and ends at a line that starts with its quote and `@`.
             (
-                "@\"\n# n\n \"@ # n\n\"@ # c1\n@'\n# n\n\"@ # n\n'@ # c2\n@\u{201c} x\n# n\n\u{201d}@ # c3",
-                &["# c1", "# c2", "# c3"],
+                "@\"\n# n\n \"@ # n\n\"@ # c1\n@'\n# n\n\"@ # n\n'@ # c2\n@\u{201c} \t\n# n\n\u{201d}@ # c3\n@\"\n\"@ # c4",
+                &["# c1", "# c2", "# c3", "# c4"],
             ),
             // A `$( )` in a string ends where its parentheses do, whatever the quotes in it.
             (
                 "\"a $(')' # n\n) b\" # c1\n\"$(\"# n\")\" # c2\n\"$(\"\"# n\"\")\" # c3",
                 &["# c1", "# c2", "# c3"],
             ),
-            // The name in `${ }` runs to the first `}` without a backtick.
-            ("${a # n} # c1\n${b`} # n} # c2", &["# c1", "# c2"]),
-            // After `--%`, a line is text up to `|` or `&&` outside double quotes.
+            // A `${ }` runs to the first `}` without a backtick, also inside a string.
             (
-                "cmd --% a # n \"|\" # n | b # c1\ncmd \u{2014}\u{2013}% # n && b # c2\ncmd --% # n\n# c3",
+                "${a # n} # c1\n${b`} # n} # c2\n\"${a # n} # n\" # c3",
                 &["# c1", "# c2", "# c3"],
             ),
             // A `$( )` or `@( )` that starts a token holds commands.
@@ -1308,16 +1306,21 @@ mod tests {
                 "cmd `\"$a`\" # c1\ncmd --a=`\"x#n`\" # c2\n[List`1]$x # c3\ncmd `\"x # c4`\"",
                 &["# c1", "# c2", "# c3", "# c4`\""],
             ),
-            // Blanks of other scripts and a NUL end a token. A byte order mark is a blank only where a token starts.
+            // Blanks of other scripts end a token.
             (
-                "a\u{a0}#c1\na\u{3000}#c2\na\u{85}#c3\na\u{b}#c4\na\u{c}#c5\na\0#c6\na \u{feff}#c7\na\u{feff}#n\n#c8",
-                &["#c1", "#c2", "#c3", "#c4", "#c5", "#c6", "#c7", "#c8"],
+                "a\u{a0}#c1\na\u{3000}#c2\na\u{85}#c3\na\u{b}#c4\na\u{c}#c5",
+                &["#c1", "#c2", "#c3", "#c4", "#c5"],
             ),
-            // In single quotes, a backtick and `$(` are text. In an argument, `@"` and `--%` are.
-            // A backtick before a blank or a line break escapes nothing.
+            // In single quotes, a backtick and `$(` are text. In an argument, `@"` is.
+            // A backtick before a blank escapes nothing where a token starts.
             (
-                "'a`' # c1\n'a $(' # c2\n`a@\" # n\" # c3\n`a--% # c4\na ` #c5\na `\n#c6",
-                &["# c1", "# c2", "# c3", "# c4", "#c5", "#c6"],
+                "'a`' # c1\n'a $(' # c2\n`a@\" # n\" # c3\na ` #c4",
+                &["# c1", "# c2", "# c3", "#c4"],
+            ),
+            // A type with `,` and nothing after it that would open a string, and an index with one.
+            (
+                "[Dictionary[string, int]]$x # c1\n$h[0, 'a # n'] # c2\n[int[]]('a', 'b') # c3\n(1)[0, 'a # n'] # c4\n$x[,'a # n'] # c5",
+                &["# c1", "# c2", "# c3", "# c4", "# c5"],
             ),
             // A block comment needs both of its ends.
             (
@@ -1338,37 +1341,116 @@ mod tests {
     }
 
     #[test]
+    fn powershell_reads_on_as_powershell_does_where_the_text_looks_finished() {
+        let cases: &[(&str, &[&str])] = &[
+            // `$$` and `@$` are one variable each, so what follows them is no `$( )` or `${ }`.
+            (
+                "\"$$(\" # c1\n\"$${\" # c2\na$$(b) # c3\n@${ # c4\n}\n@\"\n$$(\n\"@ # c5",
+                &["# c1", "# c2", "# c3", "# c4", "# c5"],
+            ),
+            // In a string, a quote inside `${ }` and a parenthesis after a backtick inside `$( )` are plain text.
+            (
+                "\"${a\"b} # n\" # c1\n\"$(`)\" # c2\n\"${a$(} # n\" # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // A here-string does not end inside its `$( )` or `${ }`, where a backtick escapes nothing or the `}`.
+            (
+                "@\"\n$(\n\"@ # n\n`)\n\"@ # c1\n@\"\n${a\n\"@ # n\n`}}\n\"@ # c2",
+                &["# c1", "# c2"],
+            ),
+            // A here-string with text after its opening ends at `"@` on that line, or with the line.
+            (
+                "@\" x\n# c1\n@' x '@ # c2\n@\" x \u{201d}@ # n \"@ # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // `u{...}` after a backtick names a character, braces and all.
+            (
+                "cmd `u{41} # c1\n${a`u{41}} # c2\n`u{1F600 # c3",
+                &["# c1", "# c2", "# c3"],
+            ),
+            // `u{...}` inside `${ }` keeps its `}`, and a `$( )` in an argument runs to its last parenthesis.
+            ("${a`u{41}#n} # c1\ncmd `a$( # n\n) # c2", &["# c1", "# c2"]),
+            // What follows `[name,` is read as usual after the line, and a parameter ends with its word.
+            (
+                "[T,\n'b # n'] # c1\na$([T,\n'b') # c2\ncmd -a =`\"x # n`\" # c3",
+                &["# c1", "# c2", "# n`\" # c3"],
+            ),
+            // `--%` makes a command take the rest of its line as it is written. Only plain dashes count.
+            // The next line is read again, whoever reads the first one.
+            (
+                "cmd --% a # n \"\n# c1\ncmd -`-`% # n\n# c2\ncmd -'-%' # n\n# c3\ncmd \u{2014}\u{2013}% # c4\n@'\n--%\n'@ # c5",
+                &["# c1", "# c2", "# c3", "# c4", "# c5"],
+            ),
+        ];
+        for (text, expected) in cases {
+            for ending in ["\n", "\r\n", "\r"] {
+                let text = text.replace('\n', ending);
+                assert_eq!(&powershell(&text), expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
     fn powershell_leaves_out_what_only_one_reading_of_the_text_takes_for_a_comment() {
         // A `#` after other text starts a comment or not, by what the parser
         // expects there. Nothing is taken from the rest of that line.
         let leaves: &[(&str, &[&str])] = &[
             ("$x#n # n\n# c", &["# c"]),
             ("$x = 5#n \"n\" <# n #> # n\n# c", &["# c"]),
-            ("a#n --% \"|\" # n\n# c", &["# c"]),
             ("cmd a` #n # n\n# c", &["# c"]),
+            // A command takes the text right after `${ }` into the same argument.
+            ("${a}#n # n\n# c", &["# c"]),
+            // A backtick before a blank ends a token or joins the blank to an argument.
+            ("$x=` #n # n\n# c", &["# c"]),
+            // In an argument, `<#` is plain text.
+            ("cmd `a<# n #> # n\n# c", &["#> # n", "# c"]),
+            // A NUL, a byte order mark, and a control character after a backtick start an argument.
+            ("a\0#n\n \u{feff}#n\n`\u{1c}#n\n# c", &["# c"]),
         ];
         // Where the readings differ for more than a line, and where something
         // is not closed, the comments before that place are the result.
         let stops = [
+            // A `#`, `<#`, here-string, or `$( )` after other text is read in two ways.
             "$x#it's\n# n\n' # n",
             "$x=@\"\n# n\n\"@",
             "a<# n #>",
-            "x$${a}",
-            "$x--% a",
-            "echo a`\"b`\"",
             "a$(b # n\n)",
             "a=$(b ')' c)",
             "a$(b `) c)",
             "a$(${b})",
             "a$(@'\n'@)",
             "a$(--% b)",
-            "@\"\n$(\n\"@ # n\n)\n\"@",
+            // After a `#` that may have begun a comment, nothing reaches past the end of its line.
+            "a#n ${\n}",
+            "a#n b$(\n)",
+            // What is not closed hides the rest.
             "<# open",
             "\"open",
             "'open",
             "@\"\nopen",
             "${open",
             "\"$(open\"",
+            "@\"\n$(\n\"@",
+            // After `--%`, a `|` or `&&` ends what the command takes, and a `#` before it may have begun a comment.
+            "cmd --% a | b",
+            "cmd --% a && b",
+            "a#n --% b",
+            "cmd --% a --% b",
+            // After `[name,`, PowerShell can read the name of an assembly, where a quote opens nothing.
+            "[T, a'b] 'x # n'",
+            "$x -is[T, a'b] 'x # n'",
+            "}[T,#n",
+            "[A[b], c'd] 'x # n'",
+            "[a`, #n ]",
+            "a$([T, a'b'])",
+            // In the parameter of a command, a backtick and `$` are text, and `{` opens a block.
+            // After `@` inside a word, `${` can be a variable or not.
+            "cmd -a=`\"x # n`\"",
+            "1>&2-eq$`'s # n'",
+            "-foo${a # n} ; ${b`} # n} # n",
+            "a@${b`} # n} # n",
+            "echo a`\"b`\"",
+            "-a`u{41}",
         ];
         for ending in ["\n", "\r\n", "\r"] {
             for (text, expected) in leaves {
@@ -1378,6 +1460,38 @@ mod tests {
             for stop in stops {
                 let text = format!("# before\n{stop}\n# after\n").replace('\n', ending);
                 assert_eq!(powershell(&text), ["# before"], "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_takes_a_backtick_before_a_line_break_as_powershell_does() {
+        // In a here-string in double quotes and in an argument, a backtick
+        // escapes one character: LF, CR alone, or only the CR of CRLF. So the
+        // line after it ends the here-string, or starts a token, only after CRLF.
+        let cases: &[(&str, [&[&str]; 3])] = &[
+            (
+                "# before\n$x = @\"\ntext`\n\"@\n# 本文\n\"@\n# after\n",
+                [
+                    &["# before", "# after"],
+                    &["# before", "# 本文"],
+                    &["# before", "# after"],
+                ],
+            ),
+            (
+                "cmd `a`\n#n # c1\n# c2\n",
+                [&["# c1", "# c2"], &["#n # c1", "# c2"], &["# c1", "# c2"]],
+            ),
+            (
+                "cmd a`\n#n # n\n# c\n",
+                [&["# c"], &["#n # n", "# c"], &["# c"]],
+            ),
+            ("a#n b`\n# c\n", [&[], &["# c"], &[]]),
+        ];
+        for (text, expected) in cases {
+            for (ending, expected) in ["\n", "\r\n", "\r"].into_iter().zip(expected) {
+                let text = text.replace('\n', ending);
+                assert_eq!(&powershell(&text), expected, "{text:?}");
             }
         }
     }
@@ -1775,6 +1889,148 @@ mod tests {
                 assert!(
                     started.elapsed() < std::time::Duration::from_secs(1),
                     "{language} {head:?} {piece:?} {tail:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dockerfile_decides_once_what_a_word_is() {
+        // After a long word of digits, each of many `${name ... }` read that
+        // word again to tell whether it waits for a delimiter.
+        let size = 256 << 10;
+        let digits = "1".repeat(size / 2);
+        let expansions = "${a:-x}".repeat(size / 14);
+        let started = std::time::Instant::now();
+        for text in [
+            format!("# note\nRUN {digits} {expansions} <<E\n"),
+            format!("# note\nRUN <<- {digits} {expansions}\n"),
+        ] {
+            assert_eq!(bodies("dockerfile", &text), ["note"]);
+        }
+        // Each takes milliseconds when read once, and took seconds before.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn readers_take_time_in_proportion_to_texts_of_several_parts() {
+        // One piece repeated does not show a reader that reads one part again
+        // for every piece of another part. Here each text has three to five
+        // parts, and each part is a piece repeated once, a few times, or often.
+        let pieces = [
+            "1",
+            "12345",
+            "a",
+            "ab",
+            " ",
+            "\t",
+            "\n",
+            "\r\n",
+            "\"",
+            "'",
+            "<<",
+            "<<-",
+            "<<E",
+            "<<E\n",
+            "${a:-x}",
+            "${a}",
+            "${",
+            "$(",
+            ")",
+            "\\",
+            "`",
+            "#",
+            "@\"",
+            "\"@",
+            "@\"\n",
+            "\n\"@",
+            "<#",
+            "#>",
+            "--%",
+            "$",
+            "(",
+            "{",
+            "}",
+            "[",
+            "]",
+            "=",
+            ",",
+            ";",
+            "|",
+            "-",
+            "\"\"\"",
+            "'''",
+            ": ",
+            "- ",
+            "RUN ",
+            "a = ",
+            "$x",
+            "%",
+            "[a,",
+            "\"${a",
+            "\\\n",
+            "`\n",
+            "E\n",
+            "日",
+            "\u{2018}",
+            "$$",
+            "<",
+            ">",
+            "&",
+            "@",
+            "!",
+            "?",
+            "*",
+            "/",
+            "x=(",
+            "$((",
+            "case x in ",
+            "esac ",
+            "[[ ",
+            "' # ",
+            "\" # ",
+        ];
+        // A fixed sequence, so that every run reads the same texts.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut below = |bound: usize| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % bound
+        };
+        let uri = "untitled:comment".parse().unwrap();
+        for language in [
+            "powershell",
+            "toml",
+            "dockerfile",
+            "json",
+            "shellscript",
+            "yaml",
+        ] {
+            for _ in 0..160 {
+                let size = (16 + below(49)) << 10;
+                // The long parts share the size by their weights.
+                let parts: Vec<_> = (0..3 + below(3))
+                    .map(|_| (pieces[below(pieces.len())], below(2) * (1 + below(8))))
+                    .collect();
+                let weights = parts.iter().map(|part| part.1).sum::<usize>().max(1);
+                let mut text = String::new();
+                // A Dockerfile reads words only in an instruction that can have a here-document.
+                if language == "dockerfile" && below(2) == 0 {
+                    text.push_str("RUN ");
+                }
+                for (piece, weight) in &parts {
+                    let repeats = match weight {
+                        0 => 1 + below(3),
+                        _ => size * weight / weights / piece.len() + 1,
+                    };
+                    text.push_str(&piece.repeat(repeats));
+                }
+                let started = std::time::Instant::now();
+                Comments::parse(language, &uri, &text);
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(1),
+                    "{language} {parts:?}"
                 );
             }
         }

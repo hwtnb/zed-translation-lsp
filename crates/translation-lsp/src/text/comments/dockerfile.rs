@@ -156,8 +156,7 @@ fn here_documents(instruction: &str) -> (Documents, Option<Documents>) {
     let read = Words::read(instruction, true);
     // After an error of the lexer, the words before it were still meant. The
     // word that it stopped in gives no delimiter.
-    let stopped = !read.complete
-        && (opening(&read.word).is_some() || read.words.last().is_some_and(|word| waits(word)));
+    let stopped = !read.complete && (opening(&read.word).is_some() || read.waits);
     let mut buildkit = Vec::new();
     let mut meant = (!read.lost && !stopped).then(Vec::new);
     let mut words = read.words.iter().peekable();
@@ -207,11 +206,6 @@ fn opening(word: &str) -> Option<(bool, &str)> {
     (!rest.starts_with('<')).then_some((strip_tabs, rest))
 }
 
-// Whether a word is an operator whose delimiter is the word after it.
-fn waits(word: &str) -> bool {
-    opening(word).is_some_and(|(_, rest)| rest.is_empty())
-}
-
 #[derive(Clone, Copy)]
 enum Frame {
     // The text of `${name ... }` up to this character. Another part follows
@@ -244,6 +238,9 @@ struct Words<'a> {
     complete: bool,
     // Whether the lexer dropped the start of a word that `<<` began or followed.
     lost: bool,
+    // Whether the last whole word is an operator whose delimiter is the word
+    // after it. Decided once, where the word ends.
+    waits: bool,
 }
 
 impl<'a> Words<'a> {
@@ -262,6 +259,7 @@ impl<'a> Words<'a> {
             string: 0,
             complete: false,
             lost: false,
+            waits: false,
         };
         while let Some(character) = words.characters.next() {
             if words.step(character).is_none() {
@@ -280,6 +278,7 @@ impl<'a> Words<'a> {
         if !character.is_whitespace() {
             self.word.push(character);
         } else if !self.word.is_empty() {
+            self.waits = opening(&self.word).is_some_and(|(_, rest)| rest.is_empty());
             self.words.push(std::mem::take(&mut self.word));
         }
     }
@@ -448,8 +447,8 @@ impl<'a> Words<'a> {
                 Some(Frame::Double { .. }) => std::mem::take(&mut self.string),
                 Some(Frame::Part { .. }) => 0,
             };
-            let delimiter = self.words.last().is_some_and(|word| waits(word));
-            self.lost |= dropped > 0 && (delimiter || opening(&self.word[..dropped]).is_some());
+            // The dropped text is read here once, and is gone after that.
+            self.lost |= dropped > 0 && (self.waits || opening(&self.word[..dropped]).is_some());
             self.word.drain(..dropped);
             self.stack.push(Frame::Part {
                 stop,

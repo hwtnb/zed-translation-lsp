@@ -59,20 +59,28 @@ Manual selection translation remains available.
 
 PowerShell supports `#` comments and `<# ... #>` block comments. Adjacent line comments of the same indentation are translated together, and each block comment is handled separately. A shebang on the first line and `#Requires` lines are skipped.
 
-A `#` or `<#` starts a comment at the start of a line, after a blank, and after `(`, `)`, `{`, `}`, `,`, `;`, `|`, or `&`. It also does right after a string, a `${ ... }`, or a block comment that began at one of these places. A `#` after a backtick does not start a comment. Text inside single-quoted strings, double-quoted strings, here-strings, and `${ ... }` is not treated as a comment, and neither is the text after `--%`, up to the end of its line or to a `|` or `&&` outside double quotes. The other quotation marks that PowerShell accepts, such as `‘`, `’`, `“`, and `”`, work as `'` and `"` do. A comment inside `$( ... )` within a double-quoted string is not an automatic target.
+A `#` or `<#` starts a comment at the start of a line, after a blank, and after `(`, `)`, `{`, `}`, `,`, `;`, `|`, or `&`. It also does right after a string or a block comment that began at one of these places. A `#` after a backtick does not start a comment. Text inside single-quoted strings, double-quoted strings, here-strings, and `${ ... }` is not treated as a comment. The other quotation marks that PowerShell accepts, such as `‘`, `’`, `“`, and `”`, work as `'` and `"` do. A comment inside `$( ... )` within a double-quoted string is not an automatic target.
 
-Where a `#` follows other text with no blank between, as in `a#b` or `$x#text`, PowerShell reads a comment or a part of an argument, depending on the statement around it. The server does not decide between the two, and nothing on that line from the `#` on is an automatic target.
+Where a `#` follows other text with no blank between, as in `a#b`, `$x#text`, or `${x}#text`, PowerShell reads a comment or a part of an argument, depending on the statement around it. The server does not decide between the two, and nothing on that line from the `#` on is an automatic target. The same holds for the rest of a line after `--%`, which a command takes as it is written, also where the `--%` ends a string.
+
+The server follows PowerShell where it reads on although the text looks finished:
+
+- In a double-quoted string and in a here-string in double quotes, `$( ... )` runs to its last parenthesis and `${ ... }` to its `}`, over quotes and over a line that would end the here-string.
+- A backtick before a line break inside an argument, or inside a here-string in double quotes, escapes the line break, so the next line does not start a token or end the here-string. After CRLF it does, because the backtick takes only the CR.
+- A here-string with other text than blanks after its opening `@"` or `@'` ends at `"@` or `'@` on that line, or with that line.
+- `$$` and `@$` are one variable each, so `$$(` and `@${` open no `$( ... )` or `${ ... }`.
 
 An unclosed block comment waits until closed. An unclosed string, here-string, or `${` hides the comments after it.
 
 Extraction stops at the following, where the server cannot tell how PowerShell reads on. The comments before that point remain available.
 
-- `<#`, a here-string, or `--%` right after other text, as in `$x=@"`.
+- `<#` or a here-string right after other text, as in `$x=@"`.
 - `$( ... )` right after other text, as in `a=$( ... )`, when it holds `#`, a backtick, `${`, `--%`, a here-string, or a string with a parenthesis in it.
-- A backtick after a letter, a digit, `_`, `.`, `\`, `+`, or `#` and before a quote, `$`, `@`, `<`, or `-`, as in ``a`"b``. A type name such as ``List`1`` holds a backtick that escapes nothing.
-- `${` right after another `$` inside a word, as in `a$${b}`.
-- A string, here-string, block comment, `${ ... }`, or `$( ... )` that starts after a `#` of the kind above and ends on a later line.
-- A here-string in double quotes whose ending line comes inside a `$( ... )` of its own.
+- A backtick before a quote, `$`, `@`, `<`, `-`, or `u{`, when it follows a letter, a digit, `_`, `.`, `\`, `+`, `#`, or another backtick, as in ``a`"b``, or when its word holds `-name`, as in ``-a=`"b``. A type name such as ``List`1`` and a parameter of a command hold a backtick that escapes nothing.
+- `${ ... }` in a word that holds `-name`, or after `@` inside a word, when it holds a quote, `#`, a backtick, or `%`. PowerShell can read its `{` as the start of a block there.
+- A quote, `#`, `$`, `@`, `<`, a backtick, or one of `(`, `)`, `{`, `}`, `;`, `|`, and `&` after `[name,` on the same line. PowerShell can read the name of an assembly there, in which these open nothing. A backtick inside `[name` stops extraction too, before anything but a letter or a digit.
+- `--%` with `|` or `&&` after it on its line, and `--%` after such a `#` or another `--%` on its line.
+- A string, here-string, block comment, or `${ ... }` that starts after such a `#` or `--%` on its line and ends on a later line. The same holds for `$( ... )` right after other text, and for a backtick right after other text at the end of that line.
 
 Manual selection translation remains available.
 
