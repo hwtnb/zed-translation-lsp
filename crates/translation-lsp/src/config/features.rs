@@ -146,11 +146,10 @@ mod tests {
     #[test]
     fn language_ids_match_the_extension_manifest() {
         let manifest = include_str!("../../../zed-extension/extension.toml");
-        let (_, table) = manifest
-            .split_once("[language_servers.translation-lsp.language_ids]\n")
-            .unwrap();
-        let registered: Vec<_> = table
+        let registered: Vec<_> = manifest
             .lines()
+            .skip_while(|line| *line != "[language_servers.translation-lsp.language_ids]")
+            .skip(1)
             .take_while(|line| !line.starts_with('['))
             .filter_map(|line| line.split_once(" = "))
             .map(|(_, language_id)| language_id.trim_matches('"'))

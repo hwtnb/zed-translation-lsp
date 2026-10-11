@@ -10,8 +10,37 @@ use std::{
 use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
 use serde_json::{Value, json};
 
-const COMMENT_DOCUMENT: &str = include_str!("../../../samples/comment.rs");
-const MARKDOWN_DOCUMENT: &str = include_str!("../../../samples/paragraph.md");
+// A checkout may give the sample files CRLF line endings. The tests find text
+// in them by LF, so each sample is read with LF whatever the checkout wrote.
+macro_rules! sample {
+    ($name:literal) => {{
+        const SOURCE: &str = include_str!(concat!("../../../samples/", $name));
+        const COPY: ([u8; SOURCE.len()], usize) = with_line_feeds(SOURCE);
+        const BYTES: &[u8] = COPY.0.split_at(COPY.1).0;
+        match std::str::from_utf8(BYTES) {
+            Ok(text) => text,
+            Err(_) => panic!("A sample is not UTF-8 after its carriage returns are removed"),
+        }
+    }};
+}
+
+const fn with_line_feeds<const N: usize>(text: &str) -> ([u8; N], usize) {
+    let source = text.as_bytes();
+    let mut copy = [0; N];
+    let (mut read, mut written) = (0, 0);
+    while read < source.len() {
+        let before_line_feed = read + 1 < source.len() && source[read + 1] == b'\n';
+        if !(source[read] == b'\r' && before_line_feed) {
+            copy[written] = source[read];
+            written += 1;
+        }
+        read += 1;
+    }
+    (copy, written)
+}
+
+const COMMENT_DOCUMENT: &str = sample!("comment.rs");
+const MARKDOWN_DOCUMENT: &str = sample!("paragraph.md");
 const COMMENT: &str = "// Retry only if the remote service\n    // reports a temporary failure.";
 const PARAGRAPH: &str =
     "The `retry_count` value is preserved.\nRetry only after a temporary failure. 🚀";
@@ -2316,7 +2345,7 @@ fn csharp_xml_hover_preserves_tags_utf16_ranges_and_manual_selection() {
     let xml = "/// <summary>\n    /// Retry only if the remote service\n    /// reports a temporary failure.\n    /// </summary>";
     let translated = format!("<summary>\n{COMMENT_JA}\n</summary>");
     for ending in ["\n", "\r\n"] {
-        let source = include_str!("../../../samples/comment.cs").replace('\n', ending);
+        let source = sample!("comment.cs").replace('\n', ending);
         let original = xml.replace('\n', ending);
         let range = range_for(&source, &original);
         let uri = "file:///Example.cs";
@@ -2389,7 +2418,7 @@ fn c_family_doxygen_hover_and_selection_share_the_comment_body() {
     for (language, extension) in [("c", "c"), ("cpp", "cpp")] {
         let uri = format!("file:///retry.{extension}");
         for ending in ["\n", "\r\n", "\r"] {
-            let source = include_str!("../../../samples/comment.c").replace('\n', ending);
+            let source = sample!("comment.c").replace('\n', ending);
             let original =
                 "/// @brief Retry only if the remote service\n/// reports a temporary failure."
                     .replace('\n', ending);
@@ -2425,7 +2454,7 @@ fn python_docstring_and_comment_hover_use_canonical_bodies() {
     let mut client = Client::new(&[]);
     let uri = "file:///retry.py";
     for ending in ["\n", "\r\n", "\r"] {
-        let source = include_str!("../../../samples/comment.py").replace('\n', ending);
+        let source = sample!("comment.py").replace('\n', ending);
         let original =
             "\"\"\"Retry only if the remote service\n    reports a temporary failure.\n    \"\"\""
                 .replace('\n', ending);
@@ -2464,45 +2493,17 @@ fn python_docstring_and_comment_hover_use_canonical_bodies() {
 fn json_yaml_and_toml_samples_translate_their_comment_groups() {
     let mut client = Client::new(&[]);
     for (uri, language, source) in [
-        (
-            "file:///comment.json",
-            "json",
-            include_str!("../../../samples/comment.jsonc"),
-        ),
-        (
-            "file:///comment.jsonc",
-            "jsonc",
-            include_str!("../../../samples/comment.jsonc"),
-        ),
-        (
-            "file:///comment.yaml",
-            "yaml",
-            include_str!("../../../samples/comment.yaml"),
-        ),
-        (
-            "file:///comment.toml",
-            "toml",
-            include_str!("../../../samples/comment.toml"),
-        ),
-        (
-            "file:///comment.sh",
-            "shellscript",
-            include_str!("../../../samples/comment.sh"),
-        ),
-        (
-            "file:///comment.ps1",
-            "powershell",
-            include_str!("../../../samples/comment.ps1"),
-        ),
-        (
-            "file:///Dockerfile",
-            "dockerfile",
-            include_str!("../../../samples/Dockerfile"),
-        ),
+        ("file:///comment.json", "json", sample!("comment.jsonc")),
+        ("file:///comment.jsonc", "jsonc", sample!("comment.jsonc")),
+        ("file:///comment.yaml", "yaml", sample!("comment.yaml")),
+        ("file:///comment.toml", "toml", sample!("comment.toml")),
+        ("file:///comment.sh", "shellscript", sample!("comment.sh")),
+        ("file:///comment.ps1", "powershell", sample!("comment.ps1")),
+        ("file:///Dockerfile", "dockerfile", sample!("Dockerfile")),
         (
             "file:///compose.yaml",
             "dockercompose",
-            include_str!("../../../samples/compose.yaml"),
+            sample!("compose.yaml"),
         ),
     ] {
         for ending in ["\n", "\r\n", "\r"] {
@@ -2578,12 +2579,7 @@ fn python_pending_docstring_obeys_cancel_edit_and_close() {
     for mode in ["cancel", "edit", "close"] {
         let mut client = Client::new(&["--mock-delay-ms", "150"]);
         let uri = "file:///Pending.py";
-        client.open(
-            uri,
-            "python",
-            include_str!("../../../samples/comment.py"),
-            1,
-        );
+        client.open(uri, "python", sample!("comment.py"), 1);
         let id = client.request_hover(uri, json!({"line":1,"character":10}));
         match mode {
             "cancel" => client.notify("$/cancelRequest", json!({"id":id})),
@@ -2820,7 +2816,7 @@ fn comment_hover_switch_stops_new_hover_work_and_keeps_manual_results() {
             (comment, range_for(source, comment))
         };
         let uri = "file:///switch.yaml";
-        let source = include_str!("../../../samples/comment.yaml");
+        let source = sample!("comment.yaml");
         let (original, range) = comment(source);
         client.open(uri, "yaml", source, 1);
         assert!(client.hover(uri, range["start"].clone()).is_null());
@@ -2853,7 +2849,7 @@ fn comment_hover_switch_stops_new_hover_work_and_keeps_manual_results() {
         assert!(client.hover(uri, range["start"].clone()).is_null());
 
         let uri = "file:///switch.toml";
-        let source = include_str!("../../../samples/comment.toml");
+        let source = sample!("comment.toml");
         let (original, range) = comment(source);
         client.open(uri, "toml", source, 1);
         assert_preview(

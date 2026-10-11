@@ -6,7 +6,7 @@ This page describes the required Rust versions, the checks to run, CI, and the d
 
 ## Checks
 
-Both crates use Rust Edition 2024. The native language server requires Rust 1.97 or later; the WASM extension requires Rust 1.96 or later. Dependency updates take priority over retaining an older minimum Rust version; update the affected requirement when needed. The virtual workspace uses resolver 3. `.gitattributes` checks every text file out with LF line endings on all three OSes; the stdio tests embed the sample files and depend on it. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
+Both crates use Rust Edition 2024. The native language server requires Rust 1.97 or later; the WASM extension requires Rust 1.96 or later. Dependency updates take priority over retaining an older minimum Rust version; update the affected requirement when needed. The virtual workspace uses resolver 3. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
 
 ```sh
 cargo fmt --all --check
