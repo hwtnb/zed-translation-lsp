@@ -960,6 +960,21 @@ fn comment_and_markdown_selection_preview_leave_source_unchanged() {
 }
 
 #[test]
+fn a_notice_names_the_file_as_it_is_written_and_not_as_its_uri_encodes_it() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///work/%E7%BF%BB%E8%A8%B3%20notes.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let action = client.action(uri, range_for(MARKDOWN_DOCUMENT, PARAGRAPH));
+    let execution = client.execute(action);
+    assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
+    assert_eq!(
+        client.notice(),
+        json!({"type": 3, "message": format!("翻訳 notes.md:3-4: {READY}")})
+    );
+    client.finish(true);
+}
+
+#[test]
 fn whole_line_whitespace_is_preserved_and_multiple_ranges_remain_readable() {
     let mut client = Client::new(&[]);
     let uri = "file:///two-selections.md";

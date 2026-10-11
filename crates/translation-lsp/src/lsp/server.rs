@@ -846,19 +846,24 @@ impl<P: TranslationProvider> Drop for Server<P> {
     }
 }
 
-// Tells the user once per open document that its comments could not be read.
-// The log names the language and the kind of failure, and nothing of the document.
-fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> RequestResult<()> {
-    let Some(cause) = document.take_comment_failure() else {
-        return Ok(());
-    };
+// The name of the file as the user sees it, not as the URI encodes it.
+fn file_name(uri: &Uri) -> String {
     let name = uri
         .path()
         .as_estr()
         .split('/')
         .next_back()
         .unwrap_or_default();
-    let name = String::from_utf8_lossy(name.decode().as_bytes()).into_owned();
+    String::from_utf8_lossy(name.decode().as_bytes()).into_owned()
+}
+
+// Tells the user once per open document that its comments could not be read.
+// The log names the language and the kind of failure, and nothing of the document.
+fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> RequestResult<()> {
+    let Some(cause) = document.take_comment_failure() else {
+        return Ok(());
+    };
+    let name = file_name(uri);
     let language = &document.language_id;
     let message = match cause {
         Failure::TimedOut => {

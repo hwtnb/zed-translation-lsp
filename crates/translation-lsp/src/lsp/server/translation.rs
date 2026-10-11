@@ -381,11 +381,9 @@ impl<P: TranslationProvider> Server<P> {
 }
 
 fn location(target: &TranslationTarget) -> String {
-    let path = target.uri.as_str().split(['?', '#']).next().unwrap_or("");
-    let filename = path.rsplit('/').next().unwrap_or(path);
     format!(
         "{}:{}-{}",
-        filename,
+        file_name(&target.uri),
         target.range.start.line + 1,
         target.range.end.line + 1
     )
