@@ -3123,7 +3123,7 @@ fn a_reading_past_its_limit_leaves_the_document_without_comments_until_it_is_reo
 #[test]
 fn a_panic_while_reading_comments_keeps_the_server_running_and_the_text_out_of_the_log() {
     let mut client = Client::new(&[]);
-    // ra-ap-rustc_lexer 0.176 panics on an opening of more than 65,535 dashes.
+    // ra-ap-rustc_lexer 0.177 panics on an opening of more than 65,535 dashes.
     let block = "/* Retry only if the remote service\nreports a temporary failure. */";
     let sound = format!("{COMMENT_DOCUMENT}{block}\n");
     let broken = format!("{}\n{sound}", "-".repeat(65_536));

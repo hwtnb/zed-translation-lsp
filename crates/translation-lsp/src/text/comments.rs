@@ -2444,7 +2444,7 @@ mod tests {
     #[test]
     fn a_panic_while_reading_is_a_failure_that_names_its_place_only() {
         let uri: Uri = "file:///sample.rs".parse().unwrap();
-        // ra-ap-rustc_lexer 0.176 panics on an opening of more than 65,535 dashes.
+        // ra-ap-rustc_lexer 0.177 panics on an opening of more than 65,535 dashes.
         let text = format!("{}\n// Secret.\n", "-".repeat(65_536));
         let Err(Failure::Panicked(Some(place))) =
             Comments::parse("rust", &uri, &text, Duration::from_secs(60))
