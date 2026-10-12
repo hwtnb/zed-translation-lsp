@@ -29,7 +29,9 @@ cargo run -p xtask --locked -- check-source
 cargo run -p xtask --locked -- check-notices
 ```
 
-`check-source` は、バージョン、ライセンス、配布対象が互いに合っていることを検査します。`check-notices` は、[依存ライブラリのライセンス表示](#依存ライブラリのライセンス表示)で説明する文書を生成します。梱包用のコマンドは `cargo run -p xtask --locked -- --help` で一覧でき、[配布物を用意するワークフロー](../../.github/workflows/release-assets.yml)が配布対象ごとに実行します。
+`check-source` は、バージョン、ライセンス、配布対象が互いに合っていることを検査します。`check-notices` は、[依存ライブラリのライセンス表示](#依存ライブラリのライセンス表示)で説明する文書を生成します。梱包用のコマンドは `cargo run -p xtask --locked -- --help` で一覧できます。
+
+拡張は、自分と同じバージョンのGitHubリリースからサーバーを取得します。[配布物を用意するワークフロー](../../.github/workflows/release-assets.yml)は、配布対象ごとに梱包用のコマンドを実行し、`draft-release` を有効にして起動すると、6本のアーカイブと `SHA256SUMS` を付けた下書きのリリースを作ります。そのため、そのリリースを公開してから、そのバージョンをZedに登録してください。
 
 ## 依存関係
 

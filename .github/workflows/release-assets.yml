@@ -2,6 +2,11 @@ name: Prepare release assets
 
 on:
   workflow_dispatch:
+    inputs:
+      draft-release:
+        description: Create a draft release that holds the assets
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,6 +97,8 @@ jobs:
     needs: native
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,9 +112,50 @@ jobs:
           path: dist
       - name: Verify complete release set
         run: cargo +stable run -p xtask --locked -- checksums
+      - id: version
+        run: |
+          version=$(cargo +stable run -q -p xtask --locked -- version)
+          echo "value=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  # Publishing the draft is left to a person. The extension downloads the
+  # server from the release of its own version, so the release must hold all
+  # the assets before that version is registered with Zed.
+  draft-release:
+    needs: collect
+    if: inputs.draft-release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.collect.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: dist
+      - name: Refuse to replace an existing release or tag
+        run: |
+          release=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | select(.tag_name == env.TAG) | .html_url')
+          if [ -n "$release" ]; then
+            echo "::error::A release for $TAG already exists: $release"
+            exit 1
+          fi
+          tag=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq '.[] | select(.ref == "refs/tags/" + env.TAG) | .ref')
+          if [ -n "$tag" ]; then
+            commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$TAG" --jq .sha)
+            if [ "$commit" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $TAG points to $commit, not to $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+      - name: Create the draft release
+        run: gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "" dist/*.tar.gz dist/*.zip dist/SHA256SUMS

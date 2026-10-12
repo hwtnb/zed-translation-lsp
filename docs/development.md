@@ -29,7 +29,9 @@ cargo run -p xtask --locked -- check-source
 cargo run -p xtask --locked -- check-notices
 ```
 
-`check-source` checks that the versions, licenses, and release targets agree. `check-notices` generates the dependency notices described under [Dependency notices](#dependency-notices). `cargo run -p xtask --locked -- --help` lists the packaging commands, which the [release assets workflow](../.github/workflows/release-assets.yml) runs for every release target.
+`check-source` checks that the versions, licenses, and release targets agree. `check-notices` generates the dependency notices described under [Dependency notices](#dependency-notices). `cargo run -p xtask --locked -- --help` lists the packaging commands.
+
+The extension downloads the server from the GitHub release of its own version. The [release assets workflow](../.github/workflows/release-assets.yml) runs the packaging commands for every release target and, when started with `draft-release` enabled, creates a draft release that holds the six archives and `SHA256SUMS`. Publish that release before registering the version with Zed.
 
 ## Dependencies
 

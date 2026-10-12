@@ -15,6 +15,8 @@ enum Command {
     CheckSource,
     /// Prints the release targets as a GitHub Actions matrix.
     Matrix,
+    /// Prints the version that the manifests agree on.
+    Version,
     /// Generates the dependency notices of all release targets and discards them.
     CheckNotices,
     /// Creates an archive and tests its extracted executable in mock mode.
@@ -56,6 +58,7 @@ fn main() -> Result<()> {
             source::check()?;
             println!("{}", source::matrix()?);
         }
+        Command::Version => println!("{}", source::version()?),
         Command::CheckNotices => {
             let targets = source::targets()?;
             notices::generate(&targets)?;
