@@ -8,11 +8,29 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 
 ## 導入
 
-開発・利用の対象は **Windows・macOS・Linux** です。Zedと、[rustup経由のRust](https://www.rust-lang.org/tools/install)（1.97以降）を導入してください。ネイティブ依存のビルドにはC/C++の開発環境も必要です。
+Translation LSPは、開発用拡張として導入します。Zedがチェックアウトから拡張をビルドし、拡張が言語サーバーを取得します。
+
+1. Zedと、[rustup経由のRust](https://www.rust-lang.org/tools/install)を導入します。Zedは、開発用拡張のビルドにRustを使います。
+2. このリポジトリをクローンし、[公開済みリリース](https://github.com/hwtnb/zed-translation-lsp/releases)のタグをチェックアウトします。
+3. Zedの拡張画面で `Install Dev Extension` を選び、チェックアウト内の **`crates/zed-extension`** を指定します。[Zedの開発用拡張の導入手順](https://zed.dev/docs/extensions/developing-extensions)も参照してください。
+
+言語サーバーを最初に起動するとき、拡張は自分と同じバージョンのサーバーをそのリリースから取得し、以後の起動では保存したサーバーを使います。リリースのないバージョンのチェックアウトでは、取得できるサーバーがありません。サーバーを配布している環境は次のとおりです。
+
+| OS | バージョン | CPU |
+| --- | --- | --- |
+| macOS | macOS 12以降 | AppleシリコンとIntel |
+| Linux | Ubuntu 22.04以降、Debian 12以降、そのほかglibc 2.35以降のディストリビューション | ARM64とx86-64 |
+| Windows | x86-64はWindows 10以降、ARM64はWindows 11 | ARM64とx86-64 |
+
+サーバーは、Authenticodeの署名もAppleの公証も受けていません。取得したサーバーをOSが起動しない場合や、お使いの環境向けのサーバーが配布されていない場合は、サーバーをソースからビルドしてください。
+
+### サーバーをソースからビルドする
+
+[rustup経由のRust](https://www.rust-lang.org/tools/install)（1.97以降）と、ネイティブ依存のビルドに使うC/C++の開発環境を導入します。
 
 | OS | ビルドの前提 | ネイティブ実行ファイル |
 | --- | --- | --- |
-| Windows | MSVC版Rust、Visual Studio Build Toolsの「C++によるデスクトップ開発」とWindows SDK。x86-64ではNASMも導入し、Visual Studioの開発者用PowerShellまたはコマンドプロンプトを使います。 | `target/release/translation-lsp.exe` |
+| Windows | MSVC版Rust、Visual Studio Build Toolsの「C++によるデスクトップ開発」とWindows SDK。x86-64ではNASM、ARM64ではclang-clも導入し、Visual Studioの開発者用PowerShellまたはコマンドプロンプトを使います。 | `target/release/translation-lsp.exe` |
 | macOS | Xcode Command Line Tools（`xcode-select --install`）。 | `target/release/translation-lsp` |
 | Linux | GCCまたはClangとC/C++開発ツール。Debian/Ubuntuでは `build-essential` と `ca-certificates` を導入します。 | `target/release/translation-lsp` |
 
@@ -22,25 +40,20 @@ Tree-sitterとTLSプロバイダーはネイティブコードをビルドしま
 
 ```sh
 cargo build -p translation-lsp --release --locked
-rustup target add wasm32-wasip2
-cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
 ```
 
-Zedの拡張画面で `Install Dev Extension` を選び、リポジトリ内の **`crates/zed-extension`** を指定します。[Zedの開発用拡張の導入手順](https://zed.dev/docs/extensions/developing-extensions)も参照してください。
+ビルドした実行ファイルの絶対パスを、[サーバーのパス](docs/ja/configuration.md#サーバーのパス)の説明に沿って `lsp.translation-lsp.binary.path` に設定します。拡張はその実行ファイルを起動し、サーバーを取得しません。
 
 C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell、Dockerfile、Docker Composeの言語サーバーを明示している場合は、[言語サーバーの設定](docs/ja/languages.md#言語サーバーの設定)を参照してください。
 
 ## 最小の設定
 
-既存のZed設定の `lsp` に次の項目を追加し、`binary.path` をビルドした実行ファイルの絶対パスへ置き換えます。
+既存のZed設定の `lsp` に次の項目を追加します。サーバーを自分でビルドした場合は、[サーバーのパス](docs/ja/configuration.md#サーバーのパス)の説明に沿って `binary.path` も設定してください。
 
 ```json
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH"
-      },
       "initialization_options": {
         "provider": { "name": "mock" }
       }
@@ -89,3 +102,7 @@ Pythonのコメントとドキュメンテーション文字列は [samples/comm
 - [動作](docs/ja/behavior.md): 受付、処理が続く条件、自動選択、キャッシュ、期限、再試行、停止。
 - [対応言語](docs/ja/languages.md): 対応する言語、コメントの抽出、言語サーバーの設定。
 - [開発](docs/ja/development.md): 検証、CI、依存関係の方針。
+
+## ライセンス
+
+[MIT](LICENSE)です。サーバーの各リリースアーカイブには、サーバーが依存するライブラリのライセンスと、そのソースの取得先が入っています。

@@ -12,6 +12,7 @@ relative to the repository root.
   `src/providers/` owns translation providers and authentication;
   `src/text/` owns comment extraction and Markdown input eligibility.
 - `crates/translation-lsp/tests/stdio.rs`: integration tests for the LSP protocol.
+- `xtask`: development-only native packaging, license collection, and artifact checks.
 - `README.md` and `docs/`: canonical English usage and development documentation.
   `README.md` is the entry point; `docs/` holds the details. `README.ja.md` and
   `docs/ja/` provide the Japanese version under the same file names. Consult the
@@ -24,6 +25,11 @@ relative to the repository root.
   over preserving an older minimum Rust version. Raise the affected manifest
   requirements and update the affected pages in both languages when dependencies
   require newer Rust; verify the resulting build compatibility.
+- The WASM bridge also needs to build with the Zed registry's compiler (currently
+  Rust 1.90). Keep that check in CI; reconsider registry compatibility explicitly
+  when a bridge dependency requires a newer compiler. Do not declare
+  `rust-version` for the bridge: Cargo would then select dependency versions
+  that suit that compiler for the whole workspace, the native server included.
 - Use named module files with matching subdirectories, such as `providers.rs`
   and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.
 - Keep providers replaceable through `TranslationProvider` and generic static

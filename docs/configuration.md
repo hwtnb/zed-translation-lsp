@@ -8,16 +8,12 @@ This page describes the settings under `lsp.translation-lsp`. The fields of each
 
 The extension ID, language server settings key, and native executable name are `translation-lsp`.
 
-Add the following entry to `lsp` in your existing Zed settings. Replace `binary.path` with the absolute path to the executable you built. Choose a model available to the account you will connect; the model and reasoning effort below are examples.
+Add the following entry to `lsp` in your existing Zed settings. Choose a model available to the account you will connect; the model and reasoning effort below are examples.
 
 ```json
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
-        "arguments": []
-      },
       "initialization_options": {
         "target_language": "ja",
         "source_language": "auto",
@@ -52,7 +48,29 @@ Add the following entry to `lsp` in your existing Zed settings. Replace `binary.
 
 ## Server path
 
-Use a path for the OS where the language server runs, including `.exe` on Windows. For example:
+### Lookup order
+
+The extension starts the first server it finds, in this order:
+
+1. The executable that `binary.path` names.
+2. `translation-lsp` on the worktree's PATH.
+3. The server the extension downloaded.
+
+`binary.arguments` and `binary.env` apply to the server from any of the three.
+
+### Automatic download and cache
+
+When the first two give no server, the extension downloads one from this repository's [GitHub Releases](https://github.com/hwtnb/zed-translation-lsp/releases) and keeps it in its work directory. It downloads the server of its own version, which is not always the latest release. Later starts use the kept server and need no network access. After the extension is updated, it downloads the server of its new version and removes the servers of other versions.
+
+A download that does not complete is discarded, and the next start tries again. The extension never starts a partly downloaded server. The download goes through Zed's HTTPS downloader; the extension does not compare the archive with the release's `SHA256SUMS`.
+
+A server on PATH comes before the downloaded one, so updating the extension does not replace it.
+
+### Manual installation
+
+Set `binary.path` when the extension cannot reach GitHub, when no server is published for your system, or to use a server you built. Either build the server as described under [Build the server from source](../README.md#build-the-server-from-source), or download the archive for your system from the release of the extension's version and extract it. To check a downloaded archive, compare its SHA-256 with its line in the release's `SHA256SUMS`: use `sha256sum` on Linux, `shasum -a 256` on macOS, or `Get-FileHash -Algorithm SHA256` in PowerShell. Keep the license files that the archive contains next to the executable.
+
+`binary.path` is an absolute path for the OS where the server runs, including `.exe` on Windows. For example:
 
 | OS | Example `binary.path` value |
 | --- | --- |
@@ -61,8 +79,6 @@ Use a path for the OS where the language server runs, including `.exe` on Window
 | Linux | `/home/you/src/translation-lsp/target/release/translation-lsp` |
 
 Windows paths can use forward slashes in JSON. If you use backslashes, escape each one as `\\`. Do not include extra shell quotes inside the path value, even when the path contains spaces.
-
-If `binary.path` is omitted, the extension looks for `translation-lsp` on the worktree's PATH.
 
 ### Language server lists
 

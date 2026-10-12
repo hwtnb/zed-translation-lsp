@@ -2,11 +2,11 @@
 
 [English](../development.md)
 
-このページでは、必要なRustの版、実行する検証、CI、依存関係の方針を説明します。
+このページでは、必要なRustの版、実行する検証、CI、依存関係の方針、依存ライブラリのライセンス表示を説明します。
 
 ## 検証
 
-両クレートはRust Edition 2024です。ネイティブ言語サーバーにはRust 1.97以降、WASM拡張にはRust 1.96以降が必要です。古い最低対応Rustの維持より依存更新を優先し、必要に応じて対象クレートの要件を引き上げます。仮想ワークスペースには依存関係リゾルバーのバージョン3を使います。`Cargo.lock` をバージョン管理し、検証とリリースビルドは `--locked` で実行してください。
+各クレートはRust Edition 2024です。ネイティブ言語サーバーと `xtask` にはRust 1.97以降が必要です。WASM拡張は `rust-version` を宣言しません。Cargoは、ワークスペースのメンバーのうち最も低い `rust-version` に合う依存のバージョンを、ワークスペース全体に選びます。そのため、Zedの登録先が使う古いコンパイラーを拡張に宣言すると、ネイティブ言語サーバーの依存まで古いバージョンになります。拡張がそのコンパイラーでビルドできることは、CIで確かめます。古い最低対応Rustの維持より依存更新を優先し、必要に応じて対象クレートの要件を引き上げます。仮想ワークスペースには依存関係リゾルバーのバージョン3を使います。`Cargo.lock` をバージョン管理し、検証とリリースビルドは `--locked` で実行してください。
 
 ```sh
 cargo fmt --all --check
@@ -17,6 +17,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ## CIとリリース前の確認
 
 [CIワークフロー](../../.github/workflows/ci.yml)はWindows・macOS・Linuxそれぞれでワークスペース全体のテスト、fmt、Clippy、ネイティブとWASMのリリースビルドを実行します。1 OSでの成功だけを他OSの成功とは扱いません。リリース前には3 OSのCI結果に加え、各OSのZedで拡張導入・ネイティブ起動・認証・コメント翻訳・文書翻訳の表示と保存を確認してください。HTTP/OIDCのテスト用環境は合成の認証情報を使うため、ChatGPTアカウントもAnthropicのAPIキーも不要です。テストは実際のAPIを呼びません。stdioテストは、サーバーのプロセスから `TRANSLATION_LSP_ANTHROPIC_API_KEY` を取り除きます。
+
+CIでは、テストを1つずつ実行します（`RUST_TEST_THREADS` が `1`）。時間を測るテストが、ほかのテストとランナーのCPUを取り合わないようにするためです。
+
+Zedの登録先は、拡張を独自のコンパイラー（現在はRust 1.90）でビルドします。CIの別のジョブが、WASM拡張をそのコンパイラーでビルドします。拡張の依存が新しいコンパイラーを必要とするようになったら、登録先との互換性をどう保つかを改めて決めてください。
+
+開発専用の `xtask` クレートは、ネイティブ言語サーバーを梱包し、リリースの元になる情報を検査します。同じジョブが次の2つのコマンドを実行します。
+
+```sh
+cargo run -p xtask --locked -- check-source
+cargo run -p xtask --locked -- check-notices
+```
+
+`check-source` は、バージョン、ライセンス、配布対象が互いに合っていることを検査します。`check-notices` は、[依存ライブラリのライセンス表示](#依存ライブラリのライセンス表示)で説明する文書を生成します。梱包用のコマンドは `cargo run -p xtask --locked -- --help` で一覧でき、[配布物を用意するワークフロー](../../.github/workflows/release-assets.yml)が配布対象ごとに実行します。
 
 ## 依存関係
 
@@ -29,3 +42,15 @@ JSON、TOML、シェルスクリプト、PowerShell、Dockerfileのコメント�
 現在のバージョン固定の例外は `unicode-ident = "=1.0.24"` です。Rustの字句解析器とUnicodeテーブルの版を揃えるために固定しています。字句解析器と関連するUnicodeテーブルが同じ版に対応した時点で、固定を外してまとめて更新してください。
 
 `granit-parser` 1.3 は、引用符付きの複数行のYAMLの値で、継続行がキーより1桁だけ深い正しい書き方をエラーにします。そのため、その値から後ろのコメントを抽出できません。上流では修正済みで、2.0で公開される見込みです。2.0へ更新するときは、`comments` の機能フラグを有効にし、テスト `yaml_reads_past_a_value_continued_one_column_deeper` の `ignore` を外し、`docs/languages.md` と `docs/ja/languages.md` からこの制限の文を消してください。
+
+## 依存ライブラリのライセンス表示
+
+サーバーの各リリースアーカイブには `THIRD_PARTY_LICENSES.txt` が入っています。内容は、その配布対象でサーバーが依存するライブラリのライセンスと、それぞれのソースの取得先です。`xtask` は梱包のときにこのファイルを生成し、リポジトリには置きません。生成には、[cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.2を、`about.toml` とテンプレート `xtask/notices.hbs` で実行します。このバージョンは次のコマンドで導入します。
+
+```sh
+cargo install --locked --features cli cargo-about@0.9.2
+```
+
+`about.toml` には、受け入れるライセンスを列挙しています。そのどれも選べない依存があると、`check-notices` と梱包が失敗します。ライセンスを確認してから、一覧に追加してください。cargo-aboutが認識できるライセンスファイルを同梱していないクレートについては、ライセンスの標準の文面を載せ、その旨を書きます。
+
+cargo-aboutのバージョンを変えるときは、`xtask/src/notices.rs` と2つのワークフローの両方を変えてください。

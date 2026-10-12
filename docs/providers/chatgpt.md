@@ -10,9 +10,6 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH"
-      },
       "initialization_options": {
         "provider": { "name": "chatgpt", "model": "gpt-6.1-sol", "reasoning_effort": "low" }
       }

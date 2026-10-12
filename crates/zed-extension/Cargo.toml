@@ -2,7 +2,8 @@
 name = "translation-lsp-extension"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/hwtnb/zed-translation-lsp"
 publish = false
 
 [lib]

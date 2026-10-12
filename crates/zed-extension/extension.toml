@@ -3,6 +3,13 @@ name = "Translation LSP"
 version = "0.1.0"
 schema_version = 1
 description = "Translate code comments and selected text with ChatGPT or the Anthropic API while keeping the original source unchanged."
+authors = ["hwtnb"]
+repository = "https://github.com/hwtnb/zed-translation-lsp"
+
+[[capabilities]]
+kind = "download_file"
+host = "github.com"
+path = ["hwtnb", "zed-translation-lsp", "releases", "download", "**"]
 
 [language_servers.translation-lsp]
 name = "Translation LSP"

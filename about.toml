@@ -1,0 +1,20 @@
+# Licenses accepted for the dependencies of the native server, read by
+# cargo-about. Where a dependency offers a choice, the first one listed here is
+# used. A dependency under no license listed here stops the generation.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "BSL-1.0",
+]
+
+# The server's own license is a separate file of the archive.
+private = { ignore = true }
+ignore-dev-dependencies = true
+
+# chrono keeps both of its license texts in one file.
+workarounds = ["chrono"]

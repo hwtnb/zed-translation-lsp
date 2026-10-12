@@ -1,0 +1,29 @@
+Third-party licenses for Translation LSP
+
+The native server is built from the crates below, including the crates that
+only run while it is built. Each entry gives the license the crate declares
+and where its source can be downloaded. The texts of the licenses the crates
+are used under follow the list.
+
+{{#each crates}}
+{{{package.name}}} {{{package.version}}}
+  License: {{{license}}}
+  Source: https://crates.io/api/v1/crates/{{{package.name}}}/{{{package.version}}}/download
+{{/each}}
+{{#each licenses}}
+
+========================================================================
+{{{name}}} ({{{id}}})
+
+Applies to:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+{{#unless source_path}}
+
+No license file was read from the crates above. The text below is the standard
+text of the license.
+{{/unless}}
+
+{{{text}}}
+{{/each}}

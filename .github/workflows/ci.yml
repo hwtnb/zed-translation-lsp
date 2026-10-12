@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUST_TEST_THREADS: 1
+
 jobs:
   verify:
     name: Verify (${{ matrix.os }})
@@ -18,7 +21,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Windows assembler
@@ -42,3 +45,24 @@ jobs:
         run: cargo build -p translation-lsp --release --locked
       - name: Build WASM extension
         run: cargo build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
+
+  distribution:
+    name: Distribution contracts and registry compiler
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Check release metadata
+        run: cargo +stable run -p xtask --locked -- check-source
+      - name: Install registry compiler
+        run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-wasip2
+      - name: Build with registry compiler
+        run: cargo +1.90.0 build -p translation-lsp-extension --target wasm32-wasip2 --release --locked
+      - name: Install cargo-about
+        run: cargo +stable install --locked --features cli cargo-about@0.9.2
+      - name: Check native dependency notices
+        run: cargo +stable run -p xtask --locked -- check-notices

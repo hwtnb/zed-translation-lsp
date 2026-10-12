@@ -1,0 +1,113 @@
+name: Prepare release assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TEST_THREADS: 1
+
+jobs:
+  matrix:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      targets: ${{ steps.targets.outputs.value }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - id: targets
+        run: |
+          targets=$(cargo +stable run -q -p xtask --locked -- matrix)
+          echo "value=$targets" >> "$GITHUB_OUTPUT"
+      - name: Test packaging
+        run: cargo +stable test -p xtask --locked
+
+  native:
+    needs: matrix
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install x86-64 Windows assembler
+        if: matrix.os == 'windows' && matrix.arch == 'x86_64'
+        shell: pwsh
+        run: |
+          choco install nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:ProgramFiles\NASM"
+      - name: Select ARM64 Windows C compiler
+        if: matrix.os == 'windows' && matrix.arch == 'aarch64'
+        shell: pwsh
+        run: |
+          $compiler = Get-Command clang-cl -ErrorAction SilentlyContinue
+          if (-not $compiler) {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $installation = & $vswhere -latest -products '*' -property installationPath
+            $compilerPath = Join-Path $installation 'VC\Tools\Llvm\bin'
+            if (-not (Test-Path "$compilerPath\clang-cl.exe")) { throw 'clang-cl is required for ARM64' }
+            Add-Content -Path $env:GITHUB_PATH -Value $compilerPath
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value 'CC_aarch64_pc_windows_msvc=clang-cl'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CXX_aarch64_pc_windows_msvc=clang-cl'
+      - name: Set macOS deployment target
+        if: matrix.os == 'mac'
+        shell: bash
+        run: echo 'MACOSX_DEPLOYMENT_TARGET=12.0' >> "$GITHUB_ENV"
+      - name: Link the Windows C runtime statically
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'RUSTFLAGS=-C target-feature=+crt-static'
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - name: Select Rust
+        run: rustup default stable
+      - name: Test native target
+        run: cargo +stable test -p translation-lsp --target ${{ matrix.target }} --locked
+      - name: Build native target
+        run: cargo +stable build -p translation-lsp --target ${{ matrix.target }} --release --locked
+      - name: Install cargo-about
+        run: cargo +stable install --locked --features cli cargo-about@0.9.2
+      - name: Package and test the extracted executable
+        run: cargo +stable run -p xtask --locked -- package --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  collect:
+    needs: native
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete release set
+        run: cargo +stable run -p xtask --locked -- checksums
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

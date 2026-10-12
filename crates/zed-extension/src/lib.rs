@@ -1,5 +1,7 @@
 use zed_extension_api::{self as zed, settings::LspSettings};
 
+mod install;
+
 const SERVER_ID: &str = "translation-lsp";
 const BINARY_NAME: &str = "translation-lsp";
 
@@ -21,16 +23,14 @@ impl zed::Extension for TranslationExtension {
 
         let settings = LspSettings::for_worktree(SERVER_ID, worktree)?;
         let binary = settings.binary;
-        let command = binary
+        let command = match binary
             .as_ref()
             .and_then(|binary| binary.path.clone())
             .or_else(|| worktree.which(BINARY_NAME))
-            .ok_or_else(|| {
-                format!(
-                    "Build {BINARY_NAME} locally and set lsp.{SERVER_ID}.binary.path \
-                     to its absolute path. See the extension README."
-                )
-            })?;
+        {
+            Some(command) => command,
+            None => install::server(language_server_id)?,
+        };
 
         Ok(zed::Command {
             command,

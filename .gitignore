@@ -1,5 +1,6 @@
 # Rust build output and cargo-fmt backups.
 /target/
+/dist/
 /crates/*/target/
 **/*.rs.bk
 

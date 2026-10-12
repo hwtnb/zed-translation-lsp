@@ -10,9 +10,6 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH"
-      },
       "initialization_options": {
         "provider": { "name": "chatgpt", "model": "gpt-6.1-sol", "reasoning_effort": "low" }
       }

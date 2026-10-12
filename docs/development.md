@@ -2,11 +2,11 @@
 
 [日本語](ja/development.md)
 
-This page describes the required Rust versions, the checks to run, CI, and the dependency policy.
+This page describes the required Rust versions, the checks to run, CI, the dependency policy, and the dependency notices.
 
 ## Checks
 
-Both crates use Rust Edition 2024. The native language server requires Rust 1.97 or later; the WASM extension requires Rust 1.96 or later. Dependency updates take priority over retaining an older minimum Rust version; update the affected requirement when needed. The virtual workspace uses resolver 3. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
+The crates use Rust Edition 2024. The native language server and `xtask` require Rust 1.97 or later. The WASM extension declares no `rust-version`: Cargo selects dependency versions for the whole workspace that suit the lowest `rust-version` among its members, so declaring the older compiler of the Zed registry there would hold back the dependencies of the native server. CI builds the extension with the registry's compiler instead. Dependency updates take priority over retaining an older minimum Rust version; update the affected requirement when needed. The virtual workspace uses resolver 3. Keep `Cargo.lock` in version control and use `--locked` for checks and release builds:
 
 ```sh
 cargo fmt --all --check
@@ -17,6 +17,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ## CI and release checks
 
 The [CI workflow](../.github/workflows/ci.yml) runs workspace tests, formatting, Clippy, the native release build, and the WASM release build on Windows, macOS, and Linux. Local success on one OS does not establish success on the others. Before releasing, check the CI results for all three OSes and test the Zed flow on each: install the extension, locate the native server, connect, translate a comment, and open and save a document translation. HTTP/OIDC fixtures use synthetic credentials and do not require a ChatGPT account or an Anthropic API key. Tests do not call the real APIs, and the stdio tests remove `TRANSLATION_LSP_ANTHROPIC_API_KEY` from the server process.
+
+CI runs the tests one at a time (`RUST_TEST_THREADS` is `1`), so the tests that measure time do not share the runner's CPUs with other tests.
+
+The Zed registry builds extensions with its own compiler, currently Rust 1.90. A second CI job builds the WASM extension with that compiler. When a dependency of the extension needs a newer compiler, decide again how to stay compatible with the registry.
+
+The development-only `xtask` crate packages the native server and checks what a release is made from. The same CI job runs these two commands:
+
+```sh
+cargo run -p xtask --locked -- check-source
+cargo run -p xtask --locked -- check-notices
+```
+
+`check-source` checks that the versions, licenses, and release targets agree. `check-notices` generates the dependency notices described under [Dependency notices](#dependency-notices). `cargo run -p xtask --locked -- --help` lists the packaging commands, which the [release assets workflow](../.github/workflows/release-assets.yml) runs for every release target.
 
 ## Dependencies
 
@@ -29,3 +42,15 @@ JSON, TOML, shell script, PowerShell, and Dockerfile comments are read by the se
 The current exception to compatibility ranges is `unicode-ident = "=1.0.24"`, pinned to keep the Rust lexer and Unicode tables on the same Unicode version. Remove the pin and update them together when the lexer and related Unicode tables support the same version.
 
 `granit-parser` 1.3 reports an error for a valid multi-line quoted YAML value whose continuation lines are indented only one column deeper than its key, so comments from that value on are unavailable. Upstream has fixed this, and the fix is expected in 2.0. When updating to 2.0, enable its `comments` feature, remove the `ignore` attribute from the `yaml_reads_past_a_value_continued_one_column_deeper` test, and delete the sentence about this limit from `docs/languages.md` and `docs/ja/languages.md`.
+
+## Dependency notices
+
+Each release archive of the server contains `THIRD_PARTY_LICENSES.txt`: the licenses of the server's dependencies on that target, and where to download the source of each. `xtask` generates the file while packaging and does not keep it in the repository. It runs [cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.2 with `about.toml` and the template `xtask/notices.hbs`. Install that version with:
+
+```sh
+cargo install --locked --features cli cargo-about@0.9.2
+```
+
+`about.toml` lists the accepted licenses. A dependency that offers none of them makes `check-notices` and packaging fail; review its license before adding it to the list. For a crate that ships no license file cargo-about recognizes, the file gives the standard text of the license and says so.
+
+To change the cargo-about version, change it in `xtask/src/notices.rs` and in both workflows.

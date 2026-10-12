@@ -11,7 +11,6 @@
   "lsp": {
     "translation-lsp": {
       "binary": {
-        "path": "REPLACE_WITH_ABSOLUTE_SERVER_PATH",
         "env": { "TRANSLATION_LSP_ANTHROPIC_API_KEY": "sk-ant-…" }
       },
       "initialization_options": {
