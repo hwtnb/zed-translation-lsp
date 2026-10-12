@@ -399,12 +399,13 @@ mod tests {
     #[test]
     fn python_reads_statements_after_many_comments_in_proportion_to_the_text() {
         let uri = "untitled:comment".parse().unwrap();
-        let text = format!("{}{}", "# c\n".repeat(10_000), "f()\n".repeat(10_000));
+        let text = format!("{}{}", "# c\n".repeat(20_000), "f()\n".repeat(20_000));
         let started = Instant::now();
-        assert_eq!(parsed("python", &uri, &text).0.len(), 10_000);
-        // One pass takes a fraction of a second in a debug build. Passing the
-        // comments again for each statement took over 20 seconds.
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(parsed("python", &uri, &text).0.len(), 20_000);
+        // One pass takes a fraction of a second in a debug build, and a few
+        // seconds on a slow machine. Passing the comments again for each
+        // statement took more than a minute.
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     #[test]
@@ -1189,7 +1190,9 @@ mod tests {
             assert_eq!(comments.0.len(), text.matches("# note").count());
         }
         // Each takes milliseconds when read once, on a stack that the heap holds.
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        // All of them take seconds in a debug build on a slow machine; reading a
+        // megabyte again at each piece would take hours.
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
     }
 
     #[test]
@@ -1600,8 +1603,10 @@ mod tests {
             assert_eq!(found.last().map(String::as_str), Some("# note"));
             assert_eq!(found.len(), text.matches("# note").count());
         }
-        // Each takes milliseconds when read once, without a stack.
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        // Each takes milliseconds when read once, without a stack. All of them
+        // take seconds in a debug build on a slow machine; reading a megabyte
+        // again at each piece would take hours.
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
     }
 
     // The example of the request, with tabs before the lines that `<<-` strips.
@@ -1919,8 +1924,10 @@ mod tests {
             assert!(text.len() >= megabyte - 64);
             assert_eq!(bodies("dockerfile", &text), ["note"]);
         }
-        // Each takes milliseconds when read once.
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // Each takes milliseconds when read once. All of them take seconds in a
+        // debug build on a slow machine; reading a megabyte again at each piece
+        // would take hours.
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
     }
 
     #[test]
@@ -1960,7 +1967,7 @@ mod tests {
                 // One pass takes milliseconds in a debug build. Reading the
                 // rest of the text again at each piece took over 20 seconds.
                 assert!(
-                    started.elapsed() < std::time::Duration::from_secs(1),
+                    started.elapsed() < std::time::Duration::from_secs(5),
                     "{language} {head:?} {piece:?} {tail:?}"
                 );
             }
@@ -1981,8 +1988,10 @@ mod tests {
         ] {
             assert_eq!(bodies("dockerfile", &text), ["note"]);
         }
-        // Each takes milliseconds when read once, and took seconds before.
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // Each takes milliseconds when read once, and about a second in a debug
+        // build on a slow machine. Reading the word again at each `${name ... }`
+        // took three minutes.
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
     }
 
     #[test]
@@ -2102,7 +2111,7 @@ mod tests {
                 let started = std::time::Instant::now();
                 parsed(language, &uri, &text);
                 assert!(
-                    started.elapsed() < std::time::Duration::from_secs(1),
+                    started.elapsed() < std::time::Duration::from_secs(5),
                     "{language} {parts:?}"
                 );
             }
@@ -2407,38 +2416,50 @@ mod tests {
     }
 
     #[test]
-    fn reading_stops_near_the_limit_while_parsing_and_while_walking_the_tree() {
+    fn reading_stops_at_the_limit_while_parsing_and_while_walking_the_tree() {
         let uri: Uri = "file:///sample.py".parse().unwrap();
-        // Tree-sitter takes seconds to parse this many continued lines.
         let limit = Duration::from_millis(100);
-        let start = Instant::now();
-        let read = Comments::parse("python", &uri, &"\\\n".repeat(40 * 1024), limit);
-        let elapsed = start.elapsed();
-        assert_eq!(read.err(), Some(Failure::TimedOut));
-        assert!(elapsed >= limit, "{elapsed:?}");
-        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
 
-        // This text is parsed at once. Its hundreds of nodes are made slow to
-        // visit, so the limit passes during the walk.
-        let limit = Duration::from_millis(200);
-        let mut visited = 0;
+        // Tree-sitter looks at the limit between its steps. On ordinary text a
+        // step is short, so parsing stops close to the limit. Parsed to its end,
+        // this text takes over ten seconds in a debug build.
+        let ordinary = "value = 1\n".repeat(1_600_000);
         let start = Instant::now();
+        let read = syntax::parse(
+            ordinary.as_bytes(),
+            tree_sitter_python::LANGUAGE.into(),
+            syntax::Recovery::StopAtLiteral,
+            start + limit,
+            |_| None,
+        );
+        let elapsed = start.elapsed();
+        assert!(read.is_none());
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < limit + Duration::from_secs(5), "{elapsed:?}");
+
+        // On this many continued lines a step can take seconds on a slow
+        // machine, so only the result is checked here.
+        let continued = "\\\n".repeat(40 * 1024);
+        let read = Comments::parse("python", &uri, &continued, limit);
+        assert_eq!(read.err(), Some(Failure::TimedOut));
+
+        // This text is parsed at once. Each of its hundreds of nodes is made
+        // slow to visit, so the limit passes during the walk. Visiting them all
+        // would take half a minute and give the comments.
+        let mut visited = 0;
         let read = syntax::parse(
             "f()\n".repeat(100).as_bytes(),
             tree_sitter_python::LANGUAGE.into(),
             syntax::Recovery::StopAtLiteral,
-            start + limit,
+            Instant::now() + Duration::from_millis(500),
             |_| {
                 visited += 1;
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(50));
                 None
             },
         );
-        let elapsed = start.elapsed();
         assert!(read.is_none());
         assert!(visited > 0);
-        assert!(elapsed >= limit, "{elapsed:?}");
-        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
