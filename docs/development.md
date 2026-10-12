@@ -53,6 +53,12 @@ Each release archive of the server contains `THIRD_PARTY_LICENSES.txt`: the lice
 cargo install --locked --features cli cargo-about@0.9.2
 ```
 
-`about.toml` lists the accepted licenses. A dependency that offers none of them makes `check-notices` and packaging fail; review its license before adding it to the list. For a crate that ships no license file cargo-about recognizes, the file gives the standard text of the license and says so.
+`about.toml` lists the accepted licenses. A dependency that offers none of them makes `check-notices` and packaging fail; review its license before adding it to the list.
+
+`THIRD_PARTY_LICENSES.txt` gives each license in the text of the crate's authors, with their copyright notice. Where cargo-about finds no license file in a crate by itself, `about.toml` names the file and its SHA-256 checksum. For a crate that ships no license file, it names a file of the crate's repository on GitHub, and cargo-about downloads that file, at the commit the crate was published from, every time it generates the notices. Generating them therefore needs network access.
+
+When a checksum differs or a download fails, cargo-about uses the standard text of the license, which names no copyright holder, and still succeeds. `xtask` then fails and names the crates; if a download failed, it first runs cargo-about again, up to three times in all. `STANDARD_TEXT` in `xtask/src/notices.rs` lists the crates that may stand under a standard text, each with the reason; `THIRD_PARTY_LICENSES.txt` says so above that text.
+
+When `check-notices` fails after a dependency update, read the license file of each crate it names before changing `about.toml`. If the file changed, review the change, then set the checksum to the SHA-256 checksum of the new file. If `about.toml` does not name the crate, add an entry for its license file. A file of a crate is in Cargo's registry source directory; a file of a repository is at `https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<path>`, with the commit that the crate's `.cargo_vcs_info.json` records. `ra-ap-rustc_lexer` records no commit there, so also copy the commit named in its description to `override-git-commit`.
 
 To change the cargo-about version, change it in `xtask/src/notices.rs` and in both workflows.

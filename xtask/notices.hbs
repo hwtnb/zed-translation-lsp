@@ -1,9 +1,16 @@
+{{#each licenses}}
+{{#unless source_path}}
+{{#each used_by}}
+standard text: {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+{{/unless}}
+{{/each}}
 Third-party licenses for Translation LSP
 
 The native server is built from the crates below, including the crates that
-only run while it is built. Each entry gives the license the crate declares
-and where its source can be downloaded. The texts of the licenses the crates
-are used under follow the list.
+only run while it is built. Each entry gives the license of the crate and
+where its source can be downloaded. The texts of the licenses the crates are
+used under follow the list.
 
 {{#each crates}}
 {{{package.name}}} {{{package.version}}}
@@ -21,8 +28,8 @@ Applies to:
 {{/each}}
 {{#unless source_path}}
 
-No license file was read from the crates above. The text below is the standard
-text of the license.
+Neither the crates above nor their repositories hold a license file. The text
+below is the standard text of the license, which names no copyright holder.
 {{/unless}}
 
 {{{text}}}

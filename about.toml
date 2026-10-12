@@ -18,3 +18,151 @@ ignore-dev-dependencies = true
 
 # chrono keeps both of its license texts in one file.
 workarounds = ["chrono"]
+
+# The entries below name the license files of crates in which cargo-about finds
+# none by itself, so that the notices carry the text and the copyright notice
+# of the crate's authors. cargo-about uses a file only if its SHA-256 checksum
+# matches. `license` repeats the license the crate declares, except for dunce.
+
+# These crates name their license files in lowercase, which cargo-about does
+# not read.
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-implement.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-interface.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# One file holds the copyright notices and the license texts of AWS-LC and of
+# the code it includes, so the whole file stands under each license that
+# applies.
+[aws-lc-rs.clarify]
+license = "ISC AND (Apache-2.0 OR ISC)"
+files = [{ path = "LICENSE", checksum = "b50b376e7d24a0598488b730c3034ffcd0b58dd36c0913a24b9903a3cfd04bf7" }]
+
+[aws-lc-sys.clarify]
+license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
+files = [
+    { path = "LICENSE", checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e" },
+    { path = "aws-lc/third_party/fiat/LICENSE", license = "MIT", checksum = "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061" },
+]
+
+# The license file continues with the license of the code it was derived from.
+[curve25519-dalek.clarify]
+license = "BSD-3-Clause"
+files = [{ path = "LICENSE", checksum = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f" }]
+
+# The copyright notices follow both license texts in one file.
+[libm.clarify]
+license = "MIT"
+files = [{ path = "LICENSE.txt", checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7" }]
+
+[sync_wrapper.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE", checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594" }]
+
+# `LICENSE` names the three copyright holders and asks for all their notices;
+# the texts of the first two are in a hidden directory.
+[granit-parser.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+    { path = "LICENSE", license = "MIT", checksum = "1af262e6647807eecaec988ecf2b783fb8fdbdecba396d582c1aab90615f6845" },
+    { path = ".licenses/ChenYuheng-MIT", license = "MIT", checksum = "70480dc70c2fe1d9bbb64dab9a0abce266332905ffef9cabeae26dd027716ecb" },
+    { path = ".licenses/Ethiraric-MIT", license = "MIT", checksum = "90f4ea53f408858ba4886f57b8e3ceac876eefbb59c20f0844f0abbfa59e2749" },
+]
+
+# dunce offers CC0-1.0, MIT-0, or Apache-2.0 and ships the text of CC0-1.0
+# only, so it is used under that one.
+[dunce]
+accepted = ["CC0-1.0"]
+[dunce.clarify]
+license = "CC0-1.0"
+files = [{ path = "LICENSE", checksum = "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499" }]
+
+# The crates below ship no license file. cargo-about downloads the file from
+# the crate's repository on GitHub, at the commit the crate was published from.
+
+[oxc_allocator.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_ast.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_ast_macros.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_data_structures.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_diagnostics.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_ecmascript.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_estree.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_parser.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_regular_expression.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_span.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_str.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_syntax.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[oxc_index.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "95ced5ecf1133fbf41d409b5555c86c344f83f3b019926057ddbc07cfdcc27b3" }]
+
+[tree-sitter-cpp.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1" }]
+
+# This crate does not record its commit where cargo-about looks for it. Its
+# description names the commit of rust-lang/rust; copy it from there when
+# updating the crate.
+[ra-ap-rustc_lexer.clarify]
+license = "MIT OR Apache-2.0"
+override-git-commit = "7211ea594cbf137ef6118b1752b959dea7cb9088"
+git = [{ path = "LICENSE-MIT", license = "MIT", checksum = "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1" }]
