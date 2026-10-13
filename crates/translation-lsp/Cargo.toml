@@ -7,6 +7,9 @@ license = "MIT"
 repository = "https://github.com/hwtnb/zed-translation-lsp"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 crossbeam-channel = "0.5"
 dirs = "7.0"

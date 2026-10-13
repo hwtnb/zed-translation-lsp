@@ -6,6 +6,9 @@ license = "MIT"
 repository = "https://github.com/hwtnb/zed-translation-lsp"
 publish = false
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib"]
 

@@ -2,3 +2,8 @@
 members = ["crates/zed-extension", "crates/translation-lsp", "xtask"]
 default-members = ["crates/zed-extension"]
 resolver = "3"
+
+# `unsafe` is not written here. An exception is allowed at the item that needs
+# it, with its reason; see AGENTS.md.
+[workspace.lints.rust]
+unsafe_code = "deny"

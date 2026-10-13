@@ -128,6 +128,10 @@ const USUAL: Settings = Settings {
 impl Window {
     // Opens a pseudo-terminal and starts `command` with it as the controlling
     // terminal of a session of its own.
+    #[allow(
+        unsafe_code,
+        reason = "the standard library opens no pseudo-terminal and starts no session"
+    )]
     fn start(mut command: Command) -> (Self, Child) {
         // SAFETY: `posix_openpt` takes no pointer. It returns a new descriptor
         // or -1, which is checked before the descriptor is used.
@@ -209,6 +213,10 @@ impl Window {
         }
     }
 
+    #[allow(
+        unsafe_code,
+        reason = "the standard library does not read the settings of a terminal"
+    )]
     fn settings(&self) -> Settings {
         // SAFETY: `termios` is plain data, so all zeros is a valid value, and
         // `tcgetattr` fills it for the open terminal that `master` refers to.
@@ -350,6 +358,10 @@ fn giving_up_saves_nothing_fails_and_leaves_the_terminal_as_it_was() {
 }
 
 #[test]
+#[allow(
+    unsafe_code,
+    reason = "the standard library starts no session, and only a new session has no terminal"
+)]
 fn without_a_terminal_the_command_fails_and_changes_nothing() {
     let home = Home::new();
     let mut command = home.command(&["anthropic-key"]);

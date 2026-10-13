@@ -36,6 +36,12 @@ relative to the repository root.
   that suit that compiler for the whole workspace, the native server included.
 - Use named module files with matching subdirectories, such as `providers.rs`
   and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.
+- Do not write `unsafe` code. The workspace lint `unsafe_code` denies it in
+  every crate. Where a task cannot be done without it, report that before
+  writing it. An accepted exception is allowed at the item that needs it, with
+  `#[allow(unsafe_code, reason = "…")]`, and each `unsafe` block states what it
+  relies on. The only exception is the pseudo-terminal helper code in
+  `crates/translation-lsp/tests/key_command.rs`.
 - Keep providers replaceable through `TranslationProvider` and generic static
   dispatch. Put provider-specific behavior under `src/providers/`.
 - Target Windows, macOS, and Linux. Document OS-specific prerequisites and paths;
