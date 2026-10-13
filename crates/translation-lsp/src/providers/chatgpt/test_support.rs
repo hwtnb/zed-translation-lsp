@@ -73,6 +73,8 @@ impl Drop for HeldTail {
 }
 
 pub(crate) struct FixtureState {
+    // Signs the ID tokens, and is the only key the JWKS lists.
+    signing_key: Arc<CoreEdDsaPrivateSigningKey>,
     pub records: Vec<Record>,
     pub authorization: HashMap<String, String>,
     pub mode: String,
@@ -98,20 +100,15 @@ pub(crate) struct FixtureState {
 pub(crate) struct Fixture {
     pub base: String,
     pub state: Arc<Mutex<FixtureState>>,
-    signing_key: Arc<CoreEdDsaPrivateSigningKey>,
     task: JoinHandle<()>,
 }
 
 impl Fixture {
     pub async fn new() -> Self {
-        let signing_key = {
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let pem = key.to_pkcs8_pem(Default::default()).unwrap();
-            Arc::new(CoreEdDsaPrivateSigningKey::from_ed25519_pem(&pem, None).unwrap())
-        };
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let state = Arc::new(Mutex::new(FixtureState {
+            signing_key: signing_key(),
             records: Vec::new(),
             authorization: HashMap::new(),
             mode: String::new(),
@@ -132,19 +129,17 @@ impl Fixture {
             refresh_failure: None,
             revoke_failure: false,
         }));
-        let (service_base, service_state, service_key) =
-            (base.clone(), state.clone(), signing_key.clone());
+        let (service_base, service_state) = (base.clone(), state.clone());
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let (socket, _) = accepted.unwrap();
-                        let (base, state, signing_key) =
-                            (service_base.clone(), service_state.clone(), service_key.clone());
+                        let (base, state) = (service_base.clone(), service_state.clone());
                         connections.spawn(async move {
                             let service = service_fn(move |request| {
-                                endpoint(request, base.clone(), state.clone(), signing_key.clone())
+                                endpoint(request, base.clone(), state.clone())
                             });
                             let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
                         });
@@ -153,12 +148,7 @@ impl Fixture {
                 }
             }
         });
-        Self {
-            base,
-            state,
-            signing_key,
-            task,
-        }
+        Self { base, state, task }
     }
 
     pub fn auth(&self) -> Auth {
@@ -203,7 +193,13 @@ impl Fixture {
     }
 
     pub fn id_token(&self, audience: &str, nonce: &str, mode: &str) -> String {
-        signed_token(&self.signing_key, &self.base, audience, nonce, mode)
+        let signing_key = self.state.lock().unwrap().signing_key.clone();
+        signed_token(&signing_key, &self.base, audience, nonce, mode)
+    }
+
+    // Retires the signing key: the JWKS lists only the new one from here on.
+    pub fn rotate_signing_key(&self) {
+        self.state.lock().unwrap().signing_key = signing_key();
     }
 
     pub async fn connect(
@@ -343,6 +339,12 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+fn signing_key() -> Arc<CoreEdDsaPrivateSigningKey> {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let pem = key.to_pkcs8_pem(Default::default()).unwrap();
+    Arc::new(CoreEdDsaPrivateSigningKey::from_ed25519_pem(&pem, None).unwrap())
 }
 
 fn signed_token(
@@ -675,7 +677,6 @@ async fn endpoint(
     request: hyper::Request<hyper::body::Incoming>,
     base: String,
     shared: Arc<Mutex<FixtureState>>,
-    signing_key: Arc<CoreEdDsaPrivateSigningKey>,
 ) -> Result<hyper::Response<BoxBody<Bytes, std::io::Error>>, Infallible> {
     let path = request.uri().path().to_owned();
     let authorization = request
@@ -705,6 +706,7 @@ async fn endpoint(
         release.notified().await;
     }
     let mut state = shared.lock().unwrap();
+    let signing_key = state.signing_key.clone();
     let (status, content_type, result) = match path.as_str() {
         "/.well-known/openid-configuration" => (200, "application/json", json!({"issuer":base,"authorization_endpoint":format!("{base}/authorize"),"token_endpoint":format!("{base}/token"),"jwks_uri":format!("{base}/jwks"),"revocation_endpoint":format!("{}/revoke",base.replacen("http:","https:",1)),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["EdDSA"]}).to_string()),
         "/jwks" => (200, "application/json", json!({"keys":[signing_key.as_verification_key()]}).to_string()),

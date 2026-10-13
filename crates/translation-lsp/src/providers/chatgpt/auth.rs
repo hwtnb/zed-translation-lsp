@@ -414,15 +414,18 @@ impl Auth {
                 }
             };
             if let Some(token) = response.id_token() {
-                // The retained token was verified on sign-in. Recheck its signed
-                // identity/nonce without requiring this expired login hint to be
-                // a current session. Never decode an unverified JWT payload.
+                // The saved token gives the identity and nonce of the sign-in. Its
+                // signature and expiry were checked before it was saved, and are not
+                // checked again: OpenAI may have retired the key that signed it, and
+                // the refresh token it is stored with is trusted the same way. Read
+                // no other token without checking its signature.
                 let old: CoreIdToken =
                     serde_json::from_value(serde_json::Value::String(previous.id_token.clone()))
                         .map_err(|_| Error::failed("Saved ID token is invalid"))?;
                 let mut original_nonce = None;
                 let historical = client
                     .id_token_verifier()
+                    .insecure_disable_signature_check()
                     .set_time_fn(|| std::time::UNIX_EPOCH.into());
                 let old_claims = old
                     .claims(&historical, |nonce: Option<&Nonce>| {
@@ -951,6 +954,92 @@ mod tests {
         let state = auth.store.snapshot().unwrap().unwrap().state;
         assert!(state.registrations[&id].credentials.is_none());
         assert_eq!(state.registrations[&id].client_id, "oaiapp_synthetic");
+    }
+
+    fn saved_credentials(auth: &Auth, id: Uuid) -> Credentials {
+        auth.store.snapshot().unwrap().unwrap().state.registrations[&id]
+            .credentials
+            .clone()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_is_saved_after_the_key_that_signed_the_saved_id_token_is_retired() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        let id = fixture.connected(&auth, 0).await;
+        let key = auth.key().unwrap();
+        let before = saved_credentials(&auth, id).id_token;
+        fixture.rotate_signing_key();
+        let access = auth.access(&key).await.unwrap();
+        assert_eq!(access.credentials.refresh_token, "synthetic-refresh-1");
+        let saved = saved_credentials(&auth, id);
+        assert_eq!(saved.access_token, "synthetic-access-1");
+        assert_eq!(saved.refresh_token, "synthetic-refresh-1");
+        assert_ne!(saved.id_token, before);
+        assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_with_an_unacceptable_id_token_is_not_saved_with_or_without_the_old_key() {
+        for retired in [false, true] {
+            for mode in [
+                "signature",
+                "issuer",
+                "audience",
+                "expired",
+                "nonce",
+                "subject",
+            ] {
+                let fixture = Fixture::new().await;
+                let auth = fixture.auth();
+                let id = fixture.connected(&auth, 0).await;
+                let key = auth.key().unwrap();
+                if retired {
+                    fixture.rotate_signing_key();
+                }
+                fixture.state.lock().unwrap().mode = mode.into();
+                let error = auth.access(&key).await.err().unwrap();
+                assert_eq!(
+                    error.to_string(),
+                    if mode == "subject" {
+                        "Refreshed ChatGPT identity does not match the registration"
+                    } else {
+                        "Refreshed ChatGPT ID token is invalid"
+                    },
+                    "mode {mode}, old key retired: {retired}"
+                );
+                assert_eq!(fixture.state.lock().unwrap().refreshes, 1);
+                assert_eq!(
+                    saved_credentials(&auth, id).refresh_token,
+                    "synthetic-refresh-0"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_still_compares_the_saved_identity_with_the_registration() {
+        let fixture = Fixture::new().await;
+        let auth = fixture.auth();
+        let id = fixture.connected(&auth, 0).await;
+        let key = auth.key().unwrap();
+        let mut locked = auth.store.lock(false).await.unwrap().unwrap();
+        let registration = locked.state.registrations.get_mut(&id).unwrap();
+        registration.credentials.as_mut().unwrap().id_token =
+            fixture.id_token("oaiapp_synthetic", "nonce", "subject");
+        locked.save().unwrap();
+        drop(locked);
+        fixture.rotate_signing_key();
+        let error = auth.access(&key).await.err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Saved ChatGPT identity does not match the registration"
+        );
+        assert_eq!(
+            saved_credentials(&auth, id).refresh_token,
+            "synthetic-refresh-0"
+        );
     }
 
     #[test]
