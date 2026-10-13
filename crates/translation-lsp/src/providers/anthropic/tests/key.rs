@@ -2,6 +2,7 @@ use std::{
     fs,
     path::Path,
     sync::{Mutex, atomic::Ordering},
+    time::{Duration, SystemTime},
 };
 
 use super::{PAUSED, automatic, translate};
@@ -240,6 +241,184 @@ fn unlocated_directory_and_read_failure_are_settings_errors() {
         assert!(error.to_string().starts_with(expected), "{error}");
         assert!(!format!("{error:?}").contains("synthetic failure"));
     }
+}
+
+// The same length as `FILE_KEY`, so that the size of the file tells nothing.
+const NEXT_KEY: &str = "sk-ant-synthetic-next-key";
+
+// The key that the file is found to hold now.
+fn held(file: &KeyFile) -> Result<String, Error> {
+    file.read().map(|(key, _)| key.text.to_string())
+}
+
+// Writes into the file that is there, as an editor that saves in place does.
+fn rewrite(path: &Path, contents: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+    std::io::Write::write_all(&mut file, contents.as_bytes()).unwrap();
+}
+
+fn set_modified(path: &Path, time: SystemTime) {
+    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_modified(time).unwrap();
+}
+
+// Gives the file a modification time long past, whatever the clock of the
+// file system counts in, and returns the time as the file system kept it.
+fn age(path: &Path) -> SystemTime {
+    set_modified(path, SystemTime::now() - Duration::from_secs(3600));
+    fs::metadata(path).unwrap().modified().unwrap()
+}
+
+#[test]
+fn settled_file_with_the_same_attributes_is_not_opened_again() {
+    assert_eq!(FILE_KEY.len(), NEXT_KEY.len());
+    let directory = KeyDirectory::with_key(FILE_KEY);
+    let written = age(&directory.file());
+    let file = KeyFile::new(Ok(directory.path.clone()));
+    let (_, first) = file.read().unwrap();
+
+    // Nothing writes a file like this: another key of the same length in the
+    // same file, with the old time put back. Only opening the file could tell,
+    // so the key from before shows that it was not opened.
+    rewrite(&directory.file(), NEXT_KEY);
+    set_modified(&directory.file(), written);
+    assert_eq!(fs::read(directory.file()).unwrap(), NEXT_KEY.as_bytes());
+    for _ in 0..3 {
+        let (key, id) = file.read().unwrap();
+        assert_eq!((&*key.text, id), (FILE_KEY, first));
+    }
+
+    // Any other time than the one remembered has the file opened.
+    set_modified(&directory.file(), written - Duration::from_secs(60));
+    let (key, second) = file.read().unwrap();
+    assert_eq!(&*key.text, NEXT_KEY);
+    assert_ne!(second, first);
+}
+
+#[test]
+fn file_written_a_moment_ago_is_opened_every_time() {
+    let directory = KeyDirectory::with_key(FILE_KEY);
+    let file = KeyFile::new(Ok(directory.path.clone()));
+    // Two keys of one length written in turn, faster than the modification
+    // time of some file systems ticks: neither the time nor the size has to
+    // differ from one to the next.
+    for round in 0..40 {
+        let key = if round % 2 == 0 { NEXT_KEY } else { FILE_KEY };
+        rewrite(&directory.file(), key);
+        assert_eq!(held(&file).unwrap(), key, "round {round}");
+    }
+    // The same holds for a time ahead of the clock, however long it stays.
+    set_modified(
+        &directory.file(),
+        SystemTime::now() + Duration::from_secs(3600),
+    );
+    let ahead = fs::metadata(directory.file()).unwrap().modified().unwrap();
+    assert_eq!(held(&file).unwrap(), FILE_KEY);
+    rewrite(&directory.file(), NEXT_KEY);
+    set_modified(&directory.file(), ahead);
+    assert_eq!(held(&file).unwrap(), NEXT_KEY);
+}
+
+#[test]
+fn remembered_key_gives_way_to_a_file_replaced_or_written_in_place() {
+    let directory = KeyDirectory::with_key(FILE_KEY);
+    let file = KeyFile::new(Ok(directory.path.clone()));
+    let remember = |key: &str| {
+        age(&directory.file());
+        assert_eq!(held(&file).unwrap(), key);
+        assert_eq!(held(&file).unwrap(), key);
+    };
+
+    // Replaced by a rename, as the key command saves.
+    remember(FILE_KEY);
+    directory.replace(NEXT_KEY);
+    assert_eq!(held(&file).unwrap(), NEXT_KEY);
+
+    // Written in place with the same length, then with another.
+    remember(NEXT_KEY);
+    rewrite(&directory.file(), FILE_KEY);
+    assert_eq!(held(&file).unwrap(), FILE_KEY);
+    remember(FILE_KEY);
+    rewrite(&directory.file(), KEY);
+    assert_eq!(held(&file).unwrap(), KEY);
+
+    // The same key written again is still the same key.
+    let (_, before) = file.read().unwrap();
+    remember(KEY);
+    directory.replace(&format!("{KEY}\n"));
+    assert_eq!(file.read().unwrap().1, before);
+}
+
+#[test]
+fn remembered_key_is_not_used_once_the_file_is_gone_or_of_another_kind() {
+    let directory = KeyDirectory::with_key(FILE_KEY);
+    let file = KeyFile::new(Ok(directory.path.clone()));
+    age(&directory.file());
+    let (_, first) = file.read().unwrap();
+
+    fs::remove_file(directory.file()).unwrap();
+    assert!(held(&file).unwrap_err().to_string().starts_with(MISSING));
+    fs::create_dir(directory.file()).unwrap();
+    assert!(
+        held(&file)
+            .unwrap_err()
+            .to_string()
+            .starts_with(NOT_PRIVATE)
+    );
+    fs::remove_dir(directory.file()).unwrap();
+
+    // The key that comes back is read, and counts as another.
+    directory.replace(FILE_KEY);
+    age(&directory.file());
+    let (key, second) = file.read().unwrap();
+    assert_eq!(&*key.text, FILE_KEY);
+    assert_ne!(second, first);
+}
+
+#[cfg(unix)]
+#[test]
+fn remembered_key_is_not_used_once_the_file_or_its_directory_stops_being_private() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let directory = KeyDirectory::with_key(FILE_KEY);
+    let file = KeyFile::new(Ok(directory.path.clone()));
+    let set = |path: &Path, mode| {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let refused = || {
+        let error = held(&file).unwrap_err().to_string();
+        assert!(error.starts_with(NOT_PRIVATE), "{error}");
+    };
+    // The checks come before the remembered key, each time it is asked for.
+    let remember = || {
+        age(&directory.file());
+        assert_eq!(held(&file).unwrap(), FILE_KEY);
+        assert_eq!(held(&file).unwrap(), FILE_KEY);
+    };
+
+    remember();
+    set(&directory.file(), 0o644);
+    refused();
+    set(&directory.file(), 0o600);
+
+    remember();
+    set(&directory.path, 0o755);
+    refused();
+    set(&directory.path, 0o700);
+
+    remember();
+    let elsewhere = KeyDirectory::with_key(FILE_KEY);
+    fs::remove_file(directory.file()).unwrap();
+    symlink(elsewhere.file(), directory.file()).unwrap();
+    refused();
+    fs::remove_file(directory.file()).unwrap();
+
+    directory.replace(FILE_KEY);
+    remember();
 }
 
 // The file is read for every request: a key saved, replaced, or removed while

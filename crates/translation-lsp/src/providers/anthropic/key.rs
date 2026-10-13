@@ -3,18 +3,24 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
 };
 
 use reqwest::header::HeaderValue;
 
 use crate::providers::{
-    credential_directory::{self, check_path},
+    credential_directory::{self, Revision, check_path, inspect},
     error::{Error, credentials::CredentialError},
 };
 
 const FILE: &str = "anthropic-api-key";
 // A key is about a hundred bytes.
 const MAX_BYTES: usize = 4096;
+// How old a file must be before its attributes stand for its contents: one
+// written twice within a tick of its modification time changes without a
+// change in them. FAT has the coarsest tick, 2 seconds; the rest allows for a
+// clock that is set back a little.
+const SETTLED: Duration = Duration::from_secs(3);
 
 // The credential directory as the documentation writes it. The messages name
 // it this way, never by the resolved path, which holds the user's name.
@@ -102,6 +108,7 @@ pub(super) const REJECTED: &str = concat!(
     "\" from the code actions to replace it"
 );
 
+#[derive(Clone)]
 pub(super) struct ApiKey {
     pub header: HeaderValue,
     pub text: Arc<str>,
@@ -115,16 +122,14 @@ pub(super) enum NotKey {
 }
 
 impl ApiKey {
-    // Reads the key from its file in the credential directory. Reading creates
-    // and changes nothing there.
-    //
     // No environment variable supplies the key. Zed writes the environment of a
     // language server that fails to start to its log, and `ANTHROPIC_API_KEY`
     // would also move the user's Claude Code usage to API billing.
-    fn read(directory: &Path) -> Result<Self, Error> {
-        let Some(bytes) = contents(directory).map_err(unusable)? else {
-            return Err(Error::configuration(MISSING));
-        };
+    fn read(path: &Path) -> Result<Self, Error> {
+        let mut bytes = Vec::new();
+        File::open(path)
+            .and_then(|file| file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes))
+            .map_err(|source| unusable(CredentialError::io("read key", source)))?;
         let text = std::str::from_utf8(&bytes).map_err(|_| Error::configuration(INVALID))?;
         Self::parse(text).map_err(|error| {
             Error::configuration(match error {
@@ -172,8 +177,8 @@ impl KeyId {
     pub const SYNTHETIC: Self = Self(0);
 }
 
-// The key file, read again whenever the key is needed: another process saves
-// and replaces it, and the user may edit or remove it at any time.
+// The key file, looked at again whenever the key is needed: another process
+// saves and replaces it, and the user may edit or remove it at any time.
 #[derive(Clone)]
 pub(super) struct KeyFile {
     directory: Result<PathBuf, Error>,
@@ -184,7 +189,9 @@ pub(super) struct KeyFile {
 // finds no usable key forgets it, so the same key saved again counts as new.
 #[derive(Default)]
 struct Seen {
-    key: Option<Arc<str>>,
+    key: Option<ApiKey>,
+    // Set only when the file had settled by the time it was read.
+    file: Option<Revision>,
     count: u64,
 }
 
@@ -204,19 +211,47 @@ impl KeyFile {
         // Readers take turns, so that two of them cannot see a replaced key in
         // different orders and count it twice.
         let mut seen = self.seen.lock().unwrap();
-        match self.directory().and_then(ApiKey::read) {
-            Ok(key) => {
-                if seen.key.as_ref() != Some(&key.text) {
-                    seen.count += 1;
-                    seen.key = Some(key.text.clone());
-                }
-                Ok((key, KeyId(seen.count)))
-            }
+        match self
+            .directory()
+            .and_then(|directory| seen.current(directory))
+        {
+            Ok(key) => Ok((key, KeyId(seen.count))),
             Err(error) => {
-                seen.key = None;
+                (seen.key, seen.file) = (None, None);
                 Err(error)
             }
         }
+    }
+}
+
+impl Seen {
+    // The directory and the file are checked every time. The file is opened
+    // only when its attributes differ from those of the last read.
+    fn current(&mut self, directory: &Path) -> Result<ApiKey, Error> {
+        let path = directory.join(FILE);
+        let Some(metadata) = attributes(directory, &path).map_err(unusable)? else {
+            return Err(Error::configuration(MISSING));
+        };
+        let file = Revision::of(&metadata).ok();
+        if let Some(key) = &self.key
+            && file.is_some()
+            && file == self.file
+        {
+            return Ok(key.clone());
+        }
+        // The time is taken before the read, so a file that counts as settled
+        // was settled when it was read.
+        let settled = file.filter(|file| {
+            SystemTime::now()
+                .duration_since(file.modified())
+                .is_ok_and(|age| age >= SETTLED)
+        });
+        let key = ApiKey::read(&path)?;
+        if self.key.as_ref().map(|seen| &seen.text) != Some(&key.text) {
+            self.count += 1;
+        }
+        (self.key, self.file) = (Some(key.clone()), settled);
+        Ok(key)
     }
 }
 
@@ -228,20 +263,12 @@ pub(super) fn unusable(error: CredentialError) -> Error {
     })
 }
 
-// The bytes of the key file, or `None` when the directory or the file is missing.
-fn contents(directory: &Path) -> Result<Option<Vec<u8>>, CredentialError> {
+// `None` when the directory or the file is missing.
+fn attributes(directory: &Path, file: &Path) -> Result<Option<fs::Metadata>, CredentialError> {
     if !check_path(directory, true)? {
         return Ok(None);
     }
-    let path = directory.join(FILE);
-    if !check_path(&path, false)? {
-        return Ok(None);
-    }
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes))
-        .map_err(|source| CredentialError::io("read key", source))?;
-    Ok(Some(bytes))
+    inspect(file, false)
 }
 
 // Whether there is a key file to replace. It may have any permissions, since a

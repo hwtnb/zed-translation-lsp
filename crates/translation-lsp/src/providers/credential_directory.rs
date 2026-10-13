@@ -2,6 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use uuid::Uuid;
@@ -15,13 +16,50 @@ pub(crate) fn locate() -> Result<PathBuf, CredentialError> {
     Ok(root.join("translation-lsp"))
 }
 
+// Tells one state of a file from another without reading it, unless the file
+// was written again within the same tick of its modification time.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Revision {
+    modified: SystemTime,
+    length: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl Revision {
+    pub fn of(metadata: &fs::Metadata) -> Result<Self, CredentialError> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            modified: metadata
+                .modified()
+                .map_err(|source| CredentialError::io("read modification time", source))?,
+            length: metadata.len(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        })
+    }
+
+    pub fn modified(&self) -> SystemTime {
+        self.modified
+    }
+}
+
 // Whether the directory or the file inside it exists. One that exists must be
 // private: not a symbolic link and, on Unix, open to its owner alone. The file
 // must be a regular file; reading a named pipe would wait for its writer.
 pub(crate) fn check_path(path: &Path, directory: bool) -> Result<bool, CredentialError> {
+    Ok(inspect(path, directory)?.is_some())
+}
+
+// The same check, with what it found out about a path that exists.
+pub(crate) fn inspect(
+    path: &Path,
+    directory: bool,
+) -> Result<Option<fs::Metadata>, CredentialError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(CredentialError::io("inspect path", source)),
     };
     let expected = if directory {
@@ -39,7 +77,7 @@ pub(crate) fn check_path(path: &Path, directory: bool) -> Result<bool, Credentia
             return Err(CredentialError::Permissions);
         }
     }
-    Ok(true)
+    Ok(Some(metadata))
 }
 
 // A directory that exists must be private already: its permissions are the

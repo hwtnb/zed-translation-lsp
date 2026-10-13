@@ -69,7 +69,7 @@ The server opens Terminal on macOS and a new console window on Windows. On Linux
 
 The notice that follows `Save Anthropic API key` or `Replace Anthropic API key` shows a command: the path of the language server, then `anthropic-key`. When no window appears, run that command in a terminal yourself. That is the case on Linux when none of the terminals above starts, and in remote development, where the server runs on the remote machine and opens no window on yours; run the command in a terminal on the remote machine. In PowerShell, put `&` before a path in quotation marks. The command asks for the key in the terminal it runs in and fails where there is none; it does not read the key from a pipe.
 
-The key is saved in the file `anthropic-api-key` in the server's credential directory, and the server reads the file each time it needs the key. The file holds the key alone; whitespace and line breaks around the key are ignored. A file that you create or edit yourself is read the same way.
+The key is saved in the file `anthropic-api-key` in the server's credential directory, and the server checks the directory and the file each time it needs the key. It reads the file again when the modification time, the size, or, on macOS and Linux, the inode of the file has changed. The file holds the key alone; whitespace and line breaks around the key are ignored. A file that you create or edit yourself is read the same way.
 
 | OS | Key file |
 | --- | --- |

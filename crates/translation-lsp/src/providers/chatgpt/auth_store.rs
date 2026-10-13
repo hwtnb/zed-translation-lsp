@@ -1,10 +1,10 @@
 use crate::providers::{
-    credential_directory::{self, check_path},
+    credential_directory::{self, Revision, check_path},
     error::credentials::CredentialError,
 };
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{File, OpenOptions, TryLockError},
     io::Read,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -54,14 +54,6 @@ pub(crate) struct Credentials {
     pub scopes: Vec<String>,
     pub expires_in: u64,
     pub saved_at: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct Revision {
-    modified: SystemTime,
-    length: u64,
-    #[cfg(unix)]
-    inode: u64,
 }
 
 pub(crate) struct Snapshot {
@@ -254,7 +246,7 @@ impl AuthStore {
         state.validate()?;
         Ok(Some(Snapshot {
             state,
-            revision: revision(&metadata)?,
+            revision: Revision::of(&metadata)?,
         }))
     }
 }
@@ -286,7 +278,7 @@ impl LockedStore {
         if bytes.len() as u64 > MAX_AUTH_BYTES {
             return Err(CredentialError::Invalid);
         }
-        revision(&credential_directory::replace(
+        Revision::of(&credential_directory::replace(
             &self.store.directory,
             "auth.json",
             &bytes,
@@ -300,19 +292,6 @@ impl Drop for LockedStore {
     }
 }
 
-fn revision(metadata: &fs::Metadata) -> Result<Revision, CredentialError> {
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt;
-    Ok(Revision {
-        modified: metadata
-            .modified()
-            .map_err(|source| CredentialError::io("read modification time", source))?,
-        length: metadata.len(),
-        #[cfg(unix)]
-        inode: metadata.ino(),
-    })
-}
-
 pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -323,6 +302,7 @@ pub(crate) fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[tokio::test(flavor = "current_thread")]
     async fn read_only_snapshots_coexist_and_exclude_credential_writers() {
