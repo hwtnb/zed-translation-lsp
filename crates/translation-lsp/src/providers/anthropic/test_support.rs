@@ -3,6 +3,8 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    fs,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -27,6 +29,55 @@ use tokio::{
 use super::AnthropicProvider;
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
+
+// A credential directory of a test's own, removed with the value. Tests read
+// the key file here and never in the directory of the user.
+pub(crate) struct KeyDirectory {
+    pub path: PathBuf,
+}
+
+impl KeyDirectory {
+    // A private directory without a key file.
+    pub fn new() -> Self {
+        let path = std::env::temp_dir().join(format!("zed-anthropic-key-{}", uuid::Uuid::new_v4()));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path).unwrap();
+        Self { path }
+    }
+
+    // A private directory whose private key file holds `contents`.
+    pub fn with_key(contents: impl AsRef<[u8]>) -> Self {
+        let directory = Self::new();
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        std::io::Write::write_all(
+            &mut options.open(directory.file()).unwrap(),
+            contents.as_ref(),
+        )
+        .unwrap();
+        directory
+    }
+
+    pub fn file(&self) -> PathBuf {
+        self.path.join("anthropic-api-key")
+    }
+}
+
+impl Drop for KeyDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
 
 pub(crate) struct Record {
     pub path: String,

@@ -2,7 +2,7 @@
 
 [English](../../providers/anthropic.md)
 
-`anthropic` プロバイダーを選ぶと、Anthropic APIを通じてClaudeで翻訳します。APIキーは言語サーバーの環境変数で渡します。
+`anthropic` プロバイダーを選ぶと、Anthropic APIを通じてClaudeで翻訳します。APIキーは、言語サーバーが読むファイルに保存します。
 
 ## 最小の設定
 
@@ -10,9 +10,6 @@
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "env": { "TRANSLATION_LSP_ANTHROPIC_API_KEY": "sk-ant-…" }
-      },
       "initialization_options": {
         "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
       }
@@ -21,7 +18,7 @@
 }
 ```
 
-[設定](../configuration.md)で説明するほかの `initialization_options` は、同じように使えます。
+[設定](../configuration.md)で説明するほかの `initialization_options` は、同じように使えます。APIキーは設定に書きません。[認証](#認証)のとおりに保存してください。
 
 ## 設定項目
 
@@ -59,11 +56,51 @@
 
 ## 認証
 
-サーバーは、自分のプロセスの環境変数 `TRANSLATION_LSP_ANTHROPIC_API_KEY` だけから、起動時に一度だけキーを読みます。上の例のように `lsp.translation-lsp.binary.env` に書き、言語サーバーを再起動してください。
+サーバーは、認証情報のディレクトリにあるファイル `anthropic-api-key` だけから、起動時に一度だけキーを読みます。ファイルにはキーだけを入れます。キーの前後の空白と改行は無視します。
 
-サーバーは `ANTHROPIC_API_KEY` をあえて読みません。Claude Codeはこの名前の環境変数をサブスクリプションのログインより優先するため、シェル全体に設定すると、ふだんのClaude Codeの利用がAPIの課金に切り替わるからです。
+| OS | キーのファイル |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\translation-lsp\anthropic-api-key` |
+| macOS | `~/Library/Application Support/translation-lsp/anthropic-api-key` |
+| Linux | `$XDG_CONFIG_HOME/translation-lsp/anthropic-api-key`。未設定の場合は `~/.config/translation-lsp/anthropic-api-key` |
 
-キーがなくてもサーバーは起動し、翻訳を依頼すると、APIへ接続せずに環境変数名を示す設定エラーを返します。
+キーは、[Claude Console](https://platform.claude.com/settings/keys)で、1つのワークスペース用に作ってください。サーバーはワークスペースのIDを送らないため、ワークスペースを1つに絞っていないキーでの要求は、APIがすべて拒否します。キーには有効期限を付けられます。期限が切れたキーでの要求は、拒否されたキーとして失敗します。
+
+macOSでは、キーをクリップボードにコピーしてから、ターミナルで次のコマンドを実行します。
+
+```sh
+dir=~/Library/Application\ Support/translation-lsp
+mkdir -p "$dir" && chmod 700 "$dir"
+(umask 077; pbpaste > "$dir/anthropic-api-key")
+chmod 600 "$dir/anthropic-api-key"
+```
+
+Linuxでは、次のコマンドを実行し、ターミナルにキーを貼り付けてEnterを押し、続けてCtrl+Dを押します。
+
+```sh
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/translation-lsp"
+mkdir -p "$dir" && chmod 700 "$dir"
+(umask 077; cat > "$dir/anthropic-api-key")
+chmod 600 "$dir/anthropic-api-key"
+```
+
+Windowsでは、キーをクリップボードにコピーしてから、PowerShellで次のコマンドを実行します。
+
+```powershell
+$dir = "$env:LOCALAPPDATA\translation-lsp"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Get-Clipboard | Set-Content -Encoding ascii "$dir\anthropic-api-key"
+```
+
+これらのコマンドでは、キーがコマンドの一部にならないため、シェルの履歴に残りません。
+
+macOSとLinuxでは、ディレクトリのモードが `0700`、ファイルのモードが `0600` にちょうど一致している必要があります。どちらもシンボリックリンクにはできません。Windowsでは、どちらもシンボリックリンクにはできません。誰がアクセスできるかは、サーバーは確かめません。
+
+キーを替えるには、同じファイルに新しいキーを書き込み、言語サーバーを再起動してください。
+
+サーバーはキーを環境変数から読まないため、キーをZedの設定に書くことはありません。`ANTHROPIC_API_KEY` も読みません。Claude Codeはこの名前の環境変数をサブスクリプションのログインより優先するため、シェル全体に設定すると、ふだんのClaude Codeの利用がAPIの課金に切り替わるからです。
+
+使えるキーがなくてもサーバーは起動し、翻訳を依頼すると、APIへ接続せずに設定エラーを返します。エラーは、ファイルがないのか、ファイルやディレクトリの権限が緩いのか、ファイルが空かキー以外のものを含むのかを示します。
 
 ## 費用と使用量
 
@@ -81,7 +118,7 @@ APIの利用は、キーを発行したClaude Consoleの組織に課金されま
 
 ## エラーと停止
 
-請求のエラー、拒否されたキー、存在しないモデル、権限のエラーでは、自動翻訳を停止し、HTTPの状態コード、APIのエラー種別、要求IDを報告します。Claude Consoleで請求の問題を解消するか、`provider.model` または `provider.document.model` を直したあと、選択範囲または文書の翻訳を明示的に実行してください。それが成功すると自動翻訳を再開します。キーや設定を変更した場合は、言語サーバーの再起動が必要です。
+請求のエラー、拒否されたキー、ワークスペースを1つに絞っていないキー、存在しないモデル、権限のエラーでは、自動翻訳を停止し、HTTPの状態コード、APIのエラー種別、要求IDを報告します。Claude Consoleで請求の問題を解消するか、`provider.model` または `provider.document.model` を直したあと、選択範囲または文書の翻訳を明示的に実行してください。それが成功すると自動翻訳を再開します。キーや設定を変更した場合は、言語サーバーの再起動が必要です。
 
 レート制限と過負荷は、[自動の再試行](../behavior.md#自動の再試行)のとおり一度だけ再試行します。モデルが文章の翻訳を断った場合は、報告された分類を添えて失敗とし、再試行せず、自動翻訳も停止しません。
 
@@ -89,4 +126,4 @@ APIの利用は、キーを発行したClaude Consoleの組織に課金されま
 
 ## 保存するデータ
 
-キーは、[認証](#認証)のとおり `lsp.translation-lsp.binary.env` に書きます。この方法では、キーがZedの設定ファイルに平文で入ります。設定ファイルを共有リポジトリや、同期しているドットファイルに含めないでください。サーバーがキーをログ、エラー文、ディスクに書くことはありません。
+キーは、[認証](#認証)のとおりに自分で作るファイル `anthropic-api-key` に、平文で入ります。ChatGPTプロバイダーが認証情報を保存するのと同じディレクトリです。サーバーはこのファイルを読むだけで、ファイルもディレクトリも、作らず、書き換えず、削除しません。サーバーがキーをログ、エラー文、ディスクのほかの場所に書くことはありません。

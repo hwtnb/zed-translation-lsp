@@ -7,6 +7,7 @@ use super::*;
 use crate::providers::error::{ErrorKind, Notification};
 
 mod document;
+mod key;
 mod response;
 
 const SOURCE: &str = "Private source sentence.";
@@ -147,7 +148,7 @@ async fn http_failures_follow_the_documented_status_and_type_table() {
             documented(401, "authentication_error"),
             Some("authentication_error"),
             ErrorKind::Configuration,
-            API_KEY_VARIABLE,
+            "Check the key in anthropic-api-key",
         ),
         (
             documented(402, "billing_error"),
@@ -208,7 +209,7 @@ async fn http_failures_follow_the_documented_status_and_type_table() {
             Reply::new(401, String::new()),
             None,
             ErrorKind::Configuration,
-            API_KEY_VARIABLE,
+            "Check the key in anthropic-api-key",
         ),
         (
             documented(418, "future_error"),
@@ -480,51 +481,55 @@ async fn billing_stop_pauses_automatic_work_until_an_explicit_translation_succee
     automatic(&provider).unwrap();
 }
 
+// The message is the one the API documents for a request without the
+// workspace header, made with a key that is not for a single workspace.
 #[tokio::test(flavor = "current_thread")]
-async fn missing_or_unusable_key_is_a_configuration_error_without_any_request() {
-    let fixture = Fixture::new().await;
-    for key in [
-        None,
-        Some(""),
-        Some(" \n"),
-        Some("sk-ant synthetic"),
-        Some("sk-ant-合成"),
-    ] {
-        let provider = AnthropicProvider::synthetic(format!("{}/v1", fixture.base), key);
-        assert_eq!(provider.context().unwrap(), Context::Anthropic);
-        let mut errors = Vec::new();
-        for intent in [Intent::Automatic, Intent::Explicit] {
-            errors.push(provider.admit(&Context::Anthropic, intent).unwrap_err());
-            errors.push(translate(&provider, intent).await.unwrap_err());
-        }
-        for error in errors {
-            assert_eq!(error.kind(), ErrorKind::Configuration);
-            let message = error.to_string();
-            assert!(message.contains(API_KEY_VARIABLE), "{message}");
-            assert!(message.contains("lsp.translation-lsp.binary.env"));
-            assert!(message.contains("restart the language server"));
-            // Only a restart can supply the key, so no retry is suggested.
-            assert!(!message.contains(PAUSED));
-            if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
-                assert!(!message.contains(key));
-                assert!(!format!("{error:?}").contains(key));
-            }
-        }
-    }
-    assert_eq!(fixture.calls(), 0);
-    // Surrounding whitespace from a settings file is not part of the key.
-    let provider =
-        AnthropicProvider::synthetic(format!("{}/v1", fixture.base), Some(&format!(" {KEY}\n")));
-    translate(&provider, Intent::Explicit).await.unwrap();
-    assert_eq!(
-        fixture.state.lock().unwrap().records[0].headers["x-api-key"],
-        KEY
+async fn key_for_several_workspaces_asks_for_a_single_workspace_key() {
+    const DETAIL: &str = concat!(
+        "anthropic-workspace-id is required when authenticating with an identity-linked API ",
+        "key; send the id of the workspace this request acts in."
     );
+    let fixture = Fixture::new().await;
+    fixture.always(Some(Reply::failure(400, "invalid_request_error", DETAIL)));
+    let provider = fixture.provider();
+    let error = translate(&provider, Intent::Automatic).await.unwrap_err();
+    let message = error.to_string();
+    assert_eq!(error.kind(), ErrorKind::Configuration, "{message}");
+    assert!(
+        message.starts_with(&format!("Anthropic HTTP 400: {DETAIL}")),
+        "{message}"
+    );
+    assert!(message.contains("(type=invalid_request_error)"));
+    assert!(message.contains("Create a key for a single workspace in the Claude Console"));
+    assert!(message.contains("anthropic-api-key"));
+    assert!(message.contains("restart the language server"));
+    assert!(!message.contains("The API key was rejected"));
+    assert!(!message.contains(KEY));
+    // Every request would fail the same way, so automatic translation stops.
+    assert!(message.contains(PAUSED));
+    assert_eq!(
+        automatic(&provider).unwrap_err().kind(),
+        ErrorKind::Configuration
+    );
+    assert_eq!(fixture.calls(), 1);
+
+    // Another invalid request stays an ordinary failure of that request.
+    let fixture = Fixture::new().await;
+    fixture.always(Some(Reply::failure(
+        400,
+        "invalid_request_error",
+        "max_tokens: must be greater than 0",
+    )));
+    let provider = fixture.provider();
+    let error = translate(&provider, Intent::Automatic).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Failed);
+    assert!(!error.to_string().contains("workspace"));
+    automatic(&provider).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn key_stays_out_of_debug_output_and_network_errors() {
-    let key = ApiKey::parse(Some(KEY.into())).unwrap();
+    let key = ApiKey::synthetic(Some(KEY)).unwrap();
     assert_eq!(format!("{key:?}"), "ApiKey([redacted])");
     assert!(key.header.is_sensitive());
     assert!(!format!("{:?}", key.header).contains(KEY));

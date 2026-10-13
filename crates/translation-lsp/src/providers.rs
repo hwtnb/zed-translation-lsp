@@ -1,6 +1,7 @@
 pub(crate) mod admission;
 pub(crate) mod anthropic;
 pub(crate) mod chatgpt;
+pub(crate) mod credential_directory;
 pub(crate) mod error;
 pub(crate) mod mock;
 pub(crate) mod prompt;

@@ -16,7 +16,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## CIとリリース前の確認
 
-[CIワークフロー](../../.github/workflows/ci.yml)はWindows・macOS・Linuxそれぞれでワークスペース全体のテスト、fmt、Clippy、ネイティブとWASMのリリースビルドを実行します。1 OSでの成功だけを他OSの成功とは扱いません。リリース前には3 OSのCI結果に加え、各OSのZedで拡張導入・ネイティブ起動・認証・コメント翻訳・文書翻訳の表示と保存を確認してください。HTTP/OIDCのテスト用環境は合成の認証情報を使うため、ChatGPTアカウントもAnthropicのAPIキーも不要です。テストは実際のAPIを呼びません。stdioテストは、サーバーのプロセスから `TRANSLATION_LSP_ANTHROPIC_API_KEY` を取り除きます。
+[CIワークフロー](../../.github/workflows/ci.yml)はWindows・macOS・Linuxそれぞれでワークスペース全体のテスト、fmt、Clippy、ネイティブとWASMのリリースビルドを実行します。1 OSでの成功だけを他OSの成功とは扱いません。リリース前には3 OSのCI結果に加え、各OSのZedで拡張導入・ネイティブ起動・認証・コメント翻訳・文書翻訳の表示と保存を確認してください。HTTP/OIDCのテスト用環境は合成の認証情報を使うため、ChatGPTアカウントもAnthropicのAPIキーも不要です。テストは実際のAPIを呼ばず、利用者の認証情報のディレクトリも読みません。サーバーのプロセスを起動するテストはモックのプロバイダーだけを起動し、ChatGPTとAnthropicのプロバイダーのテストは、テスト用のディレクトリを使います。
 
 CIでは、テストを1つずつ実行します（`RUST_TEST_THREADS` が `1`）。時間を測るテストが、ほかのテストとランナーのCPUを取り合わないようにするためです。
 

@@ -1,9 +1,12 @@
-use crate::providers::error::credentials::CredentialError;
+use crate::providers::{
+    credential_directory::{self, check_path},
+    error::credentials::CredentialError,
+};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions, TryLockError},
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -127,9 +130,8 @@ impl AuthState {
 
 impl AuthStore {
     pub fn production() -> Result<Self, CredentialError> {
-        let root = dirs::config_local_dir().ok_or(CredentialError::MissingDirectory)?;
         Ok(Self {
-            directory: root.join("translation-lsp"),
+            directory: credential_directory::locate()?,
         })
     }
 
@@ -339,25 +341,6 @@ impl Drop for LockedStore {
     fn drop(&mut self) {
         let _ = self.lock.unlock();
     }
-}
-
-fn check_path(path: &Path, directory: bool) -> Result<bool, CredentialError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(source) => return Err(CredentialError::io("inspect path", source)),
-    };
-    if metadata.file_type().is_symlink() || metadata.is_dir() != directory {
-        return Err(CredentialError::Permissions);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o777 != if directory { 0o700 } else { 0o600 } {
-            return Err(CredentialError::Permissions);
-        }
-    }
-    Ok(true)
 }
 
 fn revision(metadata: &fs::Metadata) -> Result<Revision, CredentialError> {

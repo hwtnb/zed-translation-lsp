@@ -17,6 +17,7 @@ use worker::{Finished, Job, Outcome, Task, WorkerEvent, worker};
 use std::{
     collections::HashMap,
     error::Error,
+    path::PathBuf,
     thread,
     time::{Duration, Instant},
 };
@@ -49,7 +50,8 @@ use crate::{
         AuthUiState, Context, Interaction, Output, OutputOptions, Translated, TranslationProvider,
         anthropic::{self, AnthropicProvider},
         chatgpt::{self, ChatGptProvider},
-        error::{Error as ProviderError, ErrorKind},
+        credential_directory,
+        error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
         mock::{MockOptions, MockProvider},
     },
     text::comments::Failure,
@@ -120,7 +122,7 @@ struct Server<P: TranslationProvider> {
 pub fn run_stdio() -> ServerResult<()> {
     let options = MockOptions::from_args()?;
     let (connection, io_threads) = Connection::stdio();
-    let result = serve(&connection, options);
+    let result = serve(&connection, options, credential_directory::locate());
     drop(connection);
     // Flush initialize errors too; the reader stops at the client's exit or EOF.
     let io_result = io_threads.join();
@@ -129,7 +131,13 @@ pub fn run_stdio() -> ServerResult<()> {
     Ok(())
 }
 
-fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
+// `key_directory` is where the Anthropic provider looks for its key file. Tests
+// pass a directory of their own, so that none reads the key of the user.
+fn serve(
+    connection: &Connection,
+    options: MockOptions,
+    key_directory: Result<PathBuf, CredentialError>,
+) -> ServerResult<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
     let settings =
@@ -179,6 +187,7 @@ fn serve(connection: &Connection, options: MockOptions) -> ServerResult<()> {
                 anthropic_options(model, effort, thinking, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
+                key_directory,
             )?;
             serve_initialized(connection, settings, ui, provider)
         }

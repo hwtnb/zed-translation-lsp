@@ -2,7 +2,7 @@
 
 [日本語](../ja/providers/anthropic.md)
 
-Select the `anthropic` provider to translate with Claude through the Anthropic API, and pass an API key to the language server through its environment.
+Select the `anthropic` provider to translate with Claude through the Anthropic API, and save an API key in a file that the language server reads.
 
 ## Minimal settings
 
@@ -10,9 +10,6 @@ Select the `anthropic` provider to translate with Claude through the Anthropic A
 {
   "lsp": {
     "translation-lsp": {
-      "binary": {
-        "env": { "TRANSLATION_LSP_ANTHROPIC_API_KEY": "sk-ant-…" }
-      },
       "initialization_options": {
         "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
       }
@@ -21,7 +18,7 @@ Select the `anthropic` provider to translate with Claude through the Anthropic A
 }
 ```
 
-The other `initialization_options` described under [Configuration](../configuration.md) apply unchanged.
+The other `initialization_options` described under [Configuration](../configuration.md) apply unchanged. The API key is not part of the settings; save it as described under [Authentication](#authentication).
 
 ## Settings
 
@@ -59,11 +56,51 @@ What `provider.document` changes for every provider is described under [Tab tran
 
 ## Authentication
 
-The server reads the key only from the `TRANSLATION_LSP_ANTHROPIC_API_KEY` environment variable of its own process, once at startup. Set it in `lsp.translation-lsp.binary.env` as shown above, then restart the language server.
+The server reads the key only from the file `anthropic-api-key` in its credential directory, once at startup. The file holds the key alone; whitespace and line breaks around the key are ignored.
 
-The server deliberately ignores `ANTHROPIC_API_KEY`: Claude Code prefers that variable over a subscription login, so exporting it for your whole shell would move your ordinary Claude Code usage to API billing.
+| OS | Key file |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\translation-lsp\anthropic-api-key` |
+| macOS | `~/Library/Application Support/translation-lsp/anthropic-api-key` |
+| Linux | `$XDG_CONFIG_HOME/translation-lsp/anthropic-api-key`, or `~/.config/translation-lsp/anthropic-api-key` when unset |
 
-Without a key the server still starts, and a translation request returns a settings error that names the variable without contacting the API.
+Create the key in the [Claude Console](https://platform.claude.com/settings/keys) for a single workspace. The server sends no workspace ID, so the API refuses every request made with a key that is not scoped to one workspace. You can give the key an expiration; a request with an expired key fails as a rejected key.
+
+On macOS, copy the key to the clipboard, then run these commands in a terminal:
+
+```sh
+dir=~/Library/Application\ Support/translation-lsp
+mkdir -p "$dir" && chmod 700 "$dir"
+(umask 077; pbpaste > "$dir/anthropic-api-key")
+chmod 600 "$dir/anthropic-api-key"
+```
+
+On Linux, run these commands, paste the key into the terminal, press Enter, then press Ctrl+D:
+
+```sh
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/translation-lsp"
+mkdir -p "$dir" && chmod 700 "$dir"
+(umask 077; cat > "$dir/anthropic-api-key")
+chmod 600 "$dir/anthropic-api-key"
+```
+
+On Windows, copy the key to the clipboard, then run these commands in PowerShell:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\translation-lsp"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Get-Clipboard | Set-Content -Encoding ascii "$dir\anthropic-api-key"
+```
+
+With these commands the key is not part of a command, so it does not enter the shell history.
+
+On macOS and Linux, the directory must have mode `0700` and the file mode `0600`, exactly, and neither may be a symbolic link. On Windows, neither may be a symbolic link; the server does not check who can access them.
+
+To replace the key, write the new key to the same file, then restart the language server.
+
+The server reads no environment variable for the key, so the key is not written in the Zed settings. It also ignores `ANTHROPIC_API_KEY`: Claude Code prefers that variable over a subscription login, so exporting it for your whole shell would move your ordinary Claude Code usage to API billing.
+
+Without a usable key the server still starts, and a translation request returns a settings error without contacting the API. The error says whether the file is missing, the file or its directory is not private, or the file is empty or holds something besides the key.
 
 ## Cost and usage
 
@@ -81,7 +118,7 @@ Each request contains the translation instructions and the text to translate as 
 
 ## Errors and pauses
 
-A billing error, a rejected key, an unknown model, and a permission error stop automatic translation and report the HTTP status, the API's error type, and the request ID. After fixing billing in the Claude Console or correcting `provider.model` or `provider.document.model`, run a selection or document translation explicitly; automatic translation resumes when that succeeds. Changing the key or any setting requires a language server restart.
+A billing error, a rejected key, a key that is not scoped to one workspace, an unknown model, and a permission error stop automatic translation and report the HTTP status, the API's error type, and the request ID. After fixing billing in the Claude Console or correcting `provider.model` or `provider.document.model`, run a selection or document translation explicitly; automatic translation resumes when that succeeds. Changing the key or any setting requires a language server restart.
 
 Rate limits and overload are retried once as described under [Automatic retries](../behavior.md#automatic-retries). If the model declines a text, the request fails with the reported category, is not retried, and does not pause automatic translation.
 
@@ -89,4 +126,4 @@ The rules shared by every provider are described under [Pauses](../behavior.md#p
 
 ## Stored data
 
-The key is written in `lsp.translation-lsp.binary.env`, as described under [Authentication](#authentication). This stores the key as plain text in your Zed settings file, so keep that file out of shared repositories and synchronized dotfiles. The server does not write the key to logs, error messages, or disk.
+The key is stored as plain text in the file `anthropic-api-key` that you create as described under [Authentication](#authentication), in the directory where the ChatGPT provider stores its credentials. The server only reads that file: it does not create, change, or delete the file or its directory. The server does not write the key to logs, error messages, or anywhere else on disk.

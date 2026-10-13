@@ -32,11 +32,7 @@ pub fn archive(path: &Path) -> Result<()> {
 fn run(binary: &Path, version: &str) -> Result<()> {
     let stderr = tempfile::NamedTempFile::new()?;
     let mut command = Command::new(binary);
-    for name in [
-        "TRANSLATION_LSP_ANTHROPIC_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-    ] {
+    for name in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
         command.env_remove(name);
     }
     let mut process = Process(
@@ -90,6 +86,8 @@ fn run(binary: &Path, version: &str) -> Result<()> {
             }
         }
     };
+    // The mock provider reads no credentials, so the packaged server opens
+    // neither the key file nor the ChatGPT store of whoever runs this.
     send(
         "initialize",
         json!({

@@ -1,10 +1,11 @@
+mod key;
 mod response;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use reqwest::header::HeaderValue;
+use key::ApiKey;
 use serde_json::json;
 
 use crate::config::{AnthropicEffort, limits::SizeLimit};
@@ -12,57 +13,14 @@ use crate::config::{AnthropicEffort, limits::SizeLimit};
 use super::{
     Capabilities, Context, Intent, Output, OutputOptions, Translated, TranslationProvider,
     admission::{Admission, Attempt},
-    error::{Error, Service},
+    error::{Error, Service, credentials::CredentialError},
     prompt, transport,
 };
 
-// `ANTHROPIC_API_KEY` is deliberately not read: Claude Code prefers that name
-// over a subscription login, so exporting it for this server would change
-// where the user's other Claude usage is billed.
-pub(crate) const API_KEY_VARIABLE: &str = "TRANSLATION_LSP_ANTHROPIC_API_KEY";
 const API: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2023-06-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
 const SERVICE: Service = Service::Anthropic;
-
-#[derive(Clone)]
-struct ApiKey {
-    header: HeaderValue,
-    text: Arc<str>,
-}
-
-impl ApiKey {
-    fn parse(value: Option<String>) -> Result<Self, Error> {
-        let value = value.unwrap_or_default();
-        let text = value.trim();
-        if text.is_empty() {
-            return Err(Error::configuration(concat!(
-                "Anthropic API key is not set. Add TRANSLATION_LSP_ANTHROPIC_API_KEY to ",
-                "lsp.translation-lsp.binary.env in Zed settings and restart the language server"
-            )));
-        }
-        let header = HeaderValue::from_str(text)
-            .ok()
-            .filter(|_| text.bytes().all(|byte| byte.is_ascii_graphic()));
-        let Some(mut header) = header else {
-            return Err(Error::configuration(concat!(
-                "TRANSLATION_LSP_ANTHROPIC_API_KEY contains whitespace or non-ASCII characters. ",
-                "Correct it in lsp.translation-lsp.binary.env and restart the language server"
-            )));
-        };
-        header.set_sensitive(true);
-        Ok(Self {
-            header,
-            text: text.into(),
-        })
-    }
-}
-
-impl std::fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ApiKey([redacted])")
-    }
-}
 
 // The model and options one output sends.
 #[derive(Clone)]
@@ -75,7 +33,7 @@ pub(crate) struct ModelOptions {
 #[derive(Clone)]
 pub(crate) struct AnthropicProvider {
     client: reqwest::Client,
-    // Read once at startup. A missing key is reported at admission, not here.
+    // Read once at startup. A key that could not be read is reported at admission, not here.
     key: Result<ApiKey, Error>,
     options: OutputOptions<ModelOptions>,
     source_language: String,
@@ -85,17 +43,19 @@ pub(crate) struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    // `key_directory` is the credential directory, where the key file is.
     pub fn new(
         options: OutputOptions<ModelOptions>,
         source_language: String,
         output_limit: SizeLimit,
+        key_directory: Result<PathBuf, CredentialError>,
     ) -> Result<Self, Error> {
         Ok(Self {
             // The worker owns the total deadline.
             client: transport::client_builder()
                 .build()
                 .map_err(|_| Error::failed("Could not prepare the Anthropic HTTP client"))?,
-            key: ApiKey::parse(std::env::var(API_KEY_VARIABLE).ok()),
+            key: ApiKey::read(key_directory),
             options,
             source_language,
             output_limit,
@@ -108,7 +68,7 @@ impl AnthropicProvider {
     pub fn synthetic(api: String, key: Option<&str>) -> Self {
         Self {
             client: transport::client_builder().build().unwrap(),
-            key: ApiKey::parse(key.map(str::to_owned)),
+            key: ApiKey::synthetic(key),
             options: OutputOptions::new(
                 ModelOptions {
                     model: "claude-haiku-5-5".into(),
@@ -122,6 +82,12 @@ impl AnthropicProvider {
             api,
             admission: Admission::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_key_directory(mut self, directory: &std::path::Path) -> Self {
+        self.key = ApiKey::read(Ok(directory.into()));
+        self
     }
 
     #[cfg(test)]

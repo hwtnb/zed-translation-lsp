@@ -1,14 +1,12 @@
 use super::*;
 use crate::providers::{
     Intent,
-    anthropic::{
-        API_KEY_VARIABLE,
-        test_support::{Fixture, Reply, started, text_block},
-    },
+    anthropic::test_support::{Fixture, Reply, started, text_block},
 };
 use serde_json::json;
 
 mod document;
+mod startup;
 
 async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
     let receiver = receiver.clone();
@@ -265,7 +263,7 @@ async fn missing_key_rejects_explicit_and_hover_work_without_requests() {
         uri.clone(),
         Document::new(1, 1, "rust".into(), source.into()),
     );
-    // The translation action stays available so the error can explain the setting.
+    // The translation action stays available so the error can explain the key file.
     assert!(
         actions(&mut server, &uri, range)
             .iter()
@@ -284,7 +282,9 @@ async fn missing_key_rejects_explicit_and_hover_work_without_requests() {
     for error in [explicit, hover] {
         assert_eq!(error.code, ErrorCode::RequestFailed as i32);
         assert!(
-            error.message.contains(API_KEY_VARIABLE),
+            error
+                .message
+                .starts_with("Anthropic API key file was not found."),
             "{}",
             error.message
         );

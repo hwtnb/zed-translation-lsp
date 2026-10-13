@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::SERVICE;
+use super::{SERVICE, key};
 use crate::{
     config::limits::{SizeLimit, SizeSetting},
     providers::{
@@ -14,16 +14,15 @@ use crate::{
     },
 };
 
-const KEY_ADVICE: &str = concat!(
-    "The API key was rejected. Check TRANSLATION_LSP_ANTHROPIC_API_KEY ",
-    "and restart the language server after changing it"
-);
+// The request header that names a workspace. This server never sends it.
+const WORKSPACE_HEADER: &str = "anthropic-workspace-id";
 const BILLING_ADVICE: &str =
     "Check the Billing page in the Claude Console at https://platform.claude.com/";
 
 #[derive(Clone, Copy)]
 enum Advice {
     Key,
+    Workspace,
     Billing,
     Model,
 }
@@ -32,7 +31,8 @@ impl Advice {
     // `configured` is the output whose settings named the request's model.
     fn text(self, configured: Output) -> &'static str {
         match (self, configured) {
-            (Self::Key, _) => KEY_ADVICE,
+            (Self::Key, _) => key::REJECTED,
+            (Self::Workspace, _) => key::SEVERAL_WORKSPACES,
             (Self::Billing, _) => BILLING_ADVICE,
             (Self::Model, Output::Range) => "Check provider.model",
             (Self::Model, Output::Document) => "Check provider.document.model",
@@ -80,20 +80,28 @@ fn remote_error(
     let detail = detail
         .filter(|detail| !detail.trim().is_empty())
         .unwrap_or("Anthropic request failed");
-    let (kind, advice) = FAILURES
-        .iter()
-        .find(|failure| Some(failure.1) == error_type)
-        .or_else(|| FAILURES.iter().find(|failure| failure.0 == status))
-        .map_or_else(
-            || {
-                if status >= 500 {
-                    (RemoteKind::Temporary, None)
-                } else {
-                    (RemoteKind::Failed, None)
-                }
-            },
-            |failure| (failure.2, failure.3),
-        );
+    // The API requires the workspace header of a key that works in more than
+    // one workspace. No request carries the header, so an invalid request that
+    // names it means such a key, which only another key can correct.
+    let (kind, advice) =
+        if error_type == Some("invalid_request_error") && detail.contains(WORKSPACE_HEADER) {
+            (RemoteKind::Configuration, Some(Advice::Workspace))
+        } else {
+            FAILURES
+                .iter()
+                .find(|failure| Some(failure.1) == error_type)
+                .or_else(|| FAILURES.iter().find(|failure| failure.0 == status))
+                .map_or_else(
+                    || {
+                        if status >= 500 {
+                            (RemoteKind::Temporary, None)
+                        } else {
+                            (RemoteKind::Failed, None)
+                        }
+                    },
+                    |failure| (failure.2, failure.3),
+                )
+        };
     RemoteError {
         service: SERVICE,
         kind,
