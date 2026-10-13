@@ -59,6 +59,8 @@ cargo install --locked --features cli cargo-about@0.9.2
 
 チェックサムが合わないときと取得に失敗したとき、cargo-aboutは著作権者の名前がない標準の文面を使い、成功として終了します。この場合、`xtask` は該当するクレートの名前を挙げて失敗します。取得に失敗したときは、その前にcargo-aboutを合計3回まで実行し直します。標準の文面のままにしてよいクレートは、理由とともに `xtask/src/notices.rs` の `STANDARD_TEXT` に列挙しており、`THIRD_PARTY_LICENSES.txt` ではその文面の前にその旨を書きます。
 
-依存を更新したあとに `check-notices` が失敗したら、`about.toml` を変える前に、名前が挙がったクレートのライセンスファイルを読んでください。ファイルが変わっていた場合は、変更の内容を確認してから、チェックサムを新しいファイルのSHA-256チェックサムに更新します。`about.toml` にそのクレートがない場合は、ライセンスファイルを指定する項目を追加します。クレートのファイルは、Cargoのレジストリのソースディレクトリにあります。リポジトリのファイルは `https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<path>` にあり、コミットはクレートの `.cargo_vcs_info.json` に記録されています。`ra-ap-rustc_lexer` はそこにコミットを記録していないので、クレートの説明文に書かれたコミットを `override-git-commit` に写してください。
+cargo-aboutは、`about.toml` にライセンスを書いたクレートについて、クレートが宣言するライセンスの代わりにその記述を使います。チェックサムが確かめるのは、そこに指定したファイルだけです。そのため `xtask` は、クレートの宣言が `about.toml` の記述と異なるときにも失敗します。意図して宣言と異なる記述にしているクレートは、その記述を書いたときの宣言とともに `xtask/src/notices.rs` の `DECLARED` に列挙しています。
+
+依存を更新したあとに `check-notices` が失敗したら、`about.toml` を変える前に、名前が挙がったクレートのライセンスファイルを読んでください。ファイルが変わっていた場合は、変更の内容を確認してから、チェックサムを新しいファイルのSHA-256チェックサムに更新します。`about.toml` にそのクレートがない場合は、ライセンスファイルを指定する項目を追加します。クレートの宣言が変わっていた場合は、クレートに追加されたライセンスファイルがないかも確認してから、`about.toml` の項目を更新します。意図して宣言と異なる記述にしている項目では、`DECLARED` も更新します。クレートのファイルは、Cargoのレジストリのソースディレクトリにあります。リポジトリのファイルは `https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<path>` にあり、コミットはクレートの `.cargo_vcs_info.json` に記録されています。`ra-ap-rustc_lexer` はそこにコミットを記録していないので、クレートの説明文に書かれたコミットを `override-git-commit` に写してください。
 
 cargo-aboutのバージョンを変えるときは、`xtask/src/notices.rs` と2つのワークフローの両方を変えてください。

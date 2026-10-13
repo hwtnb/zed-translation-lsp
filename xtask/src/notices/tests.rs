@@ -117,3 +117,86 @@ fn a_download_that_keeps_failing_ends_and_names_the_network() {
     assert!(error.contains("needs network access"), "{error}");
     assert_eq!((runs, pauses), (3, 2));
 }
+
+fn package(name: &str, license: Option<&str>) -> Package {
+    Package {
+        name: name.to_owned(),
+        version: "1.0.0".to_owned(),
+        license: license.map(str::to_owned),
+    }
+}
+
+fn entries(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    entries
+        .iter()
+        .map(|(name, license)| ((*name).to_owned(), (*license).to_owned()))
+        .collect()
+}
+
+#[test]
+fn the_license_of_each_clarify_entry_is_read() -> Result<()> {
+    let about = concat!(
+        "accepted = [\"MIT\"]\n",
+        "[dunce]\naccepted = [\"CC0-1.0\"]\n",
+        "[dunce.clarify]\nlicense = \"CC0-1.0\"\n",
+        "[libm.clarify]\nlicense = \"MIT\"\n",
+        "[other]\naccepted = [\"Zlib\"]\n",
+    );
+    assert_eq!(
+        clarified(about)?,
+        entries(&[("dunce", "CC0-1.0"), ("libm", "MIT")])
+    );
+    Ok(())
+}
+
+#[test]
+fn a_crate_that_declares_the_license_of_its_entry_passes() {
+    let clarified = entries(&[("libm", "MIT")]);
+    let packages = [
+        package("libm", Some("MIT")),
+        package("unnamed", Some("Zlib")),
+        package("unlicensed", None),
+    ];
+    assert_eq!(changed(&clarified, &packages), "");
+}
+
+#[test]
+fn a_crate_that_declares_another_license_than_its_entry_is_named() {
+    let clarified = entries(&[("libm", "MIT"), ("oxc_span", "MIT")]);
+    let packages = [
+        package("libm", Some("MIT AND BSD-3-Clause")),
+        package("oxc_span", None),
+    ];
+    assert_eq!(
+        changed(&clarified, &packages),
+        concat!(
+            "  libm 1.0.0: declares MIT AND BSD-3-Clause, about.toml was written for MIT\n",
+            "  oxc_span 1.0.0: declares no license, about.toml was written for MIT\n",
+        )
+    );
+}
+
+#[test]
+fn an_entry_that_differs_on_purpose_holds_for_the_listed_declaration_only() {
+    let clarified = entries(&[("dunce", "CC0-1.0")]);
+    let listed = package("dunce", Some("CC0-1.0 OR MIT-0 OR Apache-2.0"));
+    assert_eq!(changed(&clarified, &[listed]), "");
+    for declared in ["CC0-1.0", "CC0-1.0 OR MIT-0 OR Apache-2.0 OR MIT"] {
+        assert_eq!(
+            changed(&clarified, &[package("dunce", Some(declared))]),
+            format!(
+                "  dunce 1.0.0: declares {declared}, about.toml was written for CC0-1.0 OR MIT-0 OR Apache-2.0\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn every_listed_declaration_belongs_to_an_entry_that_differs_from_it() -> Result<()> {
+    let clarified = clarified(&fs::read_to_string(source::root().join("about.toml"))?)?;
+    for (name, declared) in DECLARED {
+        let given = clarified.get(*name).map(String::as_str);
+        assert!(given.is_some_and(|given| given != *declared), "{name}");
+    }
+    Ok(())
+}

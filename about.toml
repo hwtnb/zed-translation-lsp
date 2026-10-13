@@ -22,7 +22,9 @@ workarounds = ["chrono"]
 # The entries below name the license files of crates in which cargo-about finds
 # none by itself, so that the notices carry the text and the copyright notice
 # of the crate's authors. cargo-about uses a file only if its SHA-256 checksum
-# matches. `license` repeats the license the crate declares, except for dunce.
+# matches. `license` repeats the license the crate declares, and replaces it
+# in the notices. `xtask` fails when the two differ, except for the crates that
+# `DECLARED` in `xtask/src/notices.rs` lists.
 
 # These crates name their license files in lowercase, which cargo-about does
 # not read.

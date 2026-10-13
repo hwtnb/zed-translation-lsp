@@ -1,6 +1,7 @@
-use std::{fs, process::Command, thread, time::Duration};
+use std::{collections::BTreeMap, fs, process::Command, thread, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
+use serde::Deserialize;
 
 use crate::source::{self, Target};
 
@@ -14,6 +15,15 @@ const STANDARD_TEXT: &[&str] = &[
     "eventsource-stream",
 ];
 
+// The crates for which `about.toml` gives another license expression than the
+// crate declares, each with the declaration that its entry was written for.
+const DECLARED: &[(&str, &str)] = &[
+    // Used under the one license whose text the crate ships.
+    ("dunce", "CC0-1.0 OR MIT-0 OR Apache-2.0"),
+    // The same choice of licenses in an older notation.
+    ("ra-ap-rustc_lexer", "MIT / Apache-2.0"),
+];
+
 // How often to run cargo-about when it cannot download a license file.
 const ATTEMPTS: u32 = 3;
 const PAUSE: Duration = Duration::from_secs(10);
@@ -24,9 +34,23 @@ struct Output {
     warnings: String,
 }
 
+// What `cargo metadata` tells of a crate.
+#[derive(Deserialize)]
+struct Package {
+    name: String,
+    version: String,
+    license: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Metadata {
+    packages: Vec<Package>,
+}
+
 // Lists the licenses of the native server's dependencies on these targets.
-// `about.toml` names the accepted licenses; a dependency under any other fails,
-// and so does one for which cargo-about has only the standard text of a license.
+// `about.toml` names the accepted licenses; a dependency under any other fails.
+// So does one that declares another license than `about.toml` gives for it,
+// and one for which cargo-about has only the standard text of a license.
 pub fn generate(targets: &[Target]) -> Result<Vec<u8>> {
     let install =
         format!("install it with cargo install --locked --features cli cargo-about@{CARGO_ABOUT}");
@@ -36,7 +60,53 @@ pub fn generate(targets: &[Target]) -> Result<Vec<u8>> {
         version.trim() == format!("cargo-about {CARGO_ABOUT}"),
         "Expected cargo-about {CARGO_ABOUT}; {install}"
     );
+    let clarified = clarified(&fs::read_to_string(source::root().join("about.toml"))?)?;
+    let metadata: Metadata = serde_json::from_str(&source::output(
+        "cargo",
+        &["metadata", "--format-version", "1", "--locked"],
+    )?)?;
+    let changed = changed(&clarified, &metadata.packages);
+    ensure!(
+        changed.is_empty(),
+        "These crates declare another license than about.toml gives for them:\n{changed}Review the license and the license files of each, then update its entry in about.toml, and DECLARED in xtask/src/notices.rs if the entry differs from the declaration on purpose."
+    );
     retry(|| run(targets), || thread::sleep(PAUSE))
+}
+
+// The license that each `clarify` entry of `about.toml` gives for its crate.
+fn clarified(about: &str) -> Result<BTreeMap<String, String>> {
+    let about: toml::Table = toml::from_str(about).context("Invalid about.toml")?;
+    Ok(about
+        .iter()
+        .filter_map(|(name, entry)| {
+            let license = entry.get("clarify")?.get("license")?.as_str()?;
+            Some((name.clone(), license.to_owned()))
+        })
+        .collect())
+}
+
+// cargo-about uses the license of a `clarify` entry in place of the one the
+// crate declares, and checks only the license files that the entry names. This
+// lists the crates, one on a line, that declare another license than their
+// entry was written for.
+fn changed(clarified: &BTreeMap<String, String>, packages: &[Package]) -> String {
+    packages
+        .iter()
+        .filter_map(|package| {
+            let given = clarified.get(&package.name)?;
+            let expected = DECLARED
+                .iter()
+                .find(|(name, _)| *name == package.name)
+                .map_or(given.as_str(), |(_, declared)| declared);
+            let declared = package.license.as_deref().unwrap_or("no license");
+            (declared != expected).then(|| {
+                format!(
+                    "  {} {}: declares {declared}, about.toml was written for {expected}\n",
+                    package.name, package.version
+                )
+            })
+        })
+        .collect()
 }
 
 fn run(targets: &[Target]) -> Result<Output> {
