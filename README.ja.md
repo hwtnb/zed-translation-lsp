@@ -4,7 +4,7 @@
 
 ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。ChatGPTまたはAnthropicが利用可能な状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
 
-ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropicを使う場合は、本人のAPIキーでAnthropic APIを呼びます。設定なしでは、同梱サンプルだけを日本語に訳す模擬モードで動作し、文章を外部へ送りません。
+ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropicを使う場合は、本人のAPIキーでAnthropic APIを呼びます。設定なしでは、同梱サンプルだけを日本語に訳すモックモードで動作し、文章を外部へ送りません。
 
 ## 導入
 
@@ -62,15 +62,7 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
 }
 ```
 
-この例は模擬モードを選びます。自分の文章を翻訳するには、`provider` を [ChatGPT](docs/ja/providers/chatgpt.md) または [Anthropic API](docs/ja/providers/anthropic.md) のページにある設定へ置き換えてください。設定を変更したら言語サーバーを再起動してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
-
-## 模擬モード
-
-`provider` を省略するか `{"name":"mock"}` にすると、接続せずに同梱サンプルを試せます。[samples/comment.rs](samples/comment.rs) のコメント、または [samples/comment.cs](samples/comment.cs) の通常コメント・XMLドキュメントコメントにマウスポインターを重ねてください。C/C++は [samples/comment.c](samples/comment.c) と [samples/comment.cpp](samples/comment.cpp) でDoxygenコメントも試せます。
-
-Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](samples/comment.py) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](samples/comment.jsonc)、[samples/comment.yaml](samples/comment.yaml)、[samples/comment.toml](samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](samples/comment.sh)、[samples/comment.ps1](samples/comment.ps1)、[samples/Dockerfile](samples/Dockerfile)、[samples/compose.yaml](samples/compose.yaml) で試せます。[samples/paragraph.md](samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to ja` を実行してから、選択範囲にマウスポインターを重ねます。模擬モードのMarkdownは手動実行が必要です。
-
-模擬モードはこれらのサンプルと改行の違いだけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーには `Mock translation (fixed sample)` と表示します。
+この例はモックモードを選びます。自分の文章を翻訳するには、`provider` を [ChatGPT](docs/ja/providers/chatgpt.md) または [Anthropic API](docs/ja/providers/anthropic.md) のページにある設定へ置き換えてください。設定を変更したら言語サーバーを再起動してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
 
 ## 基本的な使い方
 
@@ -89,9 +81,17 @@ Pythonのコメントとドキュメンテーション文字列は [samples/comm
 - コメントの上を通りすぎるだけでも、Zedがホバー要求を送って受け付けられた場合は、翻訳の利用量を消費します。
 - コメントに認証情報が書かれていれば、それも一緒に送信されます。
 - `features.automatic_selection` が `true` の場合、Markdownの文章は、コピーのために選択しただけでも送信されることがあります。
-- 模擬モードでは、文章を外部へ送りません。
+- モックモードでは、文章を外部へ送りません。
 
 1回の要求に含める内容は[送信する内容](docs/ja/usage.md#送信する内容)で説明します。費用は各プロバイダーのページで説明します。
+
+## モックモード
+
+`provider` を省略するか `{"name":"mock"}` にすると、接続せずに同梱サンプルを試せます。[samples/comment.rs](samples/comment.rs) のコメント、または [samples/comment.cs](samples/comment.cs) の通常コメント・XMLドキュメントコメントにマウスポインターを重ねてください。C/C++は [samples/comment.c](samples/comment.c) と [samples/comment.cpp](samples/comment.cpp) でDoxygenコメントも試せます。
+
+Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](samples/comment.py) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](samples/comment.jsonc)、[samples/comment.yaml](samples/comment.yaml)、[samples/comment.toml](samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](samples/comment.sh)、[samples/comment.ps1](samples/comment.ps1)、[samples/Dockerfile](samples/Dockerfile)、[samples/compose.yaml](samples/compose.yaml) で試せます。[samples/paragraph.md](samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to ja` を実行してから、選択範囲にマウスポインターを重ねます。モックモードのMarkdownは手動実行が必要です。
+
+モックモードはこれらのサンプルと改行の違いだけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーには `Mock translation (fixed sample)` と表示します。
 
 ## ドキュメント
 

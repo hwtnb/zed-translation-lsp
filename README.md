@@ -64,14 +64,6 @@ Add the following entry to `lsp` in your existing Zed settings. If you built the
 
 This example selects mock mode. To translate your own text, replace `provider` with the settings on the [ChatGPT](docs/providers/chatgpt.md) or [Anthropic API](docs/providers/anthropic.md) page. Restart the language server after changing these settings. Every setting is described under [Configuration](docs/configuration.md).
 
-## Mock mode
-
-To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). C/C++ samples are available in [samples/comment.c](samples/comment.c) and [samples/comment.cpp](samples/comment.cpp), including Doxygen comments.
-
-For Python comments and docstrings, use [samples/comment.py](samples/comment.py). For JSON, YAML, and TOML comments, use [samples/comment.jsonc](samples/comment.jsonc), [samples/comment.yaml](samples/comment.yaml), and [samples/comment.toml](samples/comment.toml). For shell script, PowerShell, Dockerfile, and Docker Compose comments, use [samples/comment.sh](samples/comment.sh), [samples/comment.ps1](samples/comment.ps1), [samples/Dockerfile](samples/Dockerfile), and [samples/compose.yaml](samples/compose.yaml). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
-
-Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
-
 ## Basic usage
 
 | Operation | How |
@@ -92,6 +84,14 @@ The rules of these operations are described under [Usage](docs/usage.md).
 - Mock mode sends no text to an external service.
 
 What each request contains is described under [What is sent](docs/usage.md#what-is-sent). Cost is described on each provider's page.
+
+## Mock mode
+
+To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). C/C++ samples are available in [samples/comment.c](samples/comment.c) and [samples/comment.cpp](samples/comment.cpp), including Doxygen comments.
+
+For Python comments and docstrings, use [samples/comment.py](samples/comment.py). For JSON, YAML, and TOML comments, use [samples/comment.jsonc](samples/comment.jsonc), [samples/comment.yaml](samples/comment.yaml), and [samples/comment.toml](samples/comment.toml). For shell script, PowerShell, Dockerfile, and Docker Compose comments, use [samples/comment.sh](samples/comment.sh), [samples/comment.ps1](samples/comment.ps1), [samples/Dockerfile](samples/Dockerfile), and [samples/compose.yaml](samples/compose.yaml). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
+
+Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
 
 ## Documentation
 
