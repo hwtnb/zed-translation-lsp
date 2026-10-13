@@ -60,11 +60,12 @@ impl<P: TranslationProvider> Server<P> {
         Ok(actions)
     }
 
-    pub(super) fn changes_account(command: &str) -> bool {
+    pub(super) fn account_change(command: &str) -> AccountChange {
         P::capabilities()
             .commands
             .iter()
-            .any(|entry| entry.command == command && entry.changes_account)
+            .find(|entry| entry.command == command)
+            .map_or(AccountChange::Never, |entry| entry.changes_account)
     }
 
     pub(super) fn execute_command(
@@ -113,12 +114,16 @@ impl<P: TranslationProvider> Server<P> {
                     "An account operation is in progress",
                 ));
             }
-            if Self::changes_account(&params.command) {
+            let change = Self::account_change(&params.command);
+            if change == AccountChange::AtOnce {
                 self.cancel_all(connection).map_err(|_| {
                     failure(ErrorCode::InternalError, "Could not cancel pending work")
                 })?;
                 self.clear_previews();
             }
+            let context = (change == AccountChange::IfConfirmed)
+                .then(|| self.provider.context().ok())
+                .flatten();
             self.next_ticket += 1;
             let ticket = self.next_ticket;
             let deadline = Instant::now() + ADMIN_TIMEOUT;
@@ -153,6 +158,7 @@ impl<P: TranslationProvider> Server<P> {
                     ticket,
                     stop,
                     deadline,
+                    context,
                 },
             );
             return Ok(None);

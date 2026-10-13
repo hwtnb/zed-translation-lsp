@@ -1,19 +1,20 @@
-mod key;
+pub(crate) mod key;
 mod response;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 use std::path::PathBuf;
 
-use key::ApiKey;
+use key::{KeyFile, KeyId, terminal};
 use serde_json::json;
 
 use crate::config::{AnthropicEffort, limits::SizeLimit};
 
 use super::{
-    Capabilities, Context, Intent, Output, OutputOptions, Translated, TranslationProvider,
+    AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
+    ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
-    error::{Error, Service, credentials::CredentialError},
+    error::{Cause, Error, Service, credentials::CredentialError},
     prompt, transport,
 };
 
@@ -21,6 +22,42 @@ const API: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2023-06-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
 const SERVICE: Service = Service::Anthropic;
+
+const SAVE: &str = "translation-lsp.save-anthropic-key";
+const REMOVE: &str = "translation-lsp.remove-anthropic-key";
+const COMMANDS: [ProviderCommand; 2] = [
+    // Saving happens later, in the terminal. The server follows the file.
+    ProviderCommand {
+        command: SAVE,
+        title: "Save Anthropic API key",
+        changes_account: AccountChange::Never,
+    },
+    ProviderCommand {
+        command: REMOVE,
+        title: "Remove Anthropic API key",
+        changes_account: AccountChange::IfConfirmed,
+    },
+];
+const REMOVAL: &str = "Remove the saved Anthropic API key from this computer? The key stays valid until you delete it in the Claude Console.";
+const CONFIRM: &str = "Remove";
+
+fn key_commands(usable: bool) -> Vec<ProviderCommand> {
+    let [mut save, remove] = COMMANDS;
+    if usable {
+        save.title = "Replace Anthropic API key";
+        vec![save, remove]
+    } else {
+        vec![save]
+    }
+}
+
+#[derive(Clone)]
+enum Terminal {
+    System,
+    // Records the executable instead, and answers whether a window opened.
+    #[cfg(test)]
+    Synthetic(test_support::Terminal),
+}
 
 // The model and options one output sends.
 #[derive(Clone)]
@@ -33,13 +70,13 @@ pub(crate) struct ModelOptions {
 #[derive(Clone)]
 pub(crate) struct AnthropicProvider {
     client: reqwest::Client,
-    // Read once at startup. A key that could not be read is reported at admission, not here.
-    key: Result<ApiKey, Error>,
+    key: KeyFile,
+    terminal: Terminal,
     options: OutputOptions<ModelOptions>,
     source_language: String,
     output_limit: SizeLimit,
     api: String,
-    admission: Admission<()>,
+    admission: Admission<KeyId>,
 }
 
 impl AnthropicProvider {
@@ -55,7 +92,8 @@ impl AnthropicProvider {
             client: transport::client_builder()
                 .build()
                 .map_err(|_| Error::failed("Could not prepare the Anthropic HTTP client"))?,
-            key: ApiKey::read(key_directory),
+            key: KeyFile::new(key_directory),
+            terminal: Terminal::System,
             options,
             source_language,
             output_limit,
@@ -65,28 +103,30 @@ impl AnthropicProvider {
     }
 
     #[cfg(test)]
-    pub fn synthetic(api: String, key: Option<&str>) -> Self {
+    pub fn synthetic(api: String, directory: &std::path::Path) -> Self {
         Self {
-            client: transport::client_builder().build().unwrap(),
-            key: ApiKey::synthetic(key),
-            options: OutputOptions::new(
-                ModelOptions {
-                    model: "claude-haiku-5-5".into(),
-                    effort: AnthropicEffort::Low,
-                    thinking: false,
-                },
-                None,
-            ),
-            source_language: "auto".into(),
-            output_limit: crate::config::limits::TranslationLimits::default().output_kib,
             api,
-            admission: Admission::default(),
+            terminal: Terminal::Synthetic(test_support::Terminal::default()),
+            ..Self::new(
+                OutputOptions::new(
+                    ModelOptions {
+                        model: "claude-haiku-5-5".into(),
+                        effort: AnthropicEffort::Low,
+                        thinking: false,
+                    },
+                    None,
+                ),
+                "auto".into(),
+                crate::config::limits::TranslationLimits::default().output_kib,
+                Ok(directory.into()),
+            )
+            .unwrap()
         }
     }
 
     #[cfg(test)]
-    pub fn with_key_directory(mut self, directory: &std::path::Path) -> Self {
-        self.key = ApiKey::read(Ok(directory.into()));
+    pub fn with_terminal(mut self, terminal: test_support::Terminal) -> Self {
+        self.terminal = Terminal::Synthetic(terminal);
         self
     }
 
@@ -96,14 +136,47 @@ impl AnthropicProvider {
         self
     }
 
-    fn key(&self) -> Result<&ApiKey, Error> {
-        self.key.as_ref().map_err(Error::clone)
+    // The notice names the command either way: the window may be on a machine
+    // the user is not sitting at.
+    async fn open_terminal(&self) -> Result<String, Error> {
+        let executable = std::env::current_exe()
+            .map_err(|_| Error::failed("Could not locate the language server executable"))?;
+        let command = terminal::manual_command(&executable);
+        let opened = match &self.terminal {
+            Terminal::System => terminal::open(&executable).await,
+            #[cfg(test)]
+            Terminal::Synthetic(terminal) => terminal.open(&executable),
+        };
+        if opened {
+            Ok(format!(
+                "A terminal window was opened. Enter the Anthropic API key there. If no window appeared, run this in a terminal: {command}"
+            ))
+        } else {
+            Err(Cause::Terminal {
+                purpose: "save the Anthropic API key",
+                command,
+            }
+            .into())
+        }
+    }
+
+    async fn remove_key(&self, ui: &impl Interaction) -> Result<String, Error> {
+        let directory = self.key.directory()?;
+        if ui.choose(REMOVAL, &[CONFIRM.into()]).await?.is_none() {
+            return Ok("The Anthropic API key was not removed.".into());
+        }
+        Ok(if key::remove(directory).map_err(key::unusable)? {
+            "The Anthropic API key was removed."
+        } else {
+            "No Anthropic API key is saved."
+        }
+        .into())
     }
 }
 
-fn expect_context(context: &Context) -> Result<(), Error> {
-    if context == &Context::Anthropic {
-        Ok(())
+fn key_of(context: &Context) -> Result<KeyId, Error> {
+    if let Context::Anthropic(key) = context {
+        Ok(*key)
     } else {
         Err(Error::failed(
             "Translation was prepared for a different provider",
@@ -112,30 +185,43 @@ fn expect_context(context: &Context) -> Result<(), Error> {
 }
 
 impl TranslationProvider for AnthropicProvider {
+    // The key in use is part of the context: what was translated or refused
+    // with one key is not kept for another.
     fn context(&self) -> Result<Context, Error> {
-        Ok(Context::Anthropic)
+        let (_, key) = self.key.read()?;
+        Ok(Context::Anthropic(key))
     }
 
     fn admit(&self, context: &Context, intent: Intent) -> Result<u64, Error> {
-        expect_context(context)?;
-        self.key()?;
-        self.admission.admit(&(), intent)
+        self.admission.admit(&key_of(context)?, intent)
     }
 
     fn check_admission(&self, context: &Context, generation: u64) -> Result<(), Error> {
-        if context != &Context::Anthropic {
+        let Context::Anthropic(key) = context else {
             return Ok(());
+        };
+        self.admission.check(key, generation)
+    }
+
+    fn auth_ui_state(&self) -> AuthUiState {
+        if self.key.read().is_ok() {
+            AuthUiState::Ready
+        } else {
+            AuthUiState::SignedOut
         }
-        self.admission.check(&(), generation)
     }
 
     fn capabilities() -> Capabilities {
         Capabilities {
             server_name: "Translation LSP (Anthropic)",
             automatic_selection: true,
-            account_menu: None,
-            commands: &[],
+            account_menu: Some(key::MENU),
+            commands: &COMMANDS,
         }
+    }
+
+    fn account_commands(&self) -> Vec<ProviderCommand> {
+        key_commands(self.key.read().is_ok())
     }
 
     async fn translate(
@@ -146,9 +232,12 @@ impl TranslationProvider for AnthropicProvider {
         target_language: &str,
         context: Context,
     ) -> Result<Translated, Error> {
-        expect_context(&context)?;
-        let key = self.key()?;
-        let generation = self.admission.admit(&(), intent)?;
+        let expected = key_of(&context)?;
+        let (key, current) = self.key.read()?;
+        if current != expected {
+            return Err(Cause::Modified("Anthropic API key").into());
+        }
+        let generation = self.admission.admit(&expected, intent)?;
         let secrets = [&*key.text, text];
         let options = self.options.get(output);
         let configured = self.options.configured(output);
@@ -165,7 +254,7 @@ impl TranslationProvider for AnthropicProvider {
         // response it is awaiting, which closes the connection.
         let mut result = self
             .admission
-            .retrying(&(), intent, async || {
+            .retrying(&expected, intent, async || {
                 let response = self
                     .client
                     .post(format!("{}/messages", self.api))
@@ -192,11 +281,20 @@ impl TranslationProvider for AnthropicProvider {
                 }
             })
             .await;
-        self.admission.settle(&(), intent, generation, &mut result);
+        self.admission
+            .settle(&expected, intent, generation, &mut result);
         Ok(Translated {
             text: result?,
-            context: Context::Anthropic,
+            context,
         })
+    }
+
+    async fn administer(&self, command: &str, ui: &impl Interaction) -> Result<String, Error> {
+        match command {
+            SAVE => self.open_terminal().await,
+            REMOVE => self.remove_key(ui).await,
+            _ => Err(Error::failed("Unknown Anthropic command")),
+        }
     }
 }
 

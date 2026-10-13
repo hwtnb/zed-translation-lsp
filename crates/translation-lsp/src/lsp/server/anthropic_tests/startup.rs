@@ -104,7 +104,10 @@ fn anthropic_without_a_key_file_starts_and_reports_the_missing_file() {
             RETRY_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
-            CANCEL_ALL_COMMAND
+            CANCEL_ALL_COMMAND,
+            "translation-lsp.save-anthropic-key",
+            "translation-lsp.remove-anthropic-key",
+            SETTINGS_COMMAND
         ])
     );
     let uri = "file:///missing-key.md";
@@ -116,34 +119,38 @@ fn anthropic_without_a_key_file_starts_and_reports_the_missing_file() {
         }}),
     );
     let start = json!({"line": 0, "character": 0});
+    let range = json!({"start": start, "end": {"line": 0, "character": text.len()}});
     let actions = client
         .call(
             "textDocument/codeAction",
             json!({
-                "textDocument": {"uri": uri},
-                "range": {"start": start, "end": {"line": 0, "character": text.len()}},
-                "context": {"diagnostics": []}
+                "textDocument": {"uri": uri}, "range": range, "context": {"diagnostics": []}
             }),
         )
         .unwrap();
-    let action = actions
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|action| action["command"]["command"] == COMMAND)
-        .unwrap();
+    // Without a key, the menu that saves one is the only action.
+    assert_eq!(
+        actions,
+        json!([{
+            "title": "Anthropic API key…",
+            "kind": ACTION_KIND,
+            "command": {"title": "Anthropic API key…", "command": SETTINGS_COMMAND}
+        }])
+    );
+    // A translation command that the editor still holds is refused.
     let error = client
-        .call("workspace/executeCommand", action["command"].clone())
+        .call(
+            "workspace/executeCommand",
+            json!({"command": COMMAND, "arguments": [{
+                "uri": uri, "version": 1, "session": 1, "range": range, "targetLanguage": "ja"
+            }]}),
+        )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::RequestFailed as i32);
-    assert!(
-        error
-            .message
-            .starts_with("Anthropic API key file was not found."),
-        "{}",
-        error.message
+    assert_eq!(
+        error.message,
+        "Anthropic API key is not saved. Run \"Anthropic API key…\" from the code actions to save it"
     );
-    assert!(error.message.contains("restart the language server"));
     let notice = client.notice();
     assert_eq!(notice.method, "window/showMessage");
     assert_eq!(notice.params["type"], 1);

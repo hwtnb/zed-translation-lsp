@@ -3727,6 +3727,7 @@ async fn unrelated_hover_is_null_when_translation_authorization_is_unavailable()
                     ticket: 1,
                     stop,
                     deadline,
+                    context: None,
                 },
             );
         }

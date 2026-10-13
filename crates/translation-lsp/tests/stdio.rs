@@ -461,6 +461,24 @@ fn assert_error(reply: Reply, code: i32) {
     assert_eq!(reply.unwrap_err().code, code);
 }
 
+// The editor starts the server with `--stdio` or with no argument at all.
+#[test]
+fn server_starts_with_or_without_the_stdio_argument() {
+    for arguments in [&[][..], &["--stdio"], &["--stdio", "--mock-delay-ms", "1"]] {
+        let mut client = Client::new(arguments);
+        client.open("file:///started.md", "markdown", MARKDOWN_DOCUMENT, 1);
+        let hover = client.call(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": "file:///started.md"},
+                "position": {"line": 0, "character": 0}
+            }),
+        );
+        assert!(hover.unwrap().is_null());
+        client.finish(true);
+    }
+}
+
 #[test]
 fn initialization_rejects_invalid_public_settings_before_mock_override() {
     for options in [

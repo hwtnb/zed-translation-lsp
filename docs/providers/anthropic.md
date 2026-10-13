@@ -2,7 +2,7 @@
 
 [日本語](../ja/providers/anthropic.md)
 
-Select the `anthropic` provider to translate with Claude through the Anthropic API, and save an API key in a file that the language server reads.
+Select the `anthropic` provider to translate with Claude through the Anthropic API, and save an API key from the `Anthropic API key…` code action.
 
 ## Minimal settings
 
@@ -56,7 +56,20 @@ What `provider.document` changes for every provider is described under [Tab tran
 
 ## Authentication
 
-The server reads the key only from the file `anthropic-api-key` in its credential directory, once at startup. The file holds the key alone; whitespace and line breaks around the key are ignored.
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `Anthropic API key…`, then run `Save Anthropic API key`. A terminal window of the OS opens and asks for the key. Paste the key there and press Enter; the terminal does not show what you paste. When the terminal reports that the key was saved, press Enter and return to Zed: the next translation uses the key, without a language server restart. Pressing Enter without a key saves nothing.
+
+Create the key in the [Claude Console](https://platform.claude.com/settings/keys) for a single workspace. The server sends no workspace ID, so the API refuses every request made with a key that is not scoped to one workspace. You can give the key an expiration; a request with an expired key fails as a rejected key.
+
+While no usable key is saved, `Anthropic API key…` is the only code action of the server. While one is saved, the menu has these items instead:
+
+- `Replace Anthropic API key`: open the same terminal to save another key in place of the saved one.
+- `Remove Anthropic API key`: after you confirm, delete the key file from this computer, cancel the translations in progress, and discard the translations already shown. The key stays valid until you delete it in the Claude Console.
+
+The server opens Terminal on macOS and a new console window on Windows. On Linux it tries these in order and uses the first that starts: `xdg-terminal-exec`, `x-terminal-emulator`, `gnome-terminal`, `ptyxis`, `konsole`, `xfce4-terminal`, `kitty`, `alacritty`, `foot`, `wezterm`, `xterm`.
+
+The notice that follows `Save Anthropic API key` or `Replace Anthropic API key` shows a command: the path of the language server, then `anthropic-key`. When no window appears, run that command in a terminal yourself. That is the case on Linux when none of the terminals above starts, and in remote development, where the server runs on the remote machine and opens no window on yours; run the command in a terminal on the remote machine. In PowerShell, put `&` before a path in quotation marks. The command asks for the key in the terminal it runs in and fails where there is none; it does not read the key from a pipe.
+
+The key is saved in the file `anthropic-api-key` in the server's credential directory, and the server reads the file each time it needs the key. The file holds the key alone; whitespace and line breaks around the key are ignored. A file that you create or edit yourself is read the same way.
 
 | OS | Key file |
 | --- | --- |
@@ -64,43 +77,11 @@ The server reads the key only from the file `anthropic-api-key` in its credentia
 | macOS | `~/Library/Application Support/translation-lsp/anthropic-api-key` |
 | Linux | `$XDG_CONFIG_HOME/translation-lsp/anthropic-api-key`, or `~/.config/translation-lsp/anthropic-api-key` when unset |
 
-Create the key in the [Claude Console](https://platform.claude.com/settings/keys) for a single workspace. The server sends no workspace ID, so the API refuses every request made with a key that is not scoped to one workspace. You can give the key an expiration; a request with an expired key fails as a rejected key.
+On macOS and Linux, the directory must have mode `0700` and the file mode `0600`, exactly, and neither may be a symbolic link. On Windows, neither may be a symbolic link; the server does not check who can access them. The command creates the directory and the file that way. It does not change a directory that exists with other permissions: it saves nothing and reports what the directory must be.
 
-On macOS, copy the key to the clipboard, then run these commands in a terminal:
+The key reaches the file from the terminal. It is not written in the Zed settings and does not pass through an environment variable or through the messages between Zed and the server. The server also ignores `ANTHROPIC_API_KEY`: Claude Code prefers that variable over a subscription login, so exporting it for your whole shell would move your ordinary Claude Code usage to API billing.
 
-```sh
-dir=~/Library/Application\ Support/translation-lsp
-mkdir -p "$dir" && chmod 700 "$dir"
-(umask 077; pbpaste > "$dir/anthropic-api-key")
-chmod 600 "$dir/anthropic-api-key"
-```
-
-On Linux, run these commands, paste the key into the terminal, press Enter, then press Ctrl+D:
-
-```sh
-dir="${XDG_CONFIG_HOME:-$HOME/.config}/translation-lsp"
-mkdir -p "$dir" && chmod 700 "$dir"
-(umask 077; cat > "$dir/anthropic-api-key")
-chmod 600 "$dir/anthropic-api-key"
-```
-
-On Windows, copy the key to the clipboard, then run these commands in PowerShell:
-
-```powershell
-$dir = "$env:LOCALAPPDATA\translation-lsp"
-New-Item -ItemType Directory -Force $dir | Out-Null
-Get-Clipboard | Set-Content -Encoding ascii "$dir\anthropic-api-key"
-```
-
-With these commands the key is not part of a command, so it does not enter the shell history.
-
-On macOS and Linux, the directory must have mode `0700` and the file mode `0600`, exactly, and neither may be a symbolic link. On Windows, neither may be a symbolic link; the server does not check who can access them.
-
-To replace the key, write the new key to the same file, then restart the language server.
-
-The server reads no environment variable for the key, so the key is not written in the Zed settings. It also ignores `ANTHROPIC_API_KEY`: Claude Code prefers that variable over a subscription login, so exporting it for your whole shell would move your ordinary Claude Code usage to API billing.
-
-Without a usable key the server still starts, and a translation request returns a settings error without contacting the API. The error says whether the file is missing, the file or its directory is not private, or the file is empty or holds something besides the key.
+Without a usable key the server still starts, and a translation request returns a settings error without contacting the API. The error says whether no key is saved, the file or its directory is not private, or the file is empty or holds something besides the key.
 
 ## Cost and usage
 
@@ -108,7 +89,7 @@ API usage is billed to the Claude Console organization that owns the key. It is 
 
 Automatic comment Hover and Markdown selection translation send requests without a confirmation, as described under [Usage](../usage.md).
 
-There is no account menu or usage command for this provider.
+The `Anthropic API key…` menu saves, replaces, and removes the key. It has no usage command; usage is shown in the Claude Console.
 
 ## What is sent
 
@@ -118,7 +99,9 @@ Each request contains the translation instructions and the text to translate as 
 
 ## Errors and pauses
 
-A billing error, a rejected key, a key that is not scoped to one workspace, an unknown model, and a permission error stop automatic translation and report the HTTP status, the API's error type, and the request ID. After fixing billing in the Claude Console or correcting `provider.model` or `provider.document.model`, run a selection or document translation explicitly; automatic translation resumes when that succeeds. Changing the key or any setting requires a language server restart.
+A billing error, a rejected key, a key that is not scoped to one workspace, an unknown model, and a permission error stop automatic translation and report the HTTP status, the API's error type, and the request ID. After fixing billing in the Claude Console or correcting `provider.model` or `provider.document.model`, run a selection or document translation explicitly; automatic translation resumes when that succeeds. A stop for a rejected key, or for a key that is not scoped to one workspace, ends when you save another key from `Anthropic API key…`: the stop belongs to the key it happened with.
+
+Saving, replacing, or removing the key needs no language server restart. Translations and failures kept for one key are not shown for another, and a translation that is in progress when the key changes is discarded when it completes. Changing a setting requires a language server restart.
 
 Rate limits and overload are retried once as described under [Automatic retries](../behavior.md#automatic-retries). If the model declines a text, the request fails with the reported category, is not retried, and does not pause automatic translation.
 
@@ -126,4 +109,8 @@ The rules shared by every provider are described under [Pauses](../behavior.md#p
 
 ## Stored data
 
-The key is stored as plain text in the file `anthropic-api-key` that you create as described under [Authentication](#authentication), in the directory where the ChatGPT provider stores its credentials. The server only reads that file: it does not create, change, or delete the file or its directory. The server does not write the key to logs, error messages, or anywhere else on disk.
+The key is stored as plain text in the file `anthropic-api-key` described under [Authentication](#authentication), in the directory where the ChatGPT provider stores its credentials. The `anthropic-key` command, which the menu runs in a terminal, writes the file, and creates the directory when it is missing. `Remove Anthropic API key` deletes the file and nothing else. Otherwise the language server only reads the file.
+
+To open Terminal on macOS, the server writes a script to the temporary directory. The script holds the path of the language server and no key, and deletes itself when Terminal runs it.
+
+The server does not write the key to logs, error messages, notices, or anywhere else on disk.

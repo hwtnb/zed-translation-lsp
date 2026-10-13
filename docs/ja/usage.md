@@ -20,7 +20,7 @@ ChatGPTが利用可能であるか、Anthropicプロバイダーを選んでい�
 
 ## 手動の選択翻訳
 
-すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。ChatGPTプロバイダーで未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。選択がないとホバー用の翻訳項目は表示されません。
+すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。ChatGPTプロバイダーで未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。Anthropicプロバイダーでキーが保存されていない場合は、`Anthropic API key…` からキーを保存してください。選択がないとホバー用の翻訳項目は表示されません。
 
 ## 翻訳をタブに開く
 

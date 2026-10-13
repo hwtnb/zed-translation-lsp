@@ -2,7 +2,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::test_support::{Fixture, KEY, Reply, event, started, text_block};
+use super::key::ApiKey;
+use super::test_support::{Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
 use super::*;
 use crate::providers::error::{ErrorKind, Notification};
 
@@ -15,13 +16,13 @@ const PAUSED: &str = "Automatic translation is paused";
 
 async fn translate(provider: &AnthropicProvider, intent: Intent) -> Result<String, Error> {
     provider
-        .translate(intent, Output::Range, SOURCE, "ja", Context::Anthropic)
+        .translate(intent, Output::Range, SOURCE, "ja", provider.context()?)
         .await
         .map(|translated| translated.text)
 }
 
 fn automatic(provider: &AnthropicProvider) -> Result<u64, Error> {
-    provider.admit(&Context::Anthropic, Intent::Automatic)
+    provider.admit(&provider.context()?, Intent::Automatic)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -45,12 +46,12 @@ async fn request_sends_only_the_documented_headers_and_fields() {
                 Output::Range,
                 source,
                 "ja",
-                Context::Anthropic,
+                provider.context().unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(translated.text, format!("訳{source}"));
-        assert_eq!(translated.context, Context::Anthropic);
+        assert_eq!(translated.context, provider.context().unwrap());
         let state = fixture.state.lock().unwrap();
         assert_eq!(state.records.len(), 1);
         let record = &state.records[0];
@@ -148,7 +149,7 @@ async fn http_failures_follow_the_documented_status_and_type_table() {
             documented(401, "authentication_error"),
             Some("authentication_error"),
             ErrorKind::Configuration,
-            "Check the key in anthropic-api-key",
+            "Run \"Anthropic API key…\" from the code actions to replace it",
         ),
         (
             documented(402, "billing_error"),
@@ -209,7 +210,7 @@ async fn http_failures_follow_the_documented_status_and_type_table() {
             Reply::new(401, String::new()),
             None,
             ErrorKind::Configuration,
-            "Check the key in anthropic-api-key",
+            "Run \"Anthropic API key…\" from the code actions to replace it",
         ),
         (
             documented(418, "future_error"),
@@ -413,7 +414,8 @@ async fn interrupted_responses_and_refused_connections_are_not_sent_again() {
             drop(socket);
         }
     });
-    let provider = AnthropicProvider::synthetic(api, Some(KEY));
+    let keys = KeyDirectory::with_key(KEY);
+    let provider = AnthropicProvider::synthetic(api, &keys.path);
     let error = translate(&provider, Intent::Automatic).await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Temporary);
     assert!(!error.retryable());
@@ -443,7 +445,7 @@ async fn billing_stop_pauses_automatic_work_until_an_explicit_translation_succee
 
     // Work admitted before the stop fails without a request or a second notice.
     let drained = provider
-        .check_admission(&Context::Anthropic, admitted)
+        .check_admission(&provider.context().unwrap(), admitted)
         .unwrap_err();
     assert_eq!(drained.notification(), Notification::Suppress);
     assert_eq!(drained.to_string(), error.to_string());
@@ -461,12 +463,9 @@ async fn billing_stop_pauses_automatic_work_until_an_explicit_translation_succee
     assert_eq!(fixture.calls(), 1);
 
     // An explicit request is admitted, and its own failure is reported.
-    let fresh = provider
-        .admit(&Context::Anthropic, Intent::Explicit)
-        .unwrap();
-    provider
-        .check_admission(&Context::Anthropic, fresh)
-        .unwrap();
+    let context = provider.context().unwrap();
+    let fresh = provider.admit(&context, Intent::Explicit).unwrap();
+    provider.check_admission(&context, fresh).unwrap();
     let retried = translate(&provider, Intent::Explicit).await.unwrap_err();
     assert_eq!(retried.notification(), Notification::Show);
     assert_eq!(fixture.calls(), 2);
@@ -501,8 +500,7 @@ async fn key_for_several_workspaces_asks_for_a_single_workspace_key() {
     );
     assert!(message.contains("(type=invalid_request_error)"));
     assert!(message.contains("Create a key for a single workspace in the Claude Console"));
-    assert!(message.contains("anthropic-api-key"));
-    assert!(message.contains("restart the language server"));
+    assert!(message.contains("run \"Anthropic API key…\" from the code actions to replace"));
     assert!(!message.contains("The API key was rejected"));
     assert!(!message.contains(KEY));
     // Every request would fail the same way, so automatic translation stops.
@@ -529,7 +527,7 @@ async fn key_for_several_workspaces_asks_for_a_single_workspace_key() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn key_stays_out_of_debug_output_and_network_errors() {
-    let key = ApiKey::synthetic(Some(KEY)).unwrap();
+    let key = ApiKey::parse(KEY).unwrap();
     assert_eq!(format!("{key:?}"), "ApiKey([redacted])");
     assert!(key.header.is_sensitive());
     assert!(!format!("{:?}", key.header).contains(KEY));
@@ -540,7 +538,8 @@ async fn key_stays_out_of_debug_output_and_network_errors() {
             .unwrap();
         format!("http://{}/v1", listener.local_addr().unwrap())
     };
-    let provider = AnthropicProvider::synthetic(unused.clone(), Some(KEY));
+    let keys = KeyDirectory::with_key(KEY);
+    let provider = AnthropicProvider::synthetic(unused.clone(), &keys.path);
     let error = translate(&provider, Intent::Automatic).await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Temporary);
     assert!(
@@ -583,7 +582,8 @@ async fn dropping_the_translation_closes_its_request() {
 
 #[test]
 fn foreign_contexts_are_rejected_before_any_work() {
-    let provider = AnthropicProvider::synthetic("http://127.0.0.1:9/v1".into(), Some(KEY));
+    let keys = KeyDirectory::with_key(KEY);
+    let provider = AnthropicProvider::synthetic("http://127.0.0.1:9/v1".into(), &keys.path);
     assert!(provider.admit(&Context::Mock, Intent::Explicit).is_err());
     provider.check_admission(&Context::Mock, 0).unwrap();
     assert_eq!(

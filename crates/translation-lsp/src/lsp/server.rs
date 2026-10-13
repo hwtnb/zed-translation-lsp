@@ -47,7 +47,8 @@ use crate::{
         Settings, anthropic_thinking, features::Feature,
     },
     providers::{
-        AuthUiState, Context, Interaction, Output, OutputOptions, Translated, TranslationProvider,
+        AccountChange, AuthUiState, Context, Interaction, Output, OutputOptions, Translated,
+        TranslationProvider,
         anthropic::{self, AnthropicProvider},
         chatgpt::{self, ChatGptProvider},
         credential_directory,
@@ -96,6 +97,9 @@ struct Administration {
     ticket: u64,
     stop: watch::Sender<Option<Instant>>,
     deadline: Instant,
+    // The context when a command that asks before it changes the account was
+    // taken, to tell afterwards whether it did.
+    context: Option<Context>,
 }
 
 struct Server<P: TranslationProvider> {

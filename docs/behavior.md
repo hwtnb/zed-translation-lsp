@@ -16,7 +16,7 @@ Configure these limits below `translation_limits.work`.
 
 Selection and tab commands acknowledge acceptance immediately. Changing or clearing a selection, switching tabs, or canceling that command's LSP response does not cancel accepted work. A Hover response can be canceled or time out independently, without canceling an accepted comment translation. Moving from comment A to B keeps A running or queued; return to either comment to read its completed result. Merely passing over a comment can therefore consume provider usage once Zed sends a Hover request.
 
-Editing anywhere in the source document, closing it, changing authorization, or shutting down the server invalidates affected work and cached results. Token refresh does not invalidate them. Opening and dismissing `ChatGPT account…` leaves translations running.
+Editing anywhere in the source document, closing it, changing authorization, or shutting down the server invalidates affected work and cached results. Token refresh does not invalidate them. With the Anthropic provider, saving, replacing, or removing the key changes authorization. Opening and dismissing `ChatGPT account…` or `Anthropic API key…` leaves translations running.
 
 ## Automatic selection
 

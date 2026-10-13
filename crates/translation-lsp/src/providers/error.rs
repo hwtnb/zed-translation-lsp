@@ -97,8 +97,14 @@ pub(crate) enum Cause {
     Transport(#[from] TransportExceeded),
     #[error("Translation canceled")]
     Cancelled,
-    #[error("ChatGPT account or authorization changed; retry the preview")]
-    Modified,
+    // What the translation was authorized with, which is no longer in use.
+    #[error("{0} changed; retry the preview")]
+    Modified(&'static str),
+    #[error("No terminal window could be opened. To {purpose}, run this in a terminal: {command}")]
+    Terminal {
+        purpose: &'static str,
+        command: String,
+    },
     #[error("{0}")]
     Credentials(#[source] CredentialError),
     #[error(transparent)]
@@ -179,13 +185,14 @@ impl Cause {
     pub fn kind(&self) -> ErrorKind {
         match self {
             Self::Failed(_)
+            | Self::Terminal { .. }
             | Self::Protocol { .. }
             | Self::Size(_)
             | Self::Transport(_)
             | Self::Refusal { .. } => ErrorKind::Failed,
             Self::Configuration(_) => ErrorKind::Configuration,
             Self::Cancelled => ErrorKind::Cancelled,
-            Self::Modified => ErrorKind::Modified,
+            Self::Modified(_) => ErrorKind::Modified,
             Self::Credentials(CredentialError::Busy) => ErrorKind::Unavailable,
             Self::Credentials(_) => ErrorKind::Storage,
             Self::Network { .. } => ErrorKind::Temporary,
@@ -419,7 +426,7 @@ mod tests {
                 category: None,
             }
             .into(),
-            Cause::Modified.into(),
+            Cause::Modified("ChatGPT account or authorization").into(),
         ] {
             assert!(!error.retryable(), "{error}");
         }

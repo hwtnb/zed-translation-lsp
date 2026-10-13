@@ -22,11 +22,23 @@ pub(crate) trait Interaction {
     ) -> impl Future<Output = Result<Option<String>, Error>>;
 }
 
+// When a command changes the account or key that translations are made with.
+// The change cancels the work in progress and discards the previews.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AccountChange {
+    Never,
+    // As soon as the command starts, so both are done before it runs.
+    AtOnce,
+    // Only if the user agrees while the command runs, so both are done after
+    // it, and only when it has changed the context.
+    IfConfirmed,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ProviderCommand {
     pub command: &'static str,
     pub title: &'static str,
-    pub changes_account: bool,
+    pub changes_account: AccountChange,
 }
 
 pub(crate) struct Capabilities {
@@ -48,7 +60,7 @@ pub(crate) enum AuthUiState {
 pub(crate) enum Context {
     Mock,
     ChatGpt(AccountKey),
-    Anthropic,
+    Anthropic(anthropic::key::KeyId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

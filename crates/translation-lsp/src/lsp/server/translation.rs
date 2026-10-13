@@ -191,8 +191,15 @@ impl<P: TranslationProvider> Server<P> {
             .map(|(id, _)| id.clone())
         {
             let operation = self.administrations.remove(&id).unwrap();
-            if Self::changes_account(&operation.command) {
-                self.clear_previews();
+            match Self::account_change(&operation.command) {
+                AccountChange::AtOnce => self.clear_previews(),
+                // The user agreed, and the command changed what translations
+                // are made with.
+                AccountChange::IfConfirmed if self.provider.context().ok() != operation.context => {
+                    self.cancel_all(connection)?;
+                    self.clear_previews();
+                }
+                _ => (),
             }
             if operation.command == SETTINGS_COMMAND
                 && operation.deadline > Instant::now()

@@ -10,8 +10,12 @@ relative to the repository root.
 - `crates/translation-lsp`: native language server. `src/config.rs` owns settings;
   `src/lsp/` owns requests, scheduling, previews, and activity;
   `src/providers/` owns translation providers and authentication;
-  `src/text/` owns comment extraction and Markdown input eligibility.
+  `src/text/` owns comment extraction and Markdown input eligibility. Run with
+  `anthropic-key`, the same executable asks for the Anthropic API key in a
+  terminal and saves it instead of serving an editor.
 - `crates/translation-lsp/tests/stdio.rs`: integration tests for the LSP protocol.
+- `crates/translation-lsp/tests/key_command.rs`: integration tests for the
+  `anthropic-key` command on a pseudo-terminal, for macOS and Linux.
 - `xtask`: development-only native packaging, license collection, and artifact checks.
 - `README.md` and `docs/`: canonical English usage and development documentation.
   `README.md` is the entry point; `docs/` holds the details. `README.ja.md` and

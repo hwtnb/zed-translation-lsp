@@ -4,10 +4,10 @@ use std::{
     collections::VecDeque,
     convert::Infallible,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -22,11 +22,12 @@ use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::{
     net::TcpListener,
-    sync::Notify,
+    sync::{Notify, Semaphore},
     task::{JoinHandle, JoinSet},
 };
 
 use super::AnthropicProvider;
+use crate::providers::credential_directory;
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
 
@@ -70,6 +71,36 @@ impl KeyDirectory {
 
     pub fn file(&self) -> PathBuf {
         self.path.join("anthropic-api-key")
+    }
+
+    // Replaces the key file at once, as the key command does.
+    pub fn replace(&self, contents: &str) {
+        credential_directory::replace(&self.path, "anthropic-api-key", contents.as_bytes())
+            .unwrap();
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(&self.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+// Stands for the terminal of the OS. It opens no window: it records the
+// executable it was given and answers what `fails` says.
+#[derive(Clone, Default)]
+pub(crate) struct Terminal {
+    pub opened: Arc<Mutex<Vec<PathBuf>>>,
+    pub fails: Arc<AtomicBool>,
+}
+
+impl Terminal {
+    pub fn open(&self, executable: &Path) -> bool {
+        self.opened.lock().unwrap().push(executable.into());
+        !self.fails.load(Ordering::SeqCst)
     }
 }
 
@@ -137,6 +168,8 @@ pub(crate) struct FixtureState {
     pub omit_request_id: bool,
     // Leave each response open after its body, as an unfinished stream.
     pub hold: bool,
+    // A recorded request is answered only when the test adds a permit.
+    pub gate: Option<Arc<Semaphore>>,
 }
 
 #[derive(Default)]
@@ -181,6 +214,8 @@ impl Drop for Held {
 
 pub(crate) struct Fixture {
     pub base: String,
+    // Where `provider` reads its key, which is `KEY` until a test changes it.
+    pub keys: KeyDirectory,
     pub state: Arc<Mutex<FixtureState>>,
     pub open: Arc<OpenResponses>,
     task: JoinHandle<()>,
@@ -215,6 +250,7 @@ impl Fixture {
         });
         Self {
             base,
+            keys: KeyDirectory::with_key(KEY),
             state,
             open,
             task,
@@ -222,7 +258,7 @@ impl Fixture {
     }
 
     pub fn provider(&self) -> AnthropicProvider {
-        AnthropicProvider::synthetic(format!("{}/v1", self.base), Some(KEY))
+        AnthropicProvider::synthetic(format!("{}/v1", self.base), &self.keys.path)
     }
 
     pub fn calls(&self) -> usize {
@@ -341,12 +377,19 @@ async fn endpoint(
     let headers = request.headers().clone();
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(body.to_vec()).unwrap();
+    let gate = {
+        let mut state = shared.lock().unwrap();
+        state.records.push(Record {
+            path: path.clone(),
+            headers,
+            body: body.clone(),
+        });
+        state.gate.clone()
+    };
+    if let Some(gate) = gate {
+        gate.acquire().await.unwrap().forget();
+    }
     let mut state = shared.lock().unwrap();
-    state.records.push(Record {
-        path: path.clone(),
-        headers,
-        body: body.clone(),
-    });
     let reply = if path != "/v1/messages" {
         Reply::new(404, "unknown synthetic endpoint")
     } else if let Some(reply) = state

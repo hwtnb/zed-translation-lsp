@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::config::{ReasoningEffort, limits::SizeLimit};
 
 use super::{
-    AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
+    AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     error::{Error, ErrorKind},
@@ -34,22 +34,22 @@ const COMMANDS: [ProviderCommand; 4] = [
     ProviderCommand {
         command: CONNECT,
         title: "Continue with ChatGPT / Choose account",
-        changes_account: true,
+        changes_account: AccountChange::AtOnce,
     },
     ProviderCommand {
         command: ENABLE,
         title: "Enable ChatGPT plan use",
-        changes_account: true,
+        changes_account: AccountChange::AtOnce,
     },
     ProviderCommand {
         command: SIGN_OUT,
         title: "Sign out of ChatGPT",
-        changes_account: true,
+        changes_account: AccountChange::AtOnce,
     },
     ProviderCommand {
         command: USAGE,
         title: "ChatGPT Usage",
-        changes_account: false,
+        changes_account: AccountChange::Never,
     },
 ];
 

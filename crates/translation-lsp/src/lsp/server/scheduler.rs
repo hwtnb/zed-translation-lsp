@@ -610,14 +610,14 @@ mod separate_outputs_tests {
             generation: 0,
             text: "source".into(),
             target_language: "ja".into(),
-            context: Context::Anthropic,
+            context: Context::Anthropic(crate::providers::anthropic::key::KeyId::SYNTHETIC),
         };
         scheduler
             .insert(
                 ticket,
                 PreparedTranslation {
                     target: target(line),
-                    context: Context::Anthropic,
+                    context: Context::Anthropic(crate::providers::anthropic::key::KeyId::SYNTHETIC),
                     is_comment: false,
                     task,
                 },

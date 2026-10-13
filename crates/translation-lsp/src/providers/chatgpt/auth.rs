@@ -26,7 +26,7 @@ use super::{
 };
 
 pub(super) fn account_changed() -> Error {
-    Cause::Modified.into()
+    Cause::Modified("ChatGPT account or authorization").into()
 }
 
 const RESOURCE: &str = "https://api.openai.com/v1";

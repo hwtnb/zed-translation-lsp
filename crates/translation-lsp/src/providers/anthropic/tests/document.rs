@@ -4,7 +4,7 @@ use super::{PAUSED, SOURCE, automatic};
 use crate::{
     config::AnthropicEffort,
     providers::{
-        Context, Intent, Output, OutputOptions, TranslationProvider,
+        Intent, Output, OutputOptions, TranslationProvider,
         anthropic::{
             AnthropicProvider, ModelOptions,
             test_support::{Fixture, Reply},
@@ -38,7 +38,7 @@ async fn translate(
     output: Output,
 ) -> Result<String, Error> {
     provider
-        .translate(intent, output, SOURCE, "ja", Context::Anthropic)
+        .translate(intent, output, SOURCE, "ja", provider.context()?)
         .await
         .map(|translated| translated.text)
 }

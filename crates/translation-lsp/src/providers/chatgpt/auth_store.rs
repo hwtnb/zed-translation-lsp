@@ -5,7 +5,7 @@ use crate::providers::{
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions, TryLockError},
-    io::{Read, Write},
+    io::Read,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -184,20 +184,7 @@ impl AuthStore {
 
     pub async fn lock(&self, create: bool) -> Result<Option<LockedStore>, CredentialError> {
         if create {
-            if !check_path(&self.directory, true)? {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    fs::DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(&self.directory)
-                        .map_err(|source| CredentialError::io("create directory", source))?;
-                }
-                #[cfg(not(unix))]
-                fs::create_dir_all(&self.directory)
-                    .map_err(|source| CredentialError::io("create directory", source))?;
-            }
+            credential_directory::create(&self.directory)?;
         } else if !check_path(&self.directory, true)? {
             return Ok(None);
         }
@@ -299,41 +286,11 @@ impl LockedStore {
         if bytes.len() as u64 > MAX_AUTH_BYTES {
             return Err(CredentialError::Invalid);
         }
-        let temporary = self
-            .store
-            .directory
-            .join(format!(".auth-{}.tmp", Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = (|| {
-            let mut file = options
-                .open(&temporary)
-                .map_err(|source| CredentialError::io("create temporary file", source))?;
-            file.write_all(&bytes)
-                .map_err(|source| CredentialError::io("write credentials", source))?;
-            file.sync_all()
-                .map_err(|source| CredentialError::io("sync credentials", source))?;
-            fs::rename(&temporary, self.store.directory.join("auth.json"))
-                .map_err(|source| CredentialError::io("replace credentials", source))?;
-            #[cfg(unix)]
-            File::open(&self.store.directory)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|source| CredentialError::io("sync directory", source))?;
-            revision(
-                &file
-                    .metadata()
-                    .map_err(|source| CredentialError::io("read metadata", source))?,
-            )
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result
+        revision(&credential_directory::replace(
+            &self.store.directory,
+            "auth.json",
+            &bytes,
+        )?)
     }
 }
 

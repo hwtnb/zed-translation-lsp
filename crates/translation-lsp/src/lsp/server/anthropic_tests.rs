@@ -6,6 +6,7 @@ use crate::providers::{
 use serde_json::json;
 
 mod document;
+mod key;
 mod startup;
 
 async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
@@ -67,7 +68,7 @@ fn target(server: &Server<AnthropicProvider>, uri: &Uri, range: Range) -> Transl
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn anthropic_declares_automatic_selection_without_account_commands() {
+async fn anthropic_declares_automatic_selection_and_the_key_menu() {
     let initialized = capabilities::<AnthropicProvider>();
     assert_eq!(
         initialized.server_info.unwrap().name,
@@ -84,13 +85,15 @@ async fn anthropic_declares_automatic_selection_without_account_commands() {
             RETRY_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
-            CANCEL_ALL_COMMAND
+            CANCEL_ALL_COMMAND,
+            "translation-lsp.save-anthropic-key",
+            "translation-lsp.remove-anthropic-key",
+            SETTINGS_COMMAND
         ]
     );
     let fixture = Fixture::new().await;
     let (mut server, _connection, _client, _completions) =
         server(fixture.provider(), Settings::default());
-    assert!(server.provider.account_commands().is_empty());
     let uri: Uri = "file:///selection.md".parse().unwrap();
     let source = "Alpha sentence.";
     let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
@@ -102,8 +105,8 @@ async fn anthropic_declares_automatic_selection_without_account_commands() {
         .into_iter()
         .map(|action| action.title)
         .collect();
-    assert_eq!(titles, ["Translate selection to ja"]);
-    // A stable Markdown selection becomes an automatic candidate without sign-in.
+    assert_eq!(titles, ["Translate selection to ja", "Anthropic API key…"]);
+    // A stable Markdown selection becomes an automatic candidate once a key is saved.
     assert!(server.selection.is_some());
     assert_eq!(fixture.calls(), 0);
 }
@@ -137,7 +140,7 @@ async fn worker_translation_is_cached_and_read_by_hover() {
     );
     let preview = server.cache.latest(&uri).unwrap();
     assert_eq!(preview.translation, "訳Read this.");
-    assert_eq!(preview.context, Context::Anthropic);
+    assert_eq!(preview.context, server.provider.context().unwrap());
     assert_eq!(server.documents[&uri].text(), Some(source));
 
     let cached = server.hover(2.into(), hover()).unwrap().unwrap();
@@ -247,50 +250,8 @@ async fn billing_stop_drains_queued_work_with_one_notice_and_resumes_after_expli
     assert!(server.cache.exact(&uri, target.range, false).is_some());
     server
         .provider
-        .admit(&Context::Anthropic, Intent::Automatic)
+        .admit(&server.provider.context().unwrap(), Intent::Automatic)
         .unwrap();
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn missing_key_rejects_explicit_and_hover_work_without_requests() {
-    let fixture = Fixture::new().await;
-    let provider = AnthropicProvider::synthetic(format!("{}/v1", fixture.base), None);
-    let (mut server, _connection, _client, _completions) = server(provider, Settings::default());
-    let uri: Uri = "file:///missing-key.rs".parse().unwrap();
-    let source = "// Read this.";
-    let range = Range::new(Position::new(0, 0), Position::new(0, source.len() as u32));
-    server.documents.insert(
-        uri.clone(),
-        Document::new(1, 1, "rust".into(), source.into()),
-    );
-    // The translation action stays available so the error can explain the key file.
-    assert!(
-        actions(&mut server, &uri, range)
-            .iter()
-            .any(|action| action.title == "Translate selection to ja")
-    );
-    let target = target(&server, &uri, range);
-    let explicit = server
-        .queue(1.into(), target, PendingReply::Command)
-        .unwrap_err();
-    let hover = server
-        .hover(
-            2.into(),
-            parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap(),
-        )
-        .unwrap_err();
-    for error in [explicit, hover] {
-        assert_eq!(error.code, ErrorCode::RequestFailed as i32);
-        assert!(
-            error
-                .message
-                .starts_with("Anthropic API key file was not found."),
-            "{}",
-            error.message
-        );
-    }
-    assert!(server.scheduler.translations.is_empty());
-    assert_eq!(fixture.calls(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

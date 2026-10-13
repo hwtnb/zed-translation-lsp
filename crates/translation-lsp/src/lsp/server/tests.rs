@@ -319,7 +319,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
                 commands: &[ProviderCommand {
                     command: "synthetic.inspect",
                     title: "Inspect synthetic account",
-                    changes_account: false,
+                    changes_account: crate::providers::AccountChange::Never,
                 }],
             }
         }

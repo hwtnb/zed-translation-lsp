@@ -1,7 +1,10 @@
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
+
+use uuid::Uuid;
 
 use super::error::credentials::CredentialError;
 
@@ -37,4 +40,64 @@ pub(crate) fn check_path(path: &Path, directory: bool) -> Result<bool, Credentia
         }
     }
     Ok(true)
+}
+
+// A directory that exists must be private already: its permissions are the
+// user's to correct.
+pub(crate) fn create(directory: &Path) -> Result<(), CredentialError> {
+    if check_path(directory, true)? {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)
+            .map_err(|source| CredentialError::io("create directory", source))?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(directory)
+        .map_err(|source| CredentialError::io("create directory", source))?;
+    Ok(())
+}
+
+// The contents are written to a temporary file beside `name`, which then takes
+// its name, so a reader finds the old contents or the new and never a part of
+// either. Returns the metadata of the new file.
+pub(crate) fn replace(
+    directory: &Path,
+    name: &str,
+    contents: &[u8],
+) -> Result<fs::Metadata, CredentialError> {
+    let temporary = directory.join(format!(".{name}-{}.tmp", Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| {
+        let mut file = options
+            .open(&temporary)
+            .map_err(|source| CredentialError::io("create temporary file", source))?;
+        file.write_all(contents)
+            .map_err(|source| CredentialError::io("write credentials", source))?;
+        file.sync_all()
+            .map_err(|source| CredentialError::io("sync credentials", source))?;
+        fs::rename(&temporary, directory.join(name))
+            .map_err(|source| CredentialError::io("replace credentials", source))?;
+        #[cfg(unix)]
+        File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|source| CredentialError::io("sync directory", source))?;
+        file.metadata()
+            .map_err(|source| CredentialError::io("read metadata", source))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }

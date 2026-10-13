@@ -1,16 +1,21 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    sync::{Mutex, atomic::Ordering},
+};
 
-use super::{PAUSED, translate};
+use super::{PAUSED, automatic, translate};
 use crate::{
     config::{AnthropicEffort, limits::TranslationLimits},
     providers::{
-        Context, Intent, OutputOptions, TranslationProvider,
+        AccountChange, AuthUiState, Intent, Interaction, Output, OutputOptions,
+        TranslationProvider,
         anthropic::{
-            AnthropicProvider, ModelOptions,
-            key::ApiKey,
-            test_support::{Fixture, KeyDirectory},
+            AnthropicProvider, ModelOptions, REMOVE, SAVE,
+            key::{KeyFile, terminal},
+            test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal},
         },
-        error::{ErrorKind, credentials::CredentialError},
+        error::{Error, ErrorKind, credentials::CredentialError},
     },
 };
 
@@ -20,13 +25,21 @@ const ENVIRONMENT_KEY: &str = "sk-ant-synthetic-environment-key";
 const VARIABLES: [&str; 2] = ["TRANSLATION_LSP_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"];
 const CHILD: &str = "providers::anthropic::tests::key::environment_child_process";
 
-const MISSING: &str = "Anthropic API key file was not found.";
+const MENU: &str = "Run \"Anthropic API key…\" from the code actions";
+const MISSING: &str = "Anthropic API key is not saved.";
 const NOT_PRIVATE: &str = "Anthropic API key file cannot be used.";
 const EMPTY: &str = "Anthropic API key file is empty.";
-const INVALID: &str = "Anthropic API key file must hold only the key";
+const INVALID: &str = "Anthropic API key file does not hold a key";
 
 fn provider(fixture: &Fixture, directory: &Path) -> AnthropicProvider {
-    AnthropicProvider::synthetic(format!("{}/v1", fixture.base), None).with_key_directory(directory)
+    AnthropicProvider::synthetic(format!("{}/v1", fixture.base), directory)
+}
+
+// The key the last request to the fixture carried.
+fn sent(fixture: &Fixture) -> String {
+    let state = fixture.state.lock().unwrap();
+    let key = &state.records.last().unwrap().headers["x-api-key"];
+    key.to_str().unwrap().to_owned()
 }
 
 // What every request is answered with when the key in `directory` cannot be
@@ -34,34 +47,26 @@ fn provider(fixture: &Fixture, directory: &Path) -> AnthropicProvider {
 async fn refusal(fixture: &Fixture, directory: &Path) -> String {
     let calls = fixture.calls();
     let provider = provider(fixture, directory);
-    assert_eq!(provider.context().unwrap(), Context::Anthropic);
+    assert_eq!(provider.auth_ui_state(), AuthUiState::SignedOut);
     let mut messages = Vec::new();
-    for intent in [Intent::Automatic, Intent::Explicit] {
-        for error in [
-            provider.admit(&Context::Anthropic, intent).unwrap_err(),
-            translate(&provider, intent).await.unwrap_err(),
-        ] {
-            assert_eq!(error.kind(), ErrorKind::Configuration);
-            let message = error.to_string();
-            assert!(message.contains("anthropic-api-key"), "{message}");
-            assert!(message.contains("restart the language server"), "{message}");
-            // Only a restart can supply the key, so no retry is suggested.
-            assert!(!message.contains(PAUSED));
-            assert!(format!("{error:?}").contains(&message));
-            messages.push(message);
-        }
+    for error in [
+        provider.context().unwrap_err(),
+        translate(&provider, Intent::Automatic).await.unwrap_err(),
+        translate(&provider, Intent::Explicit).await.unwrap_err(),
+    ] {
+        assert_eq!(error.kind(), ErrorKind::Configuration);
+        let message = error.to_string();
+        // The key is read again at the next request, so no restart is asked for
+        // and no explicit translation is needed to resume.
+        assert!(!message.contains("restart"), "{message}");
+        assert!(!message.contains(PAUSED));
+        assert!(format!("{error:?}").contains("Configuration"));
+        messages.push(message);
     }
     assert_eq!(fixture.calls(), calls);
     messages.dedup();
     assert_eq!(messages.len(), 1);
     messages.remove(0)
-}
-
-fn names(directory: &Path) -> Vec<String> {
-    fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -76,10 +81,10 @@ async fn key_file_supplies_the_key_and_is_left_as_it_was() {
         let directory = KeyDirectory::with_key(&contents);
         let before = fs::metadata(directory.file()).unwrap();
         let provider = provider(&fixture, &directory.path);
+        assert_eq!(provider.auth_ui_state(), AuthUiState::Ready);
         translate(&provider, Intent::Explicit).await.unwrap();
-        let state = fixture.state.lock().unwrap();
-        assert_eq!(state.records.last().unwrap().headers["x-api-key"], FILE_KEY);
-        assert_eq!(names(&directory.path), ["anthropic-api-key"]);
+        assert_eq!(sent(&fixture), FILE_KEY);
+        assert_eq!(directory.names(), ["anthropic-api-key"]);
         assert_eq!(fs::read(directory.file()).unwrap(), contents.as_bytes());
         let after = fs::metadata(directory.file()).unwrap();
         assert_eq!(after.modified().unwrap(), before.modified().unwrap());
@@ -92,12 +97,9 @@ async fn key_file_supplies_the_key_and_is_left_as_it_was() {
 async fn missing_key_file_is_reported_and_nothing_is_created() {
     let fixture = Fixture::new().await;
     let directory = KeyDirectory::new();
-    assert!(
-        refusal(&fixture, &directory.path)
-            .await
-            .starts_with(MISSING)
-    );
-    assert!(names(&directory.path).is_empty());
+    let message = refusal(&fixture, &directory.path).await;
+    assert_eq!(message, format!("{MISSING} {MENU} to save it"));
+    assert!(directory.names().is_empty());
 
     let absent = directory.path.join("absent");
     assert!(refusal(&fixture, &absent).await.starts_with(MISSING));
@@ -128,6 +130,7 @@ async fn empty_and_malformed_key_files_are_told_apart_without_showing_their_cont
         let directory = KeyDirectory::with_key(&contents);
         let message = refusal(&fixture, &directory.path).await;
         assert!(message.starts_with(expected), "{message}");
+        assert!(message.ends_with(&format!("{MENU} to save the key")));
         if let Ok(text) = std::str::from_utf8(&contents)
             && !text.trim().is_empty()
         {
@@ -232,11 +235,302 @@ fn unlocated_directory_and_read_failure_are_settings_errors() {
             "Anthropic API key file could not be read.",
         ),
     ] {
-        let error = ApiKey::read(Err(error)).unwrap_err();
+        let error = KeyFile::new(Err(error)).read().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Configuration);
         assert!(error.to_string().starts_with(expected), "{error}");
         assert!(!format!("{error:?}").contains("synthetic failure"));
     }
+}
+
+// The file is read for every request: a key saved, replaced, or removed while
+// the server runs is the key of the next request, and counts as another key.
+#[tokio::test(flavor = "current_thread")]
+async fn key_saved_replaced_or_removed_is_followed_without_a_restart() {
+    let fixture = Fixture::new().await;
+    let directory = KeyDirectory::new();
+    let provider = provider(&fixture, &directory.path);
+    assert!(translate(&provider, Intent::Explicit).await.is_err());
+
+    directory.replace(FILE_KEY);
+    let first = provider.context().unwrap();
+    translate(&provider, Intent::Explicit).await.unwrap();
+    assert_eq!(sent(&fixture), FILE_KEY);
+    // The same key read again is the same context, whatever surrounds it.
+    directory.replace(&format!("{FILE_KEY}\n"));
+    assert_eq!(provider.context().unwrap(), first);
+
+    directory.replace(KEY);
+    let second = provider.context().unwrap();
+    assert_ne!(second, first);
+    translate(&provider, Intent::Explicit).await.unwrap();
+    assert_eq!(sent(&fixture), KEY);
+
+    fs::remove_file(directory.file()).unwrap();
+    let error = translate(&provider, Intent::Explicit).await.unwrap_err();
+    assert!(error.to_string().starts_with(MISSING), "{error}");
+    assert_eq!(provider.auth_ui_state(), AuthUiState::SignedOut);
+    // A key that comes back after none could be used is not the key from before.
+    directory.replace(KEY);
+    let third = provider.context().unwrap();
+    assert!(third != first && third != second);
+    assert_eq!(fixture.calls(), 2);
+
+    // The context shows a count, and nothing of the key.
+    for context in [first, second, third] {
+        let shown = format!("{context:?}");
+        assert!(shown.starts_with("Anthropic(KeyId("), "{shown}");
+        assert!(!shown.contains("sk-ant"));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn translation_prepared_under_another_key_is_refused_without_a_request() {
+    let fixture = Fixture::new().await;
+    let provider = fixture.provider();
+    let prepared = provider.context().unwrap();
+    fixture.keys.replace(FILE_KEY);
+    let error = provider
+        .translate(
+            Intent::Explicit,
+            Output::Range,
+            "Read this.",
+            "ja",
+            prepared,
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), ErrorKind::Modified);
+    assert_eq!(
+        error.to_string(),
+        "Anthropic API key changed; retry the preview"
+    );
+    assert_eq!(fixture.calls(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stop_for_a_rejected_key_is_not_carried_to_the_key_that_replaces_it() {
+    let fixture = Fixture::new().await;
+    fixture.always(Some(Reply::failure(
+        401,
+        "authentication_error",
+        "invalid x-api-key",
+    )));
+    let provider = fixture.provider();
+    let rejected = provider.context().unwrap();
+    let admitted = automatic(&provider).unwrap();
+    let error = translate(&provider, Intent::Automatic).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Configuration);
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!(
+            "The API key was rejected. {MENU} to replace it. {PAUSED}"
+        )),
+        "{message}"
+    );
+    assert_eq!(
+        automatic(&provider).unwrap_err().kind(),
+        ErrorKind::Configuration
+    );
+    assert!(provider.check_admission(&rejected, admitted).is_err());
+
+    fixture.keys.replace(FILE_KEY);
+    fixture.always(None);
+    let replaced = provider.context().unwrap();
+    // Neither the pause nor the work it drained belongs to the new key.
+    automatic(&provider).unwrap();
+    provider.check_admission(&replaced, admitted).unwrap();
+    assert_eq!(
+        translate(&provider, Intent::Automatic).await.unwrap(),
+        format!("訳{}", super::SOURCE)
+    );
+    assert_eq!(sent(&fixture), FILE_KEY);
+    assert_eq!(fixture.calls(), 2);
+}
+
+fn titles(provider: &AnthropicProvider) -> Vec<&'static str> {
+    provider
+        .account_commands()
+        .iter()
+        .map(|command| command.title)
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn menu_offers_saving_without_a_usable_key_and_replacing_or_removing_with_one() {
+    let capabilities = AnthropicProvider::capabilities();
+    assert_eq!(capabilities.account_menu, Some("Anthropic API key…"));
+    let commands: Vec<_> = capabilities
+        .commands
+        .iter()
+        .map(|command| (command.command, command.changes_account))
+        .collect();
+    // Saving happens in the terminal; removing asks first.
+    assert_eq!(
+        commands,
+        [
+            (SAVE, AccountChange::Never),
+            (REMOVE, AccountChange::IfConfirmed)
+        ]
+    );
+
+    let fixture = Fixture::new().await;
+    let directory = KeyDirectory::new();
+    let provider = provider(&fixture, &directory.path);
+    assert_eq!(titles(&provider), ["Save Anthropic API key"]);
+    // A file that is there and cannot be used is saved over, like no file.
+    fs::write(directory.file(), "not a key").unwrap();
+    assert_eq!(titles(&provider), ["Save Anthropic API key"]);
+    directory.replace(FILE_KEY);
+    assert_eq!(
+        titles(&provider),
+        ["Replace Anthropic API key", "Remove Anthropic API key"]
+    );
+    assert_eq!(provider.account_commands()[0].command, SAVE);
+    assert_eq!(provider.account_commands()[1].command, REMOVE);
+}
+
+// Answers a choice the way a test says, and remembers what was asked.
+#[derive(Default)]
+struct Editor {
+    accepts: bool,
+    asked: Mutex<Vec<(String, Vec<String>)>>,
+}
+
+impl Interaction for Editor {
+    async fn open(&self, _uri: &str) -> Result<(), Error> {
+        panic!("The key commands open no page")
+    }
+
+    async fn choose(&self, message: &str, choices: &[String]) -> Result<Option<String>, Error> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((message.to_owned(), choices.to_vec()));
+        Ok(self.accepts.then(|| choices[0].clone()))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn saving_opens_a_terminal_for_this_executable_and_names_the_command_to_run_by_hand() {
+    let fixture = Fixture::new().await;
+    let terminal = Terminal::default();
+    let provider = fixture.provider().with_terminal(terminal.clone());
+    let editor = Editor::default();
+    let executable = std::env::current_exe().unwrap();
+    let command = terminal::manual_command(&executable);
+    assert!(command.ends_with(" anthropic-key"), "{command}");
+
+    let notice = provider.administer(SAVE, &editor).await.unwrap();
+    assert_eq!(
+        notice,
+        format!(
+            "A terminal window was opened. Enter the Anthropic API key there. If no window appeared, run this in a terminal: {command}"
+        )
+    );
+    assert_eq!(*terminal.opened.lock().unwrap(), [executable]);
+
+    terminal.fails.store(true, Ordering::SeqCst);
+    let error = provider.administer(SAVE, &editor).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Failed);
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "No terminal window could be opened. To save the Anthropic API key, run this in a terminal: {command}"
+        )
+    );
+    assert_eq!(terminal.opened.lock().unwrap().len(), 2);
+
+    // Opening the terminal asks nothing, changes nothing, and sends nothing.
+    assert!(editor.asked.lock().unwrap().is_empty());
+    assert_eq!(fixture.keys.names(), ["anthropic-api-key"]);
+    assert_eq!(fs::read(fixture.keys.file()).unwrap(), KEY.as_bytes());
+    assert_eq!(fixture.calls(), 0);
+    for text in [notice, error.to_string(), format!("{error:?}")] {
+        assert!(!text.contains(KEY));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn removing_asks_first_and_deletes_only_the_key_file() {
+    let fixture = Fixture::new().await;
+    let provider = fixture.provider();
+    // What the ChatGPT store keeps in the same directory.
+    for name in ["auth.json", "auth.lock"] {
+        fs::write(fixture.keys.path.join(name), "synthetic").unwrap();
+    }
+    let all = ["anthropic-api-key", "auth.json", "auth.lock"];
+
+    let declining = Editor::default();
+    assert_eq!(
+        provider.administer(REMOVE, &declining).await.unwrap(),
+        "The Anthropic API key was not removed."
+    );
+    assert_eq!(
+        *declining.asked.lock().unwrap(),
+        [(
+            concat!(
+                "Remove the saved Anthropic API key from this computer? The key stays valid ",
+                "until you delete it in the Claude Console."
+            )
+            .to_owned(),
+            vec!["Remove".to_owned()]
+        )]
+    );
+    assert_eq!(fixture.keys.names(), all);
+    translate(&provider, Intent::Explicit).await.unwrap();
+
+    let accepting = Editor {
+        accepts: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        provider.administer(REMOVE, &accepting).await.unwrap(),
+        "The Anthropic API key was removed."
+    );
+    assert_eq!(fixture.keys.names(), ["auth.json", "auth.lock"]);
+    for name in ["auth.json", "auth.lock"] {
+        assert_eq!(
+            fs::read(fixture.keys.path.join(name)).unwrap(),
+            b"synthetic"
+        );
+    }
+    let error = translate(&provider, Intent::Explicit).await.unwrap_err();
+    assert!(error.to_string().starts_with(MISSING), "{error}");
+    assert_eq!(titles(&provider), ["Save Anthropic API key"]);
+    assert_eq!(fixture.calls(), 1);
+
+    assert_eq!(
+        provider.administer(REMOVE, &accepting).await.unwrap(),
+        "No Anthropic API key is saved."
+    );
+    assert!(provider.administer("unknown", &accepting).await.is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn removing_refuses_what_is_not_a_private_directory_with_a_regular_file() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let fixture = Fixture::new().await;
+    let accepting = Editor {
+        accepts: true,
+        ..Default::default()
+    };
+    let target = KeyDirectory::with_key(FILE_KEY);
+    let linked = KeyDirectory::new();
+    symlink(target.file(), linked.file()).unwrap();
+    let loose = KeyDirectory::with_key(FILE_KEY);
+    fs::set_permissions(&loose.path, fs::Permissions::from_mode(0o755)).unwrap();
+    for directory in [&linked, &loose] {
+        let error = provider(&fixture, &directory.path)
+            .administer(REMOVE, &accepting)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().starts_with(NOT_PRIVATE), "{error}");
+        assert_eq!(directory.names(), ["anthropic-api-key"]);
+    }
+    assert_eq!(fs::read(target.file()).unwrap(), FILE_KEY.as_bytes());
 }
 
 // The provider as the server builds it, with only the directory replaced.
@@ -264,10 +558,11 @@ fn environment_child_process() {
         assert_eq!(std::env::var(name).unwrap(), ENVIRONMENT_KEY);
     }
     let empty = KeyDirectory::new();
-    let error = production(&empty.path).key().unwrap_err();
+    let error = production(&empty.path).key.read().unwrap_err();
     assert!(error.to_string().starts_with(MISSING), "{error}");
     let directory = KeyDirectory::with_key(FILE_KEY);
-    assert_eq!(&*production(&directory.path).key().unwrap().text, FILE_KEY);
+    let (key, _) = production(&directory.path).key.read().unwrap();
+    assert_eq!(&*key.text, FILE_KEY);
 }
 
 // Environment variables belong to the whole process, so a child gets them.
