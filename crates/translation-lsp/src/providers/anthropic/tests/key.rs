@@ -1,9 +1,12 @@
 use std::{
     fs,
     path::Path,
-    sync::{Mutex, atomic::Ordering},
+    pin::Pin,
+    sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, SystemTime},
 };
+
+use tokio::sync::Semaphore;
 
 use super::{PAUSED, automatic, translate};
 use crate::{
@@ -14,9 +17,9 @@ use crate::{
         anthropic::{
             AnthropicProvider, ModelOptions, REMOVE, SAVE,
             key::{KeyFile, terminal},
-            test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal},
+            test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal, completed},
         },
-        error::{Error, ErrorKind, credentials::CredentialError},
+        error::{Error, ErrorKind, Notification, credentials::CredentialError},
     },
 };
 
@@ -524,6 +527,127 @@ async fn stop_for_a_rejected_key_is_not_carried_to_the_key_that_replaces_it() {
         format!("訳{}", super::SOURCE)
     );
     assert_eq!(sent(&fixture), FILE_KEY);
+    assert_eq!(fixture.calls(), 2);
+}
+
+// Holds the responses to requests that carry `key`, or to every request, until
+// the test adds a permit.
+fn gate(fixture: &Fixture, key: Option<&'static str>) -> Arc<Semaphore> {
+    let gate = Arc::new(Semaphore::new(0));
+    let mut state = fixture.state.lock().unwrap();
+    (state.gate, state.gated_key) = (Some(gate.clone()), key);
+    gate
+}
+
+// Runs `pending` until the fixture has received `calls` requests.
+async fn sent_while_pending<T>(
+    fixture: &Fixture,
+    calls: usize,
+    mut pending: Pin<&mut impl Future<Output = T>>,
+) {
+    let arrival = async {
+        while fixture.calls() < calls {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        _ = &mut pending => panic!("A held request must not complete"),
+        arrived = tokio::time::timeout(Duration::from_secs(30), arrival) => {
+            arrived.expect("The request did not reach the fixture");
+        }
+    }
+}
+
+fn rejection() -> Reply {
+    Reply::failure(401, "authentication_error", "invalid x-api-key")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_result_of_a_replaced_key_leaves_the_stop_of_the_key_in_use() {
+    for (intent, late, kind) in [
+        (
+            Intent::Automatic,
+            Reply::failure(529, "overloaded_error", "Overloaded"),
+            Some(ErrorKind::Temporary),
+        ),
+        (
+            Intent::Automatic,
+            rejection(),
+            Some(ErrorKind::Configuration),
+        ),
+        (Intent::Explicit, Reply::stream(completed("遅れた訳")), None),
+    ] {
+        let fixture = Fixture::new().await;
+        // A temporary failure is not sent again, so it ends the request.
+        fixture.state.lock().unwrap().retry_after = Some("121".into());
+        let gate = gate(&fixture, Some(KEY));
+        let provider = fixture.provider();
+        let delayed = translate(&provider, intent);
+        tokio::pin!(delayed);
+        sent_while_pending(&fixture, 1, delayed.as_mut()).await;
+
+        fixture.keys.replace(FILE_KEY);
+        fixture.reply(rejection());
+        let admitted = automatic(&provider).unwrap();
+        let stop = translate(&provider, Intent::Automatic).await.unwrap_err();
+        assert_eq!(stop.kind(), ErrorKind::Configuration);
+        assert_eq!(sent(&fixture), FILE_KEY);
+
+        fixture.reply(late);
+        gate.add_permits(1);
+        let result = delayed.await;
+        assert_eq!(result.as_ref().err().map(Error::kind), kind, "{result:?}");
+        if let Err(error) = result {
+            // The stop of the key in use is no notice of this failure.
+            assert_eq!(error.notification(), Notification::Show);
+        }
+
+        let context = provider.context().unwrap();
+        for refused in [
+            automatic(&provider).unwrap_err(),
+            translate(&provider, Intent::Automatic).await.unwrap_err(),
+            provider.check_admission(&context, admitted).unwrap_err(),
+        ] {
+            assert_eq!(refused.to_string(), stop.to_string());
+        }
+        assert_eq!(fixture.calls(), 2);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_stop_of_a_replaced_key_is_not_a_stop_of_the_key_in_use() {
+    let fixture = Fixture::new().await;
+    let gate = gate(&fixture, None);
+    let provider = fixture.provider();
+    let delayed = translate(&provider, Intent::Automatic);
+    tokio::pin!(delayed);
+    sent_while_pending(&fixture, 1, delayed.as_mut()).await;
+
+    fixture.keys.replace(FILE_KEY);
+    let context = provider.context().unwrap();
+    let admitted = automatic(&provider).unwrap();
+    let running = translate(&provider, Intent::Automatic);
+    tokio::pin!(running);
+    sent_while_pending(&fixture, 2, running.as_mut()).await;
+
+    // The fixture answers in the order the requests arrived.
+    fixture.reply(rejection());
+    gate.add_permits(1);
+    assert_eq!(delayed.await.unwrap_err().kind(), ErrorKind::Configuration);
+    automatic(&provider).unwrap();
+    provider.check_admission(&context, admitted).unwrap();
+
+    // The first stop of the key in use is still shown, and still pauses it.
+    fixture.reply(rejection());
+    gate.add_permits(1);
+    let stop = running.await.unwrap_err();
+    assert_eq!(stop.notification(), Notification::Show);
+    assert!(stop.to_string().contains(PAUSED), "{stop}");
+    assert_eq!(
+        automatic(&provider).unwrap_err().kind(),
+        ErrorKind::Configuration
+    );
+    assert!(provider.check_admission(&context, admitted).is_err());
     assert_eq!(fixture.calls(), 2);
 }
 

@@ -170,6 +170,8 @@ pub(crate) struct FixtureState {
     pub hold: bool,
     // A recorded request is answered only when the test adds a permit.
     pub gate: Option<Arc<Semaphore>>,
+    // The only key whose requests wait at `gate`. Without one, every request waits.
+    pub gated_key: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -379,12 +381,17 @@ async fn endpoint(
     let body = String::from_utf8(body.to_vec()).unwrap();
     let gate = {
         let mut state = shared.lock().unwrap();
+        let waits = state.gated_key.is_none_or(|gated| {
+            headers
+                .get("x-api-key")
+                .is_some_and(|key| key.as_bytes() == gated.as_bytes())
+        });
         state.records.push(Record {
             path: path.clone(),
             headers,
             body: body.clone(),
         });
-        state.gate.clone()
+        state.gate.clone().filter(|_| waits)
     };
     if let Some(gate) = gate {
         gate.acquire().await.unwrap().forget();

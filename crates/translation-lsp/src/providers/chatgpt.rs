@@ -1047,6 +1047,87 @@ mod tests {
         }
     }
 
+    // Signing in gives an account a new key every time, and a request is given
+    // up once its account is no longer the active one. One account's failure
+    // can follow another's stop only when the store names a saved account
+    // again, which this server never writes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn failure_of_one_account_keeps_the_stop_of_another() {
+        let limit = (
+            429,
+            json!({"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"limit"}}),
+        );
+        for (failure, kind) in [
+            ((503, json!({"detail":"Overloaded"})), ErrorKind::Temporary),
+            (limit.clone(), ErrorKind::UsageLimit),
+        ] {
+            let fixture = Fixture::new().await;
+            // A temporary failure is not sent again, so it ends the request.
+            fixture.state.lock().unwrap().retry_after = Some("121".into());
+            let auth = fixture.auth();
+            let activate = async |id| {
+                let mut locked = auth.store.lock(true).await.unwrap().unwrap();
+                locked.state.active_registration = Some(id);
+                locked.save().unwrap();
+            };
+            let other = fixture.connected(&auth, 3600).await;
+            let stopped = fixture.connected(&auth, 3600).await;
+            let provider = ChatGptProvider::synthetic(
+                auth.clone(),
+                format!("{}/v1", fixture.base),
+                "synthetic-model".into(),
+            );
+            let automatic = async || {
+                provider
+                    .translate(
+                        Intent::Automatic,
+                        Output::Range,
+                        "Read this.",
+                        "ja",
+                        provider.context().unwrap(),
+                    )
+                    .await
+            };
+            let context = provider.context().unwrap();
+            let admitted = provider.admit(&context, Intent::Automatic).unwrap();
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .response_failures
+                .push_back(limit.clone());
+            let stop = automatic().await.err().unwrap();
+            assert_eq!(stop.kind(), ErrorKind::UsageLimit);
+
+            activate(other).await;
+            assert_ne!(provider.context().unwrap(), context);
+            fixture
+                .state
+                .lock()
+                .unwrap()
+                .response_failures
+                .push_back(failure);
+            let error = automatic().await.err().unwrap();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(
+                error.notification(),
+                crate::providers::error::Notification::Show
+            );
+            assert_eq!(response_calls(&fixture), 2);
+
+            activate(stopped).await;
+            assert_eq!(provider.context().unwrap(), context);
+            for refused in [
+                provider.admit(&context, Intent::Automatic).unwrap_err(),
+                automatic().await.err().unwrap(),
+                provider.check_admission(&context, admitted).unwrap_err(),
+            ] {
+                assert_eq!(refused.to_string(), stop.to_string());
+            }
+            assert_eq!(response_calls(&fixture), 2);
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn configured_model_is_sent_without_fallback() {
         for (model, supported) in [
