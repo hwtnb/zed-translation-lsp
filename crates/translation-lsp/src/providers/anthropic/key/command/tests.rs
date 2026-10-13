@@ -311,6 +311,8 @@ fn every_text_for_the_terminal_is_ascii() {
         FINISH,
         NO_TERMINAL,
         ARGUMENTS,
+        #[cfg(unix)]
+        NO_INTERRUPTIONS,
     ] {
         assert!(text.is_ascii(), "{text}");
     }

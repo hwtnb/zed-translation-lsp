@@ -57,6 +57,9 @@ const NO_DIRECTORY: &str = "The OS reported no local configuration directory for
 const FINISH: &str = "Press Enter to finish.";
 const NO_TERMINAL: &str = "translation-lsp anthropic-key asks for the key in a terminal, and this process has none. Run it in a terminal window";
 const ARGUMENTS: &str = "translation-lsp anthropic-key takes no arguments";
+#[cfg(unix)]
+const NO_INTERRUPTIONS: &str =
+    "translation-lsp anthropic-key could not prepare to be interrupted, and asked for no key";
 
 pub(crate) trait Console {
     fn say(&mut self, text: &str) -> io::Result<()>;
@@ -102,11 +105,38 @@ pub fn from_arguments() -> Option<ExitCode> {
         eprintln!("{problem}");
         return Some(ExitCode::FAILURE);
     }
+    #[cfg(unix)]
+    let Ok(_interruptions) = receive_interruptions() else {
+        eprintln!("{NO_INTERRUPTIONS}");
+        return Some(ExitCode::FAILURE);
+    };
     Some(if run(credential_directory::locate(), &mut Terminal) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+// The hidden read takes Ctrl+C as a character and raises the signal itself,
+// before it restores the terminal. A process ended there would leave the shell
+// that started it without Ctrl+C. Received instead, the signal does nothing:
+// the read reports the interruption and restores the terminal. Between reads
+// Ctrl+C is ignored, so saving is never cut short.
+//
+// Unix only: a Windows console ends the process on Ctrl+C without the read
+// seeing it, and a process kept alive there would save what was typed so far.
+#[cfg(unix)]
+fn receive_interruptions() -> io::Result<impl Sized> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
+    let interruptions = {
+        let _context = runtime.enter();
+        signal(SignalKind::interrupt())?
+    };
+    Ok((runtime, interruptions))
 }
 
 // Returns whether a key was saved.

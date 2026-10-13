@@ -14,7 +14,11 @@ use std::{
     io::{self, Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{fs::PermissionsExt, process::CommandExt},
+        unix::{
+            ffi::OsStrExt,
+            fs::{OpenOptionsExt, PermissionsExt},
+            process::CommandExt,
+        },
     },
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
@@ -98,9 +102,28 @@ static PTSNAME: Mutex<()> = Mutex::new(());
 // here is typed, and what is read here is shown.
 struct Window {
     master: File,
+    // The terminal as the shell that started the command holds it. While it is
+    // open, the terminal keeps the settings that the command leaves behind.
+    shell: File,
     shown: Receiver<Vec<u8>>,
     seen: String,
 }
+
+// How the terminal treats what is typed: whether it shows it, hands it over
+// line by line, and turns Ctrl+C into a signal.
+#[derive(Debug, PartialEq, Eq)]
+struct Settings {
+    echo: bool,
+    lines: bool,
+    signals: bool,
+}
+
+// What a fresh terminal does, and what a shell expects to find again.
+const USUAL: Settings = Settings {
+    echo: true,
+    lines: true,
+    signals: true,
+};
 
 impl Window {
     // Opens a pseudo-terminal and starts `command` with it as the controlling
@@ -127,6 +150,14 @@ impl Window {
                 CString::from(std::ffi::CStr::from_ptr(name))
             }
         };
+        // The test never becomes a session leader, and asks not to get the
+        // terminal as its own either.
+        let shell = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(std::ffi::OsStr::from_bytes(slave.to_bytes()))
+            .unwrap();
         // SAFETY: the closure runs in the child between `fork` and `exec`,
         // where only async-signal-safe functions may be called. `setsid` and
         // `open` are, and the closure allocates nothing: `slave` was built
@@ -156,6 +187,7 @@ impl Window {
         (
             Self {
                 master,
+                shell,
                 shown,
                 seen: String::new(),
             },
@@ -177,8 +209,7 @@ impl Window {
         }
     }
 
-    // Whether the terminal shows what is typed.
-    fn echoes(&self) -> bool {
+    fn settings(&self) -> Settings {
         // SAFETY: `termios` is plain data, so all zeros is a valid value, and
         // `tcgetattr` fills it for the open terminal that `master` refers to.
         let settings = unsafe {
@@ -186,22 +217,28 @@ impl Window {
             assert_eq!(libc::tcgetattr(self.master.as_raw_fd(), &mut settings), 0);
             settings
         };
-        settings.c_lflag & libc::ECHO != 0
+        let set = |flag| settings.c_lflag & flag != 0;
+        Settings {
+            echo: set(libc::ECHO),
+            lines: set(libc::ICANON),
+            signals: set(libc::ISIG),
+        }
     }
 
     // Types `text` once the terminal has stopped showing what is typed. The
     // prompt is shown a moment before that, so the prompt alone is too early.
     fn type_hidden(&mut self, text: &str) {
         let begun = Instant::now();
-        while self.echoes() {
+        while self.settings().echo {
             assert!(begun.elapsed() < LIMIT, "Input stayed visible");
             thread::sleep(Duration::from_millis(2));
         }
         self.master.write_all(text.as_bytes()).unwrap();
     }
 
-    // Everything the window showed, once the process has ended.
-    fn finish(mut self, mut child: Child) -> (ExitStatus, String) {
+    // How the process ended, everything the window showed, and the settings
+    // the process left to the shell.
+    fn finish(mut self, mut child: Child) -> (ExitStatus, String, Settings) {
         let begun = Instant::now();
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -213,12 +250,15 @@ impl Window {
             }
             thread::sleep(Duration::from_millis(2));
         };
-        // Closing the terminal ends the reader, which ends the channel.
+        let left = self.settings();
+        // With the terminal closed on every side, the reader ends, which ends
+        // the channel.
+        drop(self.shell);
         drop(self.master);
         while let Ok(bytes) = self.shown.recv_timeout(LIMIT) {
             self.seen.push_str(&String::from_utf8_lossy(&bytes));
         }
-        (status, self.seen)
+        (status, self.seen, left)
     }
 }
 
@@ -234,7 +274,7 @@ fn window_shows_what_is_typed_while_the_terminal_echoes() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let (mut window, mut child) = Window::start(command);
-    assert!(window.echoes());
+    assert_eq!(window.settings(), USUAL);
     window.master.write_all(b"typed-and-visible\n").unwrap();
     window.wait_for("typed-and-visible");
     child.kill().unwrap();
@@ -258,8 +298,9 @@ fn typed_key_is_saved_without_being_shown() {
     // The command waits for Enter, so that the window stays to be read.
     assert_eq!(fs::read(home.key_file()).unwrap(), KEY.as_bytes());
     window.type_hidden("\r");
-    let (status, shown) = window.finish(child);
+    let (status, shown, left) = window.finish(child);
     assert!(status.success(), "{shown}");
+    assert_eq!(left, USUAL);
     for hidden in [KEY, "two-words"] {
         assert!(!shown.contains(hidden), "{shown}");
     }
@@ -274,8 +315,10 @@ fn typed_key_is_saved_without_being_shown() {
     window.wait_for(PROMPT);
     window.type_hidden(&format!("{replacing}\r"));
     window.wait_for(FINISH);
-    window.type_hidden("\r");
-    let (status, shown) = window.finish(child);
+    // Ctrl+C ends the wait as Enter does. The key stays saved.
+    window.type_hidden("\u{3}");
+    let (status, shown, left) = window.finish(child);
+    assert_eq!(left, USUAL);
     assert!(status.success(), "{shown}");
     assert!(
         !shown.contains(replacing) && !shown.contains(KEY),
@@ -286,20 +329,21 @@ fn typed_key_is_saved_without_being_shown() {
 }
 
 #[test]
-fn giving_up_saves_nothing_and_fails() {
-    // Enter alone, the end of the input, and an interruption.
-    for (typed, ending) in [
-        ("\r", "No key was saved."),
-        ("\u{4}", "No key was saved."),
-        ("\u{3}", ""),
-    ] {
+fn giving_up_saves_nothing_fails_and_leaves_the_terminal_as_it_was() {
+    // Enter alone, the end of the input, and Ctrl+C. The command ends by
+    // itself each time, so that it gives the terminal back as it found it:
+    // a shell that got it back without `signals` could no longer be
+    // interrupted.
+    for typed in ["\r", "\u{4}", "\u{3}"] {
         let home = Home::new();
         let (mut window, child) = Window::start(home.command(&["anthropic-key"]));
+        assert_eq!(window.settings(), USUAL);
         window.wait_for(PROMPT);
         window.type_hidden(typed);
-        window.wait_for(ending);
-        let (status, shown) = window.finish(child);
-        assert!(!status.success(), "{typed:?} {shown}");
+        let (status, shown, left) = window.finish(child);
+        assert_eq!(left, USUAL, "{typed:?}");
+        assert_eq!(status.code(), Some(1), "{typed:?} {status} {shown}");
+        assert!(shown.contains("No key was saved."), "{typed:?} {shown}");
         assert!(!shown.contains(FINISH), "{shown}");
         assert!(home.untouched());
     }
