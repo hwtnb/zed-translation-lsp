@@ -651,6 +651,56 @@ async fn late_stop_of_a_replaced_key_is_not_a_stop_of_the_key_in_use() {
     assert_eq!(fixture.calls(), 2);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn waiting_resend_is_not_sent_once_the_key_is_replaced_or_removed() {
+    for removed in [false, true] {
+        let fixture = Fixture::new().await;
+        // The resend is due as soon as the failure arrives, so the key changes
+        // while the failure is held back.
+        fixture.state.lock().unwrap().retry_after = Some("0".into());
+        fixture.reply(Reply::failure(529, "overloaded_error", "Overloaded"));
+        let gate = gate(&fixture, None);
+        let provider = fixture.provider();
+        let prepared = provider.context().unwrap();
+        let admitted = automatic(&provider).unwrap();
+        let waiting = translate(&provider, Intent::Automatic);
+        tokio::pin!(waiting);
+        sent_while_pending(&fixture, 1, waiting.as_mut()).await;
+
+        if removed {
+            fs::remove_file(fixture.keys.file()).unwrap();
+        } else {
+            fixture.keys.replace(FILE_KEY);
+        }
+        // A wrongly repeated request would be answered at once with a translation.
+        gate.add_permits(2);
+        let error = waiting.await.unwrap_err();
+        assert_eq!(fixture.calls(), 1);
+        let message = error.to_string();
+        if removed {
+            assert_eq!(error.kind(), ErrorKind::Configuration);
+            assert!(message.starts_with(MISSING), "{message}");
+            fixture.keys.replace(FILE_KEY);
+        } else {
+            assert_eq!(error.kind(), ErrorKind::Modified);
+            assert_eq!(message, "Anthropic API key changed; retry the preview");
+        }
+        assert!(!message.contains(PAUSED), "{message}");
+
+        // Neither the key the request was prepared with nor the new one is
+        // paused or stopped.
+        provider.admit(&prepared, Intent::Automatic).unwrap();
+        provider.check_admission(&prepared, admitted).unwrap();
+        automatic(&provider).unwrap();
+        assert_eq!(
+            translate(&provider, Intent::Automatic).await.unwrap(),
+            format!("訳{}", super::SOURCE)
+        );
+        assert_eq!(sent(&fixture), FILE_KEY);
+        assert_eq!(fixture.calls(), 2);
+    }
+}
+
 fn titles(provider: &AnthropicProvider) -> Vec<&'static str> {
     provider
         .account_commands()

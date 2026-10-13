@@ -5,7 +5,7 @@ pub(crate) mod test_support;
 
 use std::path::PathBuf;
 
-use key::{KeyFile, KeyId, terminal};
+use key::{ApiKey, KeyFile, KeyId, terminal};
 use serde_json::json;
 
 use crate::config::{AnthropicEffort, limits::SizeLimit};
@@ -160,6 +160,14 @@ impl AnthropicProvider {
         }
     }
 
+    fn key_in_use(&self, expected: KeyId) -> Result<ApiKey, Error> {
+        let (key, current) = self.key.read()?;
+        if current != expected {
+            return Err(Cause::Modified("Anthropic API key").into());
+        }
+        Ok(key)
+    }
+
     async fn remove_key(&self, ui: &impl Interaction) -> Result<String, Error> {
         let directory = self.key.directory()?;
         if ui.choose(REMOVAL, &[CONFIRM.into()]).await?.is_none() {
@@ -233,10 +241,7 @@ impl TranslationProvider for AnthropicProvider {
         context: Context,
     ) -> Result<Translated, Error> {
         let expected = key_of(&context)?;
-        let (key, current) = self.key.read()?;
-        if current != expected {
-            return Err(Cause::Modified("Anthropic API key").into());
-        }
+        let key = self.key_in_use(expected)?;
         let generation = self.admission.admit(&expected, intent)?;
         let secrets = [&*key.text, text];
         let options = self.options.get(output);
@@ -250,11 +255,22 @@ impl TranslationProvider for AnthropicProvider {
             "output_config": {"effort": options.effort},
             "thinking": {"type": if options.thinking { "adaptive" } else { "disabled" }},
         });
+        let mut sent = false;
+        // A request that was not sent again is no result of its key: it neither
+        // pauses automatic translation nor resumes it.
+        let mut unsent = None;
         // Dropping this future on cancellation or expiry drops the request or
         // response it is awaiting, which closes the connection.
         let mut result = self
             .admission
             .retrying(&expected, intent, async || {
+                // The key may have been replaced or removed during the wait.
+                if std::mem::replace(&mut sent, true)
+                    && let Err(error) = self.key_in_use(expected)
+                {
+                    unsent = Some(error.clone());
+                    return Attempt::without_response(error);
+                }
                 let response = self
                     .client
                     .post(format!("{}/messages", self.api))
@@ -281,6 +297,9 @@ impl TranslationProvider for AnthropicProvider {
                 }
             })
             .await;
+        if let Some(error) = unsent {
+            return Err(error);
+        }
         self.admission
             .settle(&expected, intent, generation, &mut result);
         Ok(Translated {
