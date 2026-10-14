@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -128,7 +128,7 @@ pub(crate) fn replace(
         fs::rename(&temporary, directory.join(name))
             .map_err(|source| CredentialError::io("replace credentials", source))?;
         #[cfg(unix)]
-        File::open(directory)
+        fs::File::open(directory)
             .and_then(|directory| directory.sync_all())
             .map_err(|source| CredentialError::io("sync directory", source))?;
         file.metadata()

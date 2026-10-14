@@ -41,13 +41,13 @@ impl KeyDirectory {
     // A private directory without a key file.
     pub fn new() -> Self {
         let path = std::env::temp_dir().join(format!("zed-anthropic-key-{}", uuid::Uuid::new_v4()));
-        let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         }
-        builder.create(&path).unwrap();
+        #[cfg(not(unix))]
+        fs::create_dir(&path).unwrap();
         Self { path }
     }
 
