@@ -43,8 +43,6 @@ JSON、TOML、シェルスクリプト、PowerShell、Dockerfileのコメント�
 
 現在のバージョン固定の例外は `unicode-ident = "=1.0.24"` です。Rustの字句解析器とUnicodeテーブルの版を揃えるために固定しています。字句解析器と関連するUnicodeテーブルが同じ版に対応した時点で、固定を外してまとめて更新してください。
 
-`granit-parser` 1.3 は、引用符付きの複数行のYAMLの値で、継続行がキーより1桁だけ深い正しい書き方をエラーにします。そのため、その値から後ろのコメントを抽出できません。上流では修正済みで、2.0で公開される見込みです。2.0へ更新するときは、`comments` の機能フラグを有効にし、テスト `yaml_reads_past_a_value_continued_one_column_deeper` の `ignore` を外し、`docs/languages.md` と `docs/ja/languages.md` からこの制限の文を消してください。
-
 ## 依存ライブラリのライセンス表示
 
 サーバーの各リリースアーカイブには `THIRD_PARTY_LICENSES.txt` が入っています。内容は、その配布対象でサーバーが依存するライブラリのライセンスと、それぞれのソースの取得先です。`xtask` は梱包のときにこのファイルを生成し、リポジトリには置きません。生成には、[cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.2を、`about.toml` とテンプレート `xtask/notices.hbs` で実行します。このバージョンは次のコマンドで導入します。

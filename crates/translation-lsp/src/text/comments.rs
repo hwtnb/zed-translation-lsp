@@ -822,7 +822,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "granit-parser 1.3 rejects this valid YAML; resolved by granit-parser 2.0"]
     fn yaml_reads_past_a_value_continued_one_column_deeper() {
         for source in yaml_values_continued_one_column_deeper() {
             assert_eq!(
