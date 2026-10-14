@@ -107,6 +107,9 @@ struct Window {
     shell: File,
     shown: Receiver<Vec<u8>>,
     seen: String,
+    // Where the text that `wait_for` found last ends. One read may bring more
+    // than that text, so what follows it is still to be found.
+    found: usize,
 }
 
 // How the terminal treats what is typed: whether it shows it, hands it over
@@ -194,21 +197,24 @@ impl Window {
                 shell,
                 shown,
                 seen: String::new(),
+                found: 0,
             },
             child,
         )
     }
 
-    // Waits until the window has shown `text` after what was shown before.
+    // Waits until the window has shown `text` after the text found before.
     fn wait_for(&mut self, text: &str) {
-        let from = self.seen.len();
         let begun = Instant::now();
-        while !self.seen[from..].contains(text) {
+        loop {
+            if let Some(at) = self.seen[self.found..].find(text) {
+                self.found += at + text.len();
+                return;
+            }
             let left = LIMIT.saturating_sub(begun.elapsed());
-            let bytes = self
-                .shown
-                .recv_timeout(left)
-                .unwrap_or_else(|_| panic!("{text:?} was not shown after: {}", &self.seen[from..]));
+            let bytes = self.shown.recv_timeout(left).unwrap_or_else(|_| {
+                panic!("{text:?} was not shown after: {}", &self.seen[self.found..])
+            });
             self.seen.push_str(&String::from_utf8_lossy(&bytes));
         }
     }
