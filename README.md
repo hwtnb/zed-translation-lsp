@@ -4,7 +4,7 @@
 
 Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
-The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Without provider settings, the extension runs in mock mode: it translates only the bundled samples into Japanese and sends no text to an external service.
+The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Until you select a provider, the extension sends no text to an external service.
 
 ## Installation
 
@@ -46,23 +46,41 @@ Set `lsp.translation-lsp.binary.path` to the absolute path of the executable you
 
 If you list language servers explicitly for C#, C, C++, Python, JSON, JSONC, YAML, TOML, Shell Script, PowerShell, Dockerfile, or Docker Compose, see [Language server settings](docs/languages.md#language-server-settings).
 
-## Minimal settings
+## Set up a provider
 
-Add the following entry to `lsp` in your existing Zed settings. If you built the server yourself, also set `binary.path` as described under [Server path](docs/configuration.md#server-path).
+Select one provider by adding one of the following entries to `lsp` in your existing Zed settings, then connect it from Zed's code actions. Restart the language server after changing the settings. Every setting is described under [Configuration](docs/configuration.md).
+
+### ChatGPT
 
 ```json
 {
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "mock" }
+        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "reasoning_effort": "low" }
       }
     }
   }
 }
 ```
 
-This example selects mock mode. To translate your own text, replace `provider` with the settings on the [ChatGPT](docs/providers/chatgpt.md) or [Anthropic API](docs/providers/anthropic.md) page. Restart the language server after changing these settings. Every setting is described under [Configuration](docs/configuration.md).
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `ChatGPT account…`, then run `Continue with ChatGPT / Choose account`, and complete sign-in and plan permission in the browser. See [ChatGPT](docs/providers/chatgpt.md) for the other settings and the account menu.
+
+### Anthropic API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+      }
+    }
+  }
+}
+```
+
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `Anthropic API key…`, then run `Save Anthropic API key`. Paste the key in the terminal window that opens and press Enter. See [Anthropic API](docs/providers/anthropic.md) for creating the key, the other settings, and cost.
 
 ## Basic usage
 
@@ -81,17 +99,8 @@ The rules of these operations are described under [Usage](docs/usage.md).
 - Merely passing over a comment can consume provider usage once Zed sends a Hover request.
 - If a comment contains a credential, the credential is sent with it.
 - With `features.automatic_selection` set to `true`, selecting Markdown prose just to copy it can also send it for translation.
-- Mock mode sends no text to an external service.
 
 What each request contains is described under [What is sent](docs/usage.md#what-is-sent). Cost is described on each provider's page.
-
-## Mock mode
-
-To try the bundled samples without connecting, omit `provider` or use `{"name":"mock"}`. Hover over the comment in [samples/comment.rs](samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](samples/comment.cs). C/C++ samples are available in [samples/comment.c](samples/comment.c) and [samples/comment.cpp](samples/comment.cpp), including Doxygen comments.
-
-For Python comments and docstrings, use [samples/comment.py](samples/comment.py). For JSON, YAML, and TOML comments, use [samples/comment.jsonc](samples/comment.jsonc), [samples/comment.yaml](samples/comment.yaml), and [samples/comment.toml](samples/comment.toml). For shell script, PowerShell, Dockerfile, and Docker Compose comments, use [samples/comment.sh](samples/comment.sh), [samples/comment.ps1](samples/comment.ps1), [samples/Dockerfile](samples/Dockerfile), and [samples/compose.yaml](samples/compose.yaml). In [samples/paragraph.md](samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The Hover header identifies it as `Mock translation (fixed sample)`. Mock mode requires manual execution for Markdown.
-
-Mock mode supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover identifies mock translations.
 
 ## Documentation
 
@@ -101,7 +110,7 @@ Mock mode supports only these samples and their newline variations. It returns a
 - [Usage](docs/usage.md): Hover, selections, translations opened in a tab, status, canceling and retrying, and what is sent.
 - [Behavior](docs/behavior.md): admission, what keeps work running, automatic selection, the cache, deadlines, retries, and pauses.
 - [Languages](docs/languages.md): supported languages, comment extraction, and language server settings.
-- [Development](docs/development.md): checks, CI, and the dependency policy.
+- [Development](docs/development.md): checks, the mock provider and its samples, CI, and the dependency policy.
 
 ## License
 

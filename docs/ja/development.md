@@ -2,7 +2,7 @@
 
 [English](../development.md)
 
-このページでは、必要なRustの版、実行する検証、CI、依存関係の方針、依存ライブラリのライセンス表示を説明します。
+このページでは、必要なRustの版、実行する検証、モックのプロバイダー、CI、依存関係の方針、依存ライブラリのライセンス表示を説明します。
 
 ## 検証
 
@@ -13,6 +13,16 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+## モックのプロバイダー
+
+設定で `provider` を省略するか `"provider": { "name": "mock" }` にすると、サーバーはモックのプロバイダーを使います。文章を外部へ送らず、同梱サンプルの決まった日本語訳を返すため、アカウントやAPIキーなしでZedでの流れを確かめられます。
+
+[samples/comment.rs](../../samples/comment.rs) のコメント、または [samples/comment.cs](../../samples/comment.cs) の通常コメント・XMLドキュメントコメントにマウスポインターを重ねてください。C/C++は [samples/comment.c](../../samples/comment.c) と [samples/comment.cpp](../../samples/comment.cpp) でDoxygenコメントも試せます。
+
+Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](../../samples/comment.py) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](../../samples/comment.jsonc)、[samples/comment.yaml](../../samples/comment.yaml)、[samples/comment.toml](../../samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](../../samples/comment.sh)、[samples/comment.ps1](../../samples/comment.ps1)、[samples/Dockerfile](../../samples/Dockerfile)、[samples/compose.yaml](../../samples/compose.yaml) で試せます。[samples/paragraph.md](../../samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to ja` を実行してから、選択範囲にマウスポインターを重ねます。モックのプロバイダーでは、Markdownは手動実行が必要です。
+
+モックのプロバイダーはこれらのサンプルと改行の違いだけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーの見出しには `Mock translation (fixed sample)` と表示します。
 
 ## CIとリリース前の確認
 

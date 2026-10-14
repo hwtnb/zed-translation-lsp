@@ -2,7 +2,7 @@
 
 [日本語](ja/development.md)
 
-This page describes the required Rust versions, the checks to run, CI, the dependency policy, and the dependency notices.
+This page describes the required Rust versions, the checks to run, the mock provider, CI, the dependency policy, and the dependency notices.
 
 ## Checks
 
@@ -13,6 +13,16 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+## Mock provider
+
+Without `provider` in the settings, or with `"provider": { "name": "mock" }`, the server uses the mock provider. It sends no text to an external service and returns fixed Japanese translations of the bundled samples, so the Zed flow can be checked without an account or an API key.
+
+Hover over the comment in [samples/comment.rs](../samples/comment.rs), or the ordinary and XML documentation comments in [samples/comment.cs](../samples/comment.cs). C/C++ samples are available in [samples/comment.c](../samples/comment.c) and [samples/comment.cpp](../samples/comment.cpp), including Doxygen comments.
+
+For Python comments and docstrings, use [samples/comment.py](../samples/comment.py). For JSON, YAML, and TOML comments, use [samples/comment.jsonc](../samples/comment.jsonc), [samples/comment.yaml](../samples/comment.yaml), and [samples/comment.toml](../samples/comment.toml). For shell script, PowerShell, Dockerfile, and Docker Compose comments, use [samples/comment.sh](../samples/comment.sh), [samples/comment.ps1](../samples/comment.ps1), [samples/Dockerfile](../samples/Dockerfile), and [samples/compose.yaml](../samples/compose.yaml). In [samples/paragraph.md](../samples/paragraph.md), select the paragraph, run `Translate selection to ja` from Code Actions, then Hover over the selection. The mock provider requires manual execution for Markdown.
+
+The mock provider supports only these samples and their newline variations. It returns an error for other text or target languages other than Japanese. The Hover header identifies its translations as `Mock translation (fixed sample)`.
 
 ## CI and release checks
 
