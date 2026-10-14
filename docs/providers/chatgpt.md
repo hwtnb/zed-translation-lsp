@@ -11,7 +11,11 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
+        "provider": {
+          "name": "chatgpt",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
       }
     }
   }

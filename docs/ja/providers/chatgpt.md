@@ -11,7 +11,11 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
+        "provider": {
+          "name": "chatgpt",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
       }
     }
   }

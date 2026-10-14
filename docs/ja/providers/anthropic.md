@@ -11,7 +11,11 @@
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+        "provider": {
+          "name": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": "low"
+        }
       }
     }
   }

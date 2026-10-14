@@ -11,7 +11,11 @@ Select the `anthropic` provider to translate with Claude through the Anthropic A
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+        "provider": {
+          "name": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": "low"
+        }
       }
     }
   }

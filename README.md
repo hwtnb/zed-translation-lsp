@@ -57,7 +57,11 @@ Select one provider by adding one of the following entries to `lsp` in your exis
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
+        "provider": {
+          "name": "chatgpt",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
       }
     }
   }
@@ -73,7 +77,11 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+        "provider": {
+          "name": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": "low"
+        }
       }
     }
   }

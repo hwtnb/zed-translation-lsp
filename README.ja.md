@@ -57,7 +57,11 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
+        "provider": {
+          "name": "chatgpt",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
       }
     }
   }
@@ -73,7 +77,11 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "anthropic", "model": "claude-haiku-5-5", "effort": "low" }
+        "provider": {
+          "name": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": "low"
+        }
       }
     }
   }
