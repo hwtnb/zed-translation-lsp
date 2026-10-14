@@ -29,8 +29,12 @@ pub(crate) struct Settings {
 pub(crate) enum ProviderSettings {
     Mock {},
     Chatgpt {
+        #[serde(default = "default_chatgpt_model")]
         model: String,
-        reasoning_effort: Option<ReasoningEffort>,
+        #[serde(default)]
+        effort: ReasoningEffort,
+        #[serde(default, deserialize_with = "explicit")]
+        speed: Option<ChatgptSpeed>,
         #[serde(default, deserialize_with = "explicit")]
         document: Option<ChatgptDocument>,
     },
@@ -43,6 +47,8 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         thinking: Option<bool>,
         #[serde(default, deserialize_with = "explicit")]
+        speed: Option<AnthropicSpeed>,
+        #[serde(default, deserialize_with = "explicit")]
         document: Option<AnthropicDocument>,
     },
 }
@@ -54,7 +60,10 @@ pub(crate) enum ProviderSettings {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChatgptDocument {
     pub model: String,
-    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub effort: ReasoningEffort,
+    #[serde(default, deserialize_with = "explicit")]
+    pub speed: Option<ChatgptSpeed>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -65,6 +74,8 @@ pub(crate) struct AnthropicDocument {
     pub effort: AnthropicEffort,
     #[serde(default, deserialize_with = "explicit")]
     pub thinking: Option<bool>,
+    #[serde(default, deserialize_with = "explicit")]
+    pub speed: Option<AnthropicSpeed>,
 }
 
 impl ProviderSettings {
@@ -92,9 +103,79 @@ impl ProviderSettings {
         }
         Ok(())
     }
+
+    // Decoding reports every mismatch as the same generic error. Name the
+    // setting when its value is a string outside its list: the providers take
+    // different values under the same names, such as `none` for ChatGPT effort
+    // and `standard` for Anthropic speed.
+    fn check_choices(options: &Value) -> Result<(), ConfigError> {
+        let provider = &options["provider"];
+        match provider["name"].as_str() {
+            Some("chatgpt") => {
+                EFFORT.check::<ReasoningEffort>(provider, ReasoningEffort::CHOICES)?;
+                SPEED.check::<ChatgptSpeed>(provider, ChatgptSpeed::CHOICES)
+            }
+            Some("anthropic") => {
+                EFFORT.check::<AnthropicEffort>(provider, AnthropicEffort::CHOICES)?;
+                SPEED.check::<AnthropicSpeed>(provider, AnthropicSpeed::CHOICES)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
+// A field of both `provider` and `provider.document`.
+struct Choice {
+    field: &'static str,
+    settings: [&'static str; 2],
+    named_null: bool,
+}
+
+const EFFORT: Choice = Choice {
+    field: "effort",
+    settings: ["provider.effort", "provider.document.effort"],
+    named_null: false,
+};
+
+// A `null` speed may be meant as no speed, which is written by omitting it.
+const SPEED: Choice = Choice {
+    field: "speed",
+    settings: ["provider.speed", "provider.document.speed"],
+    named_null: true,
+};
+
+impl Choice {
+    fn check<T: serde::de::DeserializeOwned>(
+        &self,
+        provider: &Value,
+        choices: &'static str,
+    ) -> Result<(), ConfigError> {
+        let document = provider
+            .get("document")
+            .and_then(|document| document.get(self.field));
+        for (value, setting) in [provider.get(self.field), document]
+            .into_iter()
+            .zip(self.settings)
+        {
+            let rejected = match value {
+                Some(value @ Value::String(_)) => T::deserialize(value).is_err(),
+                Some(Value::Null) => self.named_null,
+                _ => false,
+            };
+            if rejected {
+                return Err(ConfigError::Choice { setting, choices });
+            }
+        }
+        Ok(())
+    }
+}
+
+const DEFAULT_CHATGPT_MODEL: &str = "gpt-6-luna";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-5-5";
+
+fn default_chatgpt_model() -> String {
+    DEFAULT_CHATGPT_MODEL.into()
+}
 
 fn default_anthropic_model() -> String {
     DEFAULT_ANTHROPIC_MODEL.into()
@@ -124,16 +205,48 @@ impl Default for ProviderSettings {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ReasoningEffort {
     None,
     Minimal,
+    #[default]
     Low,
     Medium,
     High,
     Xhigh,
     Max,
+}
+
+impl ReasoningEffort {
+    const CHOICES: &str = "none, minimal, low, medium, high, xhigh, max";
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ChatgptSpeed {
+    Auto,
+    Default,
+    Flex,
+    Scale,
+    Priority,
+    Fast,
+    Ultrafast,
+}
+
+impl ChatgptSpeed {
+    const CHOICES: &str = "auto, default, flex, scale, priority, fast, ultrafast";
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AnthropicSpeed {
+    Standard,
+    Fast,
+}
+
+impl AnthropicSpeed {
+    const CHOICES: &str = "standard, fast";
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -157,28 +270,6 @@ impl AnthropicEffort {
             Self::Max => Some("max"),
             Self::Low | Self::Medium | Self::High => None,
         }
-    }
-
-    // Decoding reports every mismatch as the same generic error. Name this
-    // setting when its value is a string outside the list, such as the
-    // ChatGPT-only `none` and `minimal`.
-    fn check_choice(options: &Value) -> Result<(), ConfigError> {
-        let provider = &options["provider"];
-        if provider["name"] != "anthropic" {
-            return Ok(());
-        }
-        for (effort, setting) in [
-            (&provider["effort"], "provider.effort"),
-            (&provider["document"]["effort"], "provider.document.effort"),
-        ] {
-            if matches!(effort, Value::String(_)) && Self::deserialize(effort).is_err() {
-                return Err(ConfigError::Choice {
-                    setting,
-                    choices: Self::CHOICES,
-                });
-            }
-        }
-        Ok(())
     }
 }
 
@@ -205,7 +296,7 @@ impl Settings {
             None | Some(Value::Null) => Self::default(),
             Some(options) => {
                 ProviderSettings::check_document_model(&options)?;
-                AnthropicEffort::check_choice(&options)?;
+                ProviderSettings::check_choices(&options)?;
                 Features::check_languages(&options)?;
                 reject_arrays(&options)?;
                 serde_json::from_value(options)?
@@ -272,6 +363,7 @@ impl Settings {
                 effort,
                 thinking,
                 document,
+                ..
             } => {
                 check_model("provider.model", model)?;
                 check_thinking("provider", *effort, *thinking)?;
@@ -403,7 +495,7 @@ mod tests {
         for options in [
             json!({}),
             json!({"provider": {"name": "anthropic", "document": {"model": tab, "effort": "low", "thinking": true}}}),
-            json!({"provider": {"name": "chatgpt", "model": "m", "document": {"model": tab, "reasoning_effort": "low"}}}),
+            json!({"provider": {"name": "chatgpt", "model": "m", "document": {"model": tab, "effort": "low", "speed": "fast"}}}),
             json!({"translation_limits": {"input_kib": {"hover": 16, "document": 1024}, "work": {}, "cache": {"entries": 64}}}),
         ] {
             assert!(Settings::from_options(Some(options)).is_ok());
@@ -570,7 +662,12 @@ mod tests {
             ProviderSettings::Mock {}
         ));
         for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
-            assert!(Settings::from_options(Some(json!({"provider":{"name":"chatgpt","model":"synthetic-model","reasoning_effort":effort}}))).is_ok());
+            assert!(
+                Settings::from_options(Some(
+                    json!({"provider":{"name":"chatgpt","model":"synthetic-model","effort":effort}})
+                ))
+                .is_ok()
+            );
         }
         assert_eq!(settings.target_language, "ja");
         assert_eq!(settings.source_language, "auto");
@@ -584,19 +681,19 @@ mod tests {
             assert_eq!(settings.comment_parse_timeout_ms, 1_000);
         }
         let settings = Settings::from_options(Some(json!({
-            "target_language":"en", "provider":{"name":"chatgpt", "model":"gpt-6.1-sol", "reasoning_effort":"low"}
+            "target_language":"en", "provider":{"name":"chatgpt", "model":"gpt-6.1-sol", "effort":"medium"}
         }))).unwrap();
         assert!(matches!(
             settings.provider,
             ProviderSettings::Chatgpt {
-                reasoning_effort: Some(ReasoningEffort::Low),
+                effort: ReasoningEffort::Medium,
                 ..
             }
         ));
         for invalid in [
-            json!({"provider":{"name":"chatgpt"}}),
             json!({"provider":{"name":"chatgpt","model":" "}}),
-            json!({"provider":{"name":"chatgpt","model":"gpt-6.1-sol","reasoning_effort":"ultra"}}),
+            json!({"provider":{"name":"chatgpt","model":"gpt-6.1-sol","effort":"ultra"}}),
+            json!({"provider":{"name":"chatgpt","model":"gpt-6.1-sol","reasoning_effort":"low"}}),
             json!({"provider":{"name":"mock","model":"unexpected"}}),
             json!({"target_language":""}),
             json!({"api_key":"not-a-supported-setting"}),
@@ -710,10 +807,9 @@ mod tests {
 
         // The Anthropic fields and checks do not leak into the other providers.
         for options in [
-            json!({"provider": {"name": "chatgpt", "model": "synthetic-model", "effort": "low"}}),
             json!({"provider": {"name": "chatgpt", "model": "synthetic-model", "thinking": true}}),
             json!({"provider": {"name": "mock", "effort": "low"}}),
-            json!({"provider": {"name": "chatgpt", "effort": "none"}}),
+            json!({"provider": {"name": "mock", "speed": "fast"}}),
         ] {
             assert!(matches!(
                 Settings::from_options(Some(options)).err().unwrap(),
@@ -722,12 +818,12 @@ mod tests {
         }
         assert!(matches!(
             Settings::from_options(Some(json!({
-                "provider": {"name": "chatgpt", "model": "synthetic-model", "reasoning_effort": "none"}
+                "provider": {"name": "chatgpt", "effort": "none"}
             })))
             .unwrap()
             .provider,
             ProviderSettings::Chatgpt {
-                reasoning_effort: Some(ReasoningEffort::None),
+                effort: ReasoningEffort::None,
                 ..
             }
         ));
@@ -737,6 +833,111 @@ mod tests {
                 .provider,
             ProviderSettings::Mock {}
         ));
+    }
+
+    #[test]
+    fn chatgpt_settings_default_to_light_luna_and_take_no_reasoning_effort() {
+        let ProviderSettings::Chatgpt {
+            model,
+            effort,
+            speed,
+            document,
+        } = Settings::from_options(Some(json!({"provider": {"name": "chatgpt"}})))
+            .unwrap()
+            .provider
+        else {
+            panic!("Expected ChatGPT settings")
+        };
+        assert_eq!(model, "gpt-6-luna");
+        assert_eq!(effort, ReasoningEffort::Low);
+        assert_eq!(speed, None);
+        assert!(document.is_none());
+        // The former name is an unknown field, inside `provider.document` too.
+        for provider in [
+            json!({"name": "chatgpt", "reasoning_effort": "low"}),
+            json!({"name": "chatgpt", "document": {"model": "m", "reasoning_effort": "low"}}),
+        ] {
+            assert!(matches!(
+                Settings::from_options(Some(json!({"provider": provider})))
+                    .err()
+                    .unwrap(),
+                ConfigError::Decode(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
+        const CHATGPT_EFFORT: &str = "none, minimal, low, medium, high, xhigh, max";
+        const CHATGPT_SPEED: &str = "auto, default, flex, scale, priority, fast, ultrafast";
+        const ANTHROPIC_SPEED: &str = "standard, fast";
+        let settings = |name: &str, field: &str, value: Value, inside: bool| {
+            let mut provider = json!({"name": name});
+            if inside {
+                provider["document"] = json!({"model": "m", (field): value});
+            } else {
+                provider[field] = value;
+            }
+            Settings::from_options(Some(json!({"provider": provider})))
+        };
+        for (name, field, accepted) in [
+            ("chatgpt", "speed", CHATGPT_SPEED),
+            ("anthropic", "speed", ANTHROPIC_SPEED),
+            ("chatgpt", "effort", CHATGPT_EFFORT),
+        ] {
+            for value in accepted.split(", ") {
+                for inside in [false, true] {
+                    assert!(
+                        settings(name, field, json!(value), inside).is_ok(),
+                        "{name} {field} {value}"
+                    );
+                }
+            }
+        }
+        for (name, field, value, choices) in [
+            // The values of the other provider.
+            ("chatgpt", "speed", json!("standard"), CHATGPT_SPEED),
+            ("anthropic", "speed", json!("priority"), ANTHROPIC_SPEED),
+            ("anthropic", "speed", json!("ultrafast"), ANTHROPIC_SPEED),
+            (
+                "anthropic",
+                "effort",
+                json!("minimal"),
+                AnthropicEffort::CHOICES,
+            ),
+            ("chatgpt", "effort", json!("ultra"), CHATGPT_EFFORT),
+            ("chatgpt", "speed", json!("Fast"), CHATGPT_SPEED),
+            (
+                "anthropic",
+                "speed",
+                json!("synthetic-secret"),
+                ANTHROPIC_SPEED,
+            ),
+            // `null` is no way to write that no speed is requested.
+            ("chatgpt", "speed", Value::Null, CHATGPT_SPEED),
+            ("anthropic", "speed", Value::Null, ANTHROPIC_SPEED),
+        ] {
+            for (inside, scope) in [(false, "provider"), (true, "provider.document")] {
+                let error = settings(name, field, value.clone(), inside).err().unwrap();
+                assert_eq!(
+                    error.to_string(),
+                    format!("{scope}.{field} must be one of {choices}"),
+                    "{name} {value}"
+                );
+            }
+        }
+        for name in ["chatgpt", "anthropic"] {
+            for value in [json!(1), json!(true), json!({"tier": "fast"})] {
+                for inside in [false, true] {
+                    assert!(matches!(
+                        settings(name, "speed", value.clone(), inside)
+                            .err()
+                            .unwrap(),
+                        ConfigError::Decode(_)
+                    ));
+                }
+            }
+        }
     }
 
     #[test]

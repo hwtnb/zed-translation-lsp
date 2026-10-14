@@ -31,6 +31,7 @@ fn anthropic_sent(fields: Value) -> (Sent, Option<Sent>) {
         effort,
         thinking,
         document,
+        ..
     } = settings.provider.clone()
     else {
         panic!("Expected Anthropic settings")
@@ -99,40 +100,38 @@ fn document_settings_take_their_own_defaults_and_inherit_nothing() {
     }
 
     for (fields, range, document) in [
-        (json!({"reasoning_effort": "low"}), Some("low"), None),
+        (json!({}), "low", None),
         (
-            json!({"reasoning_effort": "low", "document": {"model": "m"}}),
-            Some("low"),
-            Some(("m", None)),
+            json!({"effort": "medium", "document": {"model": "m"}}),
+            "medium",
+            Some(("m", "low")),
         ),
         (
-            json!({"document": {"model": "m", "reasoning_effort": "medium"}}),
-            None,
-            Some(("m", Some("medium"))),
+            json!({"document": {"model": "m", "effort": "high"}}),
+            "low",
+            Some(("m", "high")),
         ),
         (
-            json!({"reasoning_effort": "none", "document": {"model": "synthetic-model", "reasoning_effort": "max"}}),
-            Some("none"),
-            Some(("synthetic-model", Some("max"))),
+            json!({"effort": "none", "document": {"model": "synthetic-model", "effort": "max"}}),
+            "none",
+            Some(("synthetic-model", "max")),
         ),
     ] {
         let settings = chatgpt(fields.clone()).unwrap();
         let ProviderSettings::Chatgpt {
             model,
-            reasoning_effort,
+            effort,
             document: tab,
+            ..
         } = settings.provider.clone()
         else {
             panic!("Expected ChatGPT settings")
         };
-        let effort = |effort: Option<ReasoningEffort>| effort.map(|effort| json!(effort));
         assert_eq!(model, "synthetic-model");
-        assert_eq!(effort(reasoning_effort), range.map(|range| json!(range)));
+        assert_eq!(json!(effort), json!(range), "{fields}");
         assert_eq!(
-            tab.map(|tab| (tab.model, effort(tab.reasoning_effort))),
-            document.map(|(model, effort): (&str, Option<&str>)| {
-                (model.to_owned(), effort.map(|effort| json!(effort)))
-            }),
+            tab.map(|tab| (tab.model, json!(tab.effort))),
+            document.map(|(model, effort)| (model.to_owned(), json!(effort))),
             "{fields}"
         );
         assert_eq!(
@@ -155,6 +154,50 @@ fn document_settings_take_their_own_defaults_and_inherit_nothing() {
     }
 }
 
+// The speed each output requests: the range's, and the tab's when
+// `provider.document` is present.
+fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
+    fn value(speed: Option<impl serde::Serialize>) -> Option<Value> {
+        speed.map(|speed| json!(speed))
+    }
+    match provider(name, fields).unwrap().provider {
+        ProviderSettings::Chatgpt {
+            speed, document, ..
+        } => (value(speed), document.map(|tab| value(tab.speed))),
+        ProviderSettings::Anthropic {
+            speed, document, ..
+        } => (value(speed), document.map(|tab| value(tab.speed))),
+        ProviderSettings::Mock {} => panic!("Expected provider settings"),
+    }
+}
+
+#[test]
+fn speed_is_requested_only_where_it_is_written() {
+    for (name, range, tab) in [
+        ("chatgpt", "fast", "flex"),
+        ("anthropic", "fast", "standard"),
+    ] {
+        for (fields, sent) in [
+            (json!({}), (None, None)),
+            (json!({"speed": range}), (Some(json!(range)), None)),
+            (
+                json!({"speed": range, "document": {"model": "m"}}),
+                (Some(json!(range)), Some(None)),
+            ),
+            (
+                json!({"document": {"model": "m", "speed": tab}}),
+                (None, Some(Some(json!(tab)))),
+            ),
+            (
+                json!({"speed": range, "document": {"model": "m", "speed": tab}}),
+                (Some(json!(range)), Some(Some(json!(tab)))),
+            ),
+        ] {
+            assert_eq!(speeds(name, fields.clone()), sent, "{name} {fields}");
+        }
+    }
+}
+
 #[test]
 fn document_settings_name_the_rejected_field_without_its_value() {
     const SECRET: &str = "synthetic-secret";
@@ -168,13 +211,18 @@ fn document_settings_name_the_rejected_field_without_its_value() {
         json!({}),
         json!({"effort": "high"}),
         json!({"thinking": true}),
+        json!({"speed": "fast"}),
     ] {
         named(
             anthropic(json!({"model": SECRET, "document": document})),
             "provider.document.model is required",
         );
     }
-    for document in [json!({}), json!({"reasoning_effort": "low"})] {
+    for document in [
+        json!({}),
+        json!({"effort": "low"}),
+        json!({"speed": "fast"}),
+    ] {
         named(
             chatgpt(json!({"document": document})),
             "provider.document.model is required",
@@ -281,6 +329,8 @@ fn malformed_document_settings_report_the_generic_error() {
         json!({"model": SONNET, "effort": 1}),
         json!({"model": SONNET, "thinking": null}),
         json!({"model": SONNET, "thinking": "false"}),
+        json!({"model": SONNET, "speed": 1}),
+        json!({"model": SONNET, "speed": true}),
     ] {
         generic(anthropic(json!({"document": document})), &document);
     }
@@ -288,11 +338,14 @@ fn malformed_document_settings_report_the_generic_error() {
         Value::Null,
         json!(SECRET),
         json!({"model": "m", "unknown": SECRET}),
-        json!({"model": "m", "effort": "low"}),
+        json!({"model": "m", "reasoning_effort": "low"}),
         json!({"model": "m", "thinking": true}),
         json!({"model": null}),
         json!({"model": "m", "reasoning_effort": SECRET}),
         json!({"model": "m", "reasoning_effort": 1}),
+        json!({"model": "m", "effort": 1}),
+        json!({"model": "m", "effort": null}),
+        json!({"model": "m", "speed": 1}),
     ] {
         generic(chatgpt(json!({"document": document})), &document);
     }

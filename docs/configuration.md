@@ -38,7 +38,7 @@ Add the following entry to `lsp` in your existing Zed settings. Choose a model a
         "provider": {
           "name": "chatgpt",
           "model": "gpt-6.1-sol",
-          "reasoning_effort": "low"
+          "effort": "low"
         }
       }
     }
@@ -234,7 +234,7 @@ Restart the language server after changing these settings. Settings changes do n
 3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings) and [Anthropic API](providers/anthropic.md#settings) pages.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
-The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model and reasoning effort are available to your account.
+The extension sends the configured model slug to the translation API without substituting another model, and does not send a failed request again without `speed`. The API determines whether that model, effort, and speed are available to your account.
 
 Translation requests use ordinary text output. Choose a model available to your ChatGPT account or Anthropic API key; the extension does not switch to another model when a request fails.
 

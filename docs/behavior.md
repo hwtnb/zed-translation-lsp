@@ -48,7 +48,7 @@ Each Hover response waits up to 20 seconds from receipt, including queue time. M
 
 ## Automatic retries
 
-An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. After the Anthropic API key is replaced or removed, a pending retry is not sent. Connection failures and interrupted streams are not automatically replayed.
+An explicit temporary service error, including an overload reported after HTTP 200, is retried at most once within the original deadline. The server waits two seconds by default, or uses a numeric `Retry-After` of up to 120 seconds. Other `Retry-After` values leave the error for manual retry. Cancellation, document changes, and account changes also stop a pending retry. After the Anthropic API key is replaced or removed, a pending retry is not sent. Connection failures and interrupted streams are not automatically replayed. A retry sends the same model, `effort`, and `speed`; no failure makes the server send a request again without `speed`.
 
 ## Pauses
 

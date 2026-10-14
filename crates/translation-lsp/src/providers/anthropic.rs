@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use key::{ApiKey, KeyFile, KeyId, terminal};
 use serde_json::json;
 
-use crate::config::{AnthropicEffort, limits::SizeLimit};
+use crate::config::{AnthropicEffort, AnthropicSpeed, limits::SizeLimit};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
@@ -20,6 +20,8 @@ use super::{
 
 const API: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2023-06-01";
+// `speed` is a beta field, so it is sent with this header whatever its value.
+const SPEED_BETA: &str = "fast-mode-2026-02-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
 const SERVICE: Service = Service::Anthropic;
 
@@ -65,6 +67,7 @@ pub(crate) struct ModelOptions {
     pub model: String,
     pub effort: AnthropicEffort,
     pub thinking: bool,
+    pub speed: Option<AnthropicSpeed>,
 }
 
 #[derive(Clone)]
@@ -113,6 +116,7 @@ impl AnthropicProvider {
                         model: "claude-haiku-5-5".into(),
                         effort: AnthropicEffort::Low,
                         thinking: false,
+                        speed: None,
                     },
                     None,
                 ),
@@ -246,7 +250,7 @@ impl TranslationProvider for AnthropicProvider {
         let secrets = [&*key.text, text];
         let options = self.options.get(output);
         let configured = self.options.configured(output);
-        let request = json!({
+        let mut request = json!({
             "model": options.model,
             "max_tokens": MAX_OUTPUT_TOKENS.min(self.output_limit.bytes()),
             "stream": true,
@@ -255,6 +259,9 @@ impl TranslationProvider for AnthropicProvider {
             "output_config": {"effort": options.effort},
             "thinking": {"type": if options.thinking { "adaptive" } else { "disabled" }},
         });
+        if let Some(speed) = options.speed {
+            request["speed"] = json!(speed);
+        }
         let mut sent = false;
         // A request that was not sent again is no result of its key: it neither
         // pauses automatic translation nor resumes it.
@@ -271,14 +278,15 @@ impl TranslationProvider for AnthropicProvider {
                     unsent = Some(error.clone());
                     return Attempt::without_response(error);
                 }
-                let response = self
+                let mut sending = self
                     .client
                     .post(format!("{}/messages", self.api))
                     .header("x-api-key", key.header.clone())
-                    .header("anthropic-version", VERSION)
-                    .json(&request)
-                    .send()
-                    .await;
+                    .header("anthropic-version", VERSION);
+                if options.speed.is_some() {
+                    sending = sending.header("anthropic-beta", SPEED_BETA);
+                }
+                let response = sending.json(&request).send().await;
                 let response = match response {
                     Ok(response) => response,
                     Err(error) => {
@@ -302,8 +310,12 @@ impl TranslationProvider for AnthropicProvider {
         }
         self.admission
             .settle(&expected, intent, generation, &mut result);
+        let completed = result?;
+        if let Some(speed) = options.speed {
+            response::log_speed(speed, &completed);
+        }
         Ok(Translated {
-            text: result?,
+            text: completed.text,
             context,
         })
     }

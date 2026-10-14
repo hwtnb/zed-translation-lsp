@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use super::{SERVICE, key};
 use crate::{
-    config::limits::{SizeLimit, SizeSetting},
+    config::{
+        AnthropicSpeed,
+        limits::{SizeLimit, SizeSetting},
+    },
     providers::{
         Output,
         error::{Cause, Error, RemoteError, RemoteKind},
@@ -164,17 +167,48 @@ pub(super) async fn failure(
     )
 }
 
+pub(super) struct Completed {
+    pub text: String,
+    // The speed the response reports it was served at.
+    pub speed: Option<String>,
+}
+
+// The response value comes from outside, and is only written to the log.
+fn reported_speed(value: Option<&str>, secrets: &[&str]) -> Option<String> {
+    value
+        .map(|value| safe(value, secrets, 32))
+        .filter(|value| !value.is_empty())
+}
+
+// Fast mode costs more, so a request that names a speed tells in the log the
+// speed that `usage.speed` reports it was served at.
+pub(super) fn log_speed(requested: AnthropicSpeed, completed: &Completed) {
+    eprintln!("{}", speed_line(requested, completed.speed.as_deref()));
+}
+
+fn speed_line(requested: AnthropicSpeed, served: Option<&str>) -> String {
+    let requested = match requested {
+        AnthropicSpeed::Standard => "standard",
+        AnthropicSpeed::Fast => "fast",
+    };
+    format!(
+        "translation preview: Anthropic speed requested {requested}, served {}",
+        served.unwrap_or("(not reported)")
+    )
+}
+
 pub(super) async fn text(
     response: reqwest::Response,
     secrets: &[&str],
     output_limit: SizeLimit,
     configured: Output,
-) -> Result<String, Error> {
+) -> Result<Completed, Error> {
     let status = response.status().as_u16();
     let request_id = request_id(response.headers());
     let mut message = Message::default();
     sse::read_events(response, SERVICE, output_limit, |event| {
         match Kind::of(&event.event, &event.data)? {
+            Kind::MessageStart => message.started(parse(&event.data)?),
             Kind::ContentBlockStart => message.start(parse(&event.data)?, output_limit),
             Kind::ContentBlockDelta => message.delta(parse(&event.data)?, output_limit),
             Kind::MessageDelta => message.stopping(parse(&event.data)?),
@@ -201,12 +235,13 @@ pub(super) async fn text(
     message.finish(secrets)
 }
 
-// The events that decide the result. The API may add event types, so every
-// other name, including `message_start`, `content_block_stop`, and `ping`, is
-// skipped without inspecting its data.
+// The events that decide the result, and `message_start`, which reports the
+// speed. The API may add event types, so every other name, including
+// `content_block_stop` and `ping`, is skipped without inspecting its data.
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
+    MessageStart,
     ContentBlockStart,
     ContentBlockDelta,
     MessageDelta,
@@ -272,6 +307,14 @@ fn json<'a, T: Deserialize<'a>>(data: &'a str) -> Result<T, Error> {
 // accepted the data as JSON.
 fn parse<'a, T: Deserialize<'a>>(data: &'a str) -> Result<T, Error> {
     serde_json::from_str(data).map_err(|_| Error::failed(MALFORMED))
+}
+
+// Only `usage.speed` is read. It is reported here and not in later usage, and
+// its shape is not checked: a speed is never a reason to reject a translation.
+#[derive(Deserialize)]
+struct MessageStart {
+    #[serde(default)]
+    message: Value,
 }
 
 #[derive(Deserialize)]
@@ -352,6 +395,7 @@ struct Message {
     text: String,
     stop_reason: Option<StopReason>,
     refusal_category: Option<String>,
+    speed: Option<String>,
     stopped: bool,
 }
 
@@ -362,6 +406,11 @@ impl Message {
                 "Anthropic stream continued after message_stop",
             ));
         }
+        Ok(())
+    }
+
+    fn started(&mut self, event: MessageStart) -> Result<(), Error> {
+        self.speed = event.message["usage"]["speed"].as_str().map(str::to_owned);
         Ok(())
     }
 
@@ -418,12 +467,15 @@ impl Message {
     }
 
     // Only the transport reader may call this, after EOF and truncation checks.
-    fn finish(self, secrets: &[&str]) -> Result<String, Error> {
+    fn finish(self, secrets: &[&str]) -> Result<Completed, Error> {
         if !self.stopped {
             return Err(Error::failed("Anthropic stream ended without message_stop"));
         }
         match self.stop_reason {
-            Some(StopReason::EndTurn) if !self.text.is_empty() => Ok(self.text),
+            Some(StopReason::EndTurn) if !self.text.is_empty() => Ok(Completed {
+                speed: reported_speed(self.speed.as_deref(), secrets),
+                text: self.text,
+            }),
             Some(StopReason::EndTurn) => Err(Error::failed(
                 "Anthropic completed without translation text",
             )),
@@ -440,6 +492,39 @@ impl Message {
             Some(StopReason::Other) | None => Err(Error::failed(
                 "Anthropic response ended without completing the translation; no partial translation was saved",
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_line_names_both_values_or_that_none_was_reported() {
+        assert_eq!(
+            speed_line(AnthropicSpeed::Fast, Some("fast")),
+            "translation preview: Anthropic speed requested fast, served fast"
+        );
+        assert_eq!(
+            speed_line(AnthropicSpeed::Standard, None),
+            "translation preview: Anthropic speed requested standard, served (not reported)"
+        );
+    }
+
+    #[test]
+    fn reported_speed_is_short_and_without_control_characters_or_secrets() {
+        let secrets = ["synthetic-secret"];
+        for (value, reported) in [
+            (Some("fast"), Some("fast".to_owned())),
+            (None, None),
+            (Some(""), None),
+            (Some("\u{7}\n"), None),
+            (Some("fa\u{1b}[2Jst\r\n"), Some("fa[2Jst".to_owned())),
+            (Some("x".repeat(40).as_str()), Some("x".repeat(32))),
+            (Some("synthetic-secret"), Some("[redacted]".to_owned())),
+        ] {
+            assert_eq!(reported_speed(value, &secrets), reported, "{value:?}");
         }
     }
 }

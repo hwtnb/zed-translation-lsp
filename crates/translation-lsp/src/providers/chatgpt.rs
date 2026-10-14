@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::config::{ReasoningEffort, limits::SizeLimit};
+use crate::config::{ChatgptSpeed, ReasoningEffort, limits::SizeLimit};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
@@ -77,7 +77,8 @@ pub(crate) fn management_commands(state: AuthUiState) -> Vec<ProviderCommand> {
 #[derive(Clone)]
 pub(crate) struct ModelOptions {
     pub model: String,
-    pub effort: Option<ReasoningEffort>,
+    pub effort: ReasoningEffort,
+    pub speed: Option<ChatgptSpeed>,
 }
 
 #[derive(Clone)]
@@ -118,7 +119,8 @@ impl ChatGptProvider {
             options: OutputOptions::new(
                 ModelOptions {
                     model,
-                    effort: Some(ReasoningEffort::Low),
+                    effort: ReasoningEffort::Low,
+                    speed: None,
                 },
                 None,
             ),
@@ -193,10 +195,11 @@ impl ChatGptProvider {
                     "store": false,
                     "stream": true,
                     "instructions": prompt::instructions(target, &self.source_language),
-                    "input": [{"role": "user", "content": body}]
+                    "input": [{"role": "user", "content": body}],
+                    "reasoning": {"effort": options.effort},
                 });
-                if let Some(effort) = options.effort {
-                    request["reasoning"] = json!({"effort": effort});
+                if let Some(speed) = options.speed {
+                    request["service_tier"] = json!(speed);
                 }
                 self.admission
                     .retrying(key, intent, async || {
@@ -1148,11 +1151,8 @@ mod tests {
             }
             let auth = fixture.auth();
             fixture.connected(&auth, 3600).await;
-            let mut provider =
+            let provider =
                 ChatGptProvider::synthetic(auth, format!("{}/v1", fixture.base), model.into());
-            if !supported {
-                provider.options.range.effort = None;
-            }
             let context = provider.context().unwrap();
             let result = provider
                 .translate(
@@ -1214,11 +1214,7 @@ mod tests {
             assert_eq!(requests.len(), 1);
             let body: Value = serde_json::from_str(&requests[0].body).unwrap();
             assert_eq!(body["model"], model);
-            if supported {
-                assert_eq!(body["reasoning"]["effort"], "low");
-            } else {
-                assert!(body.get("reasoning").is_none());
-            }
+            assert_eq!(body["reasoning"]["effort"], "low");
         }
     }
 

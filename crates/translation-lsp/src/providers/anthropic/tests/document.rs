@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::{PAUSED, SOURCE, automatic};
 use crate::{
-    config::AnthropicEffort,
+    config::{AnthropicEffort, AnthropicSpeed},
     providers::{
         Intent, Output, OutputOptions, TranslationProvider,
         anthropic::{
@@ -21,6 +21,7 @@ fn range() -> ModelOptions {
         model: RANGE_MODEL.into(),
         effort: AnthropicEffort::Medium,
         thinking: false,
+        speed: None,
     }
 }
 
@@ -29,6 +30,7 @@ fn tab() -> ModelOptions {
         model: TAB_MODEL.into(),
         effort: AnthropicEffort::Low,
         thinking: true,
+        speed: None,
     }
 }
 
@@ -89,6 +91,59 @@ async fn each_output_sends_its_own_model_and_options() {
             .unwrap();
     }
     assert_eq!(sent(&fixture), [range_sent.clone(), range_sent]);
+}
+
+// `speed` is a beta field: the header comes with it, and neither comes
+// without it.
+#[tokio::test(flavor = "current_thread")]
+async fn each_output_sends_its_own_speed_with_the_beta_header() {
+    use AnthropicSpeed::{Fast, Standard};
+    for (range_speed, tab_speed) in [
+        (Some(Fast), None),
+        (None, Some(Standard)),
+        (Some(Standard), Some(Fast)),
+    ] {
+        let fixture = Fixture::new().await;
+        let provider = fixture.provider().with_options(OutputOptions::new(
+            ModelOptions {
+                speed: range_speed,
+                ..range()
+            },
+            Some(ModelOptions {
+                speed: tab_speed,
+                ..tab()
+            }),
+        ));
+        for output in [Output::Range, Output::Document] {
+            translate(&provider, Intent::Explicit, output)
+                .await
+                .unwrap();
+        }
+        let state = fixture.state.lock().unwrap();
+        let sent: Vec<_> = state
+            .records
+            .iter()
+            .map(|record| {
+                let request: Value = serde_json::from_str(&record.body).unwrap();
+                let beta = record.headers.get_all("anthropic-beta").iter();
+                (
+                    request.get("speed").cloned(),
+                    beta.map(|value| value.to_str().unwrap().to_owned())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let expected = |speed: Option<AnthropicSpeed>| {
+            (
+                speed.map(|speed| json!(speed)),
+                speed
+                    .map(|_| "fast-mode-2026-02-01".to_owned())
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        assert_eq!(sent, [expected(range_speed), expected(tab_speed)]);
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

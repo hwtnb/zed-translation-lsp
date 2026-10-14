@@ -28,14 +28,20 @@ The other `initialization_options` described under [Configuration](../configurat
 | `provider.model` | `claude-haiku-5-5` | Optional. Empty values, values that contain whitespace or control characters, and values longer than 256 bytes are settings errors. The value is sent as written, without substituting another model. |
 | `provider.effort` | `low` | Optional. One of `low`, `medium`, `high`, `xhigh`, or `max`. The ChatGPT-only values `none` and `minimal` are settings errors. |
 | `provider.thinking` | Depends on `model` and `effort` | Optional. When omitted, it is `false` if `model` is `claude-haiku-5-5` and `effort` is `low`, `medium`, or `high`, and `true` otherwise. An explicit `false` together with `effort` `xhigh` or `max` is a settings error, because the API rejects that combination. |
-| `provider.document` | None | Optional. An object holding the model and options for translations opened in a tab. Its values are not inherited from `provider.model`, `provider.effort`, or `provider.thinking`: a value omitted inside it takes the default in the rows below. Unknown fields inside it are settings errors. |
+| `provider.speed` | None | Optional. `standard` or `fast`, sent as the request's `speed` together with the header `anthropic-beta: fast-mode-2026-02-01`, also for `standard`. When omitted, neither is sent. `null` and the ChatGPT-only values such as `priority` are settings errors. |
+| `provider.document` | None | Optional. An object holding the model and options for translations opened in a tab. Its values are not inherited from `provider.model`, `provider.effort`, `provider.thinking`, or `provider.speed`: a value omitted inside it takes the default in the rows below. Unknown fields inside it are settings errors. |
 | `provider.document.model` | None | Required when `provider.document` is present. The rules of `provider.model` apply. |
 | `provider.document.effort` | `low` | Optional. The same values as `provider.effort`. |
 | `provider.document.thinking` | Depends on `provider.document.model` and `provider.document.effort` | Optional. The rule of `provider.thinking` applies to the values inside `provider.document`. |
+| `provider.document.speed` | None | Optional. The same values as `provider.speed`. |
 
 `effort` sets how much work the model spends on a response; `low` is the lightest and cheapest. Every request sends `effort`, so `model` must support it; according to the API documentation, older models such as Claude Haiku 4.5 do not.
 
 With `thinking` set to `false`, the model answers without a reasoning step. With `true`, the model decides when to reason before answering. Reasoning is never displayed, and its tokens count toward the cost and the output token limit. Some models do not accept requests without thinking: if you use another model and set `thinking` to `false` explicitly, the API can return HTTP 400. In that case, omit `thinking` or set it to `true`. The omitted value is chosen by comparing `model` with `claude-haiku-5-5` exactly.
+
+`speed` set to `fast` runs the model with faster output at a higher price. According to [Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode), it is a research preview on the Claude API only, for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8, and access is requested from your account manager or through the waitlist. With another model, the API returns an error for `fast` or processes the request at the standard speed. Exceeding the Fast mode rate limits returns HTTP 429 or 529, which is handled like any rate limit or overload.
+
+When a translation with `speed` completes, the server writes the requested value and the `usage.speed` the response reports to the language server log, for example `translation preview: Anthropic speed requested fast, served fast`. In Zed, run `dev: open language server logs` from the Command Palette to read it. When the response reports no value, the line says `(not reported)`. The source text, the translation, and the key are not written.
 
 Unknown fields are rejected: there is no setting for the API key or the API endpoint. Restart the language server after changing these settings.
 

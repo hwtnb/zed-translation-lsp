@@ -57,7 +57,7 @@ Select one provider by adding one of the following entries to `lsp` in your exis
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "reasoning_effort": "low" }
+        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
       }
     }
   }

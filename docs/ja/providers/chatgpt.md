@@ -11,7 +11,7 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6.1-sol", "reasoning_effort": "low" }
+        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
       }
     }
   }
@@ -25,28 +25,38 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 | 設定 | 既定値 | 規則 |
 | --- | --- | --- |
 | `provider.name` | なし | `"chatgpt"` でこのプロバイダーを選びます。 |
-| `provider.model` | なし | 必須です。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
-| `provider.reasoning_effort` | なし | 省略できます。`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。省略した場合は、APIの既定値を使います。明示した `none` は省略とは異なります。 |
-| `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.reasoning_effort` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |
+| `provider.model` | `gpt-6-luna` | 省略できます。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
+| `provider.effort` | `low` | 省略できます。`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。すべての要求に推論強度として含めます。 |
+| `provider.speed` | なし | 省略できます。`auto`、`default`、`flex`、`scale`、`priority`、`fast`、`ultrafast` のいずれかで、要求の `service_tier` として送ります。省略した場合は `service_tier` を送りません。`null` と、Anthropic用の `standard` は設定エラーです。[速度](#速度)を参照してください。 |
+| `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.effort`、`provider.speed` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |
 | `provider.document.model` | なし | `provider.document` を書く場合は必須です。規則は `provider.model` と同じです。 |
-| `provider.document.reasoning_effort` | なし | 省略できます。選べる値は `provider.reasoning_effort` と同じです。 |
+| `provider.document.effort` | `low` | 省略できます。選べる値は `provider.effort` と同じです。 |
+| `provider.document.speed` | なし | 省略できます。選べる値は `provider.speed` と同じです。 |
 
-モデルや推論強度がアカウントで使えない場合はエラーを返します。未知の項目は拒否します。設定を変更したら言語サーバーを再起動してください。
+モデル・推論強度・速度がアカウントで使えない場合はエラーを返します。未知の項目は拒否します。以前の `reasoning_effort` も未知の項目です。設定を変更したら言語サーバーを再起動してください。
 
 ### タブ翻訳だけ別のモデルを使う
 
 ```json
 "provider": {
   "name": "chatgpt",
-  "model": "gpt-6.1-sol",
-  "reasoning_effort": "low",
-  "document": { "model": "gpt-6.1-sol", "reasoning_effort": "medium" }
+  "model": "gpt-6-luna",
+  "effort": "low",
+  "document": { "model": "gpt-6.1-sol", "effort": "medium" }
 }
 ```
 
-`provider.document` の外側に書いた `reasoning_effort` は、タブ翻訳には適用されません。`provider.document` の中で省略すると、タブ翻訳の要求は推論強度を含まず、モデル側の既定値が使われます。タブ翻訳の推論強度を固定したい場合は、`provider.document` の中にも書いてください。上のモデルと推論強度は例です。
+`provider.document` の外側に書いた `effort` と `speed` は、タブ翻訳には適用されません。`provider.document` の中で省略すると、タブ翻訳の要求は推論強度 `low` を送り、`service_tier` を送りません。上のモデルと推論強度は例です。
 
 `provider.document` を設定したときにどのプロバイダーでも変わる点は、[タブ翻訳だけ別のモデルを使う](../configuration.md#タブ翻訳だけ別のモデルを使う)で説明します。
+
+### 速度
+
+`speed` の値は、書いたとおりに `service_tier` として送ります。そのため、選べる値はOpenAI Responses APIの値です。`ultrafast` を使えるアカウントは限られます。FastとUltrafastは、通常の速度よりプランの使用量を多く使います。[ChatGPTの料金](https://learn.chatgpt.com/docs/pricing)を参照してください。
+
+2026-10-14の時点で、ChatGPTアカウント経由の要求は、`fast` に `Unsupported service_tier: fast` を返しました。`priority` は受け付けられ、`speed` なしの要求の約1.5倍の速さで出力しました。
+
+そのときの応答の `service_tier` は、`priority` の有無にかかわらず `default` でした。そのため、応答から速度が適用されたかどうかは分かりません。このプロバイダーでは、サーバーは速度をログに書きません。
 
 ## 認証
 

@@ -7,13 +7,15 @@ use crate::providers::{Intent, chatgpt::test_support::Fixture};
 const RANGE_MODEL: &str = "synthetic-range-model";
 const TAB_MODEL: &str = "synthetic-tab-model";
 
-// The model and `reasoning` each output sends with these provider settings.
-// `reasoning` is `null` when the request did not carry the field.
+// The model, `reasoning`, and `service_tier` each output sends with these
+// provider settings. `service_tier` is `null` when the request did not carry
+// the field.
 async fn sent(provider: Value) -> (Value, Value) {
     let settings = Settings::from_options(Some(json!({"provider": provider}))).unwrap();
     let ProviderSettings::Chatgpt {
         model,
-        reasoning_effort,
+        effort,
+        speed,
         document,
     } = settings.provider
     else {
@@ -27,7 +29,7 @@ async fn sent(provider: Value) -> (Value, Value) {
         format!("{}/v1", fixture.base),
         "replaced-by-the-settings".into(),
     )
-    .with_options(chatgpt_options(model, reasoning_effort, document));
+    .with_options(chatgpt_options(model, effort, speed, document));
     let context = provider.context().unwrap();
     for output in [Output::Range, Output::Document] {
         provider
@@ -48,7 +50,11 @@ async fn sent(provider: Value) -> (Value, Value) {
         .filter(|record| record.path == "/v1/responses")
         .map(|record| {
             let request: Value = serde_json::from_str(&record.body).unwrap();
-            json!([request["model"], request.get("reasoning")])
+            json!([
+                request["model"],
+                request["reasoning"],
+                request.get("service_tier")
+            ])
         })
         .collect();
     let [range, tab] = requests.try_into().unwrap();
@@ -66,13 +72,30 @@ fn settings(fields: Value) -> Value {
 
 #[tokio::test(flavor = "current_thread")]
 async fn without_tab_settings_both_outputs_send_the_provider_values() {
-    let low = json!([RANGE_MODEL, {"effort": "low"}]);
-    assert_eq!(
-        sent(settings(json!({"reasoning_effort": "low"}))).await,
-        (low.clone(), low)
-    );
-    let unset = json!([RANGE_MODEL, null]);
-    assert_eq!(sent(settings(json!({}))).await, (unset.clone(), unset));
+    for (provider, sent_by_both) in [
+        (
+            json!({"name": "chatgpt"}),
+            json!(["gpt-6-luna", {"effort": "low"}, null]),
+        ),
+        (
+            settings(json!({})),
+            json!([RANGE_MODEL, {"effort": "low"}, null]),
+        ),
+        (
+            settings(json!({"effort": "medium", "speed": "fast"})),
+            json!([RANGE_MODEL, {"effort": "medium"}, "fast"]),
+        ),
+        (
+            settings(json!({"effort": "none", "speed": "ultrafast"})),
+            json!([RANGE_MODEL, {"effort": "none"}, "ultrafast"]),
+        ),
+    ] {
+        assert_eq!(
+            sent(provider.clone()).await,
+            (sent_by_both.clone(), sent_by_both),
+            "{provider}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -80,28 +103,22 @@ async fn tab_settings_reach_only_the_tab_output() {
     for (fields, range, tab) in [
         (
             json!({
-                "reasoning_effort": "low",
-                "document": {"model": TAB_MODEL, "reasoning_effort": "medium"}
+                "effort": "low",
+                "document": {"model": TAB_MODEL, "effort": "medium", "speed": "flex"}
             }),
-            json!([RANGE_MODEL, {"effort": "low"}]),
-            json!([TAB_MODEL, {"effort": "medium"}]),
+            json!([RANGE_MODEL, {"effort": "low"}, null]),
+            json!([TAB_MODEL, {"effort": "medium"}, "flex"]),
         ),
-        // An effort omitted for tabs is not sent, whatever the range sends.
+        // A value omitted for tabs takes its default, whatever the range sends.
         (
-            json!({"reasoning_effort": "low", "document": {"model": TAB_MODEL}}),
-            json!([RANGE_MODEL, {"effort": "low"}]),
-            json!([TAB_MODEL, null]),
-        ),
-        // Nor does the tab's effort reach the range.
-        (
-            json!({"document": {"model": TAB_MODEL, "reasoning_effort": "high"}}),
-            json!([RANGE_MODEL, null]),
-            json!([TAB_MODEL, {"effort": "high"}]),
+            json!({"effort": "high", "speed": "fast", "document": {"model": TAB_MODEL}}),
+            json!([RANGE_MODEL, {"effort": "high"}, "fast"]),
+            json!([TAB_MODEL, {"effort": "low"}, null]),
         ),
         (
-            json!({"reasoning_effort": "none", "document": {"model": RANGE_MODEL}}),
-            json!([RANGE_MODEL, {"effort": "none"}]),
-            json!([RANGE_MODEL, null]),
+            json!({"speed": "priority", "document": {"model": RANGE_MODEL}}),
+            json!([RANGE_MODEL, {"effort": "low"}, "priority"]),
+            json!([RANGE_MODEL, {"effort": "low"}, null]),
         ),
     ] {
         assert_eq!(

@@ -43,8 +43,8 @@ use tokio::sync::watch;
 
 use crate::{
     config::{
-        AnthropicDocument, AnthropicEffort, ChatgptDocument, ProviderSettings, ReasoningEffort,
-        Settings, anthropic_thinking, features::Feature,
+        AnthropicDocument, AnthropicEffort, AnthropicSpeed, ChatgptDocument, ChatgptSpeed,
+        ProviderSettings, ReasoningEffort, Settings, anthropic_thinking, features::Feature,
     },
     providers::{
         AccountChange, AuthUiState, Context, Interaction, Output, OutputOptions, Translated,
@@ -171,11 +171,12 @@ fn serve(
         }
         ProviderSettings::Chatgpt {
             model,
-            reasoning_effort,
+            effort,
+            speed,
             document,
         } => {
             let provider = ChatGptProvider::new(
-                chatgpt_options(model, reasoning_effort, document),
+                chatgpt_options(model, effort, speed, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
             )?;
@@ -185,10 +186,11 @@ fn serve(
             model,
             effort,
             thinking,
+            speed,
             document,
         } => {
             let provider = AnthropicProvider::new(
-                anthropic_options(model, effort, thinking, document),
+                anthropic_options(model, effort, thinking, speed, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
                 key_directory,
@@ -198,21 +200,24 @@ fn serve(
     }
 }
 
-// What each output sends. An effort omitted under `provider.document` stays
-// omitted for tabs, whatever the range sends.
+// What each output sends. A value omitted under `provider.document` takes its
+// own default for tabs, whatever the range sends.
 fn chatgpt_options(
     model: String,
-    reasoning_effort: Option<ReasoningEffort>,
+    effort: ReasoningEffort,
+    speed: Option<ChatgptSpeed>,
     document: Option<ChatgptDocument>,
 ) -> OutputOptions<chatgpt::ModelOptions> {
     OutputOptions::new(
         chatgpt::ModelOptions {
             model,
-            effort: reasoning_effort,
+            effort,
+            speed,
         },
         document.map(|document| chatgpt::ModelOptions {
             model: document.model,
-            effort: document.reasoning_effort,
+            effort: document.effort,
+            speed: document.speed,
         }),
     )
 }
@@ -223,16 +228,25 @@ fn anthropic_options(
     model: String,
     effort: AnthropicEffort,
     thinking: Option<bool>,
+    speed: Option<AnthropicSpeed>,
     document: Option<AnthropicDocument>,
 ) -> OutputOptions<anthropic::ModelOptions> {
-    let options = |model: String, effort, thinking| anthropic::ModelOptions {
+    let options = |model: String, effort, thinking, speed| anthropic::ModelOptions {
         thinking: anthropic_thinking(&model, effort, thinking),
         model,
         effort,
+        speed,
     };
     OutputOptions::new(
-        options(model, effort, thinking),
-        document.map(|document| options(document.model, document.effort, document.thinking)),
+        options(model, effort, thinking, speed),
+        document.map(|document| {
+            options(
+                document.model,
+                document.effort,
+                document.thinking,
+                document.speed,
+            )
+        }),
     )
 }
 

@@ -1,12 +1,15 @@
 use serde_json::{Value, json};
 
-use super::{PAUSED, automatic, translate};
+use super::{PAUSED, SOURCE, automatic, translate};
 use crate::{
-    config::limits::SizeLimit,
+    config::limits::{SizeLimit, TranslationLimits},
     providers::{
-        Intent,
-        anthropic::test_support::{
-            Fixture, Reply, completed, event, started, stopped, text_block, thinking_block,
+        Intent, Output,
+        anthropic::{
+            response::text,
+            test_support::{
+                Fixture, KEY, Reply, completed, event, started, stopped, text_block, thinking_block,
+            },
         },
         error::ErrorKind,
     },
@@ -725,4 +728,85 @@ async fn output_and_transport_limits_scale_with_the_configured_output() {
         assert!(error.to_string().starts_with(scope), "{error}");
         assert_eq!(fixture.calls(), 1);
     }
+}
+
+// The speed is read from the `usage` of `message_start`, where the API reports
+// it, and never decides whether the translation is returned.
+#[tokio::test(flavor = "current_thread")]
+async fn message_start_reports_the_served_speed_without_deciding_the_result() {
+    let start = |message: Value| {
+        event(
+            "message_start",
+            json!({"type": "message_start", "message": message}),
+        )
+    };
+    let usage = |speed: Value| {
+        start(json!({"id": "msg_synthetic", "usage": {"input_tokens": 1, "speed": speed}}))
+    };
+    let long = "f".repeat(100);
+    for (case, started, reported) in [
+        ("fast", usage(json!("fast")), Some("fast".to_owned())),
+        (
+            "standard",
+            usage(json!("standard")),
+            Some("standard".into()),
+        ),
+        (
+            "unknown value",
+            usage(json!("ludicrous")),
+            Some("ludicrous".into()),
+        ),
+        (
+            "control characters",
+            usage(json!("fa\u{7}st\r\n\u{1b}")),
+            Some("fast".into()),
+        ),
+        ("long value", usage(json!(long)), Some("f".repeat(32))),
+        ("secret", usage(json!(KEY)), Some("[redacted]".into())),
+        ("only control characters", usage(json!("\n\t")), None),
+        ("null", usage(Value::Null), None),
+        ("number", usage(json!(1)), None),
+        ("object", usage(json!({"tier": "fast"})), None),
+        ("no speed", started(), None),
+        ("no usage", start(json!({"id": "msg_synthetic"})), None),
+        ("usage not an object", start(json!({"usage": "fast"})), None),
+        (
+            "no message",
+            event("message_start", json!({"type": "message_start"})),
+            None,
+        ),
+        (
+            "unnamed event",
+            format!(
+                "data: {}\n\n",
+                json!({"type": "message_start", "message": {"usage": {"speed": "fast"}}})
+            ),
+            Some("fast".into()),
+        ),
+    ] {
+        let stream = format!(
+            "{started}{}{}",
+            text_block(0, "訳"),
+            stopped(json!({"stop_reason": "end_turn"}))
+        );
+        let reply = text(
+            streamed(stream),
+            &[KEY, SOURCE],
+            TranslationLimits::default().output_kib,
+            Output::Range,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{case}: {error}"));
+        assert_eq!(reply.text, "訳", "{case}");
+        assert_eq!(reply.speed, reported, "{case}");
+    }
+}
+
+fn streamed(body: String) -> reqwest::Response {
+    hyper::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .body(body)
+        .unwrap()
+        .into()
 }

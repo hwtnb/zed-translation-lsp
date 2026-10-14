@@ -35,6 +35,7 @@ fn editor(fixture: &Fixture, settings: Settings) -> Editor {
         model,
         effort,
         thinking,
+        speed,
         document,
     } = settings.provider.clone()
     else {
@@ -42,7 +43,7 @@ fn editor(fixture: &Fixture, settings: Settings) -> Editor {
     };
     let provider = fixture
         .provider()
-        .with_options(anthropic_options(model, effort, thinking, document));
+        .with_options(anthropic_options(model, effort, thinking, speed, document));
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let server = Server::configured(

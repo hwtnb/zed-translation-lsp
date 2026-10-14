@@ -57,7 +57,7 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
-        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "reasoning_effort": "low" }
+        "provider": { "name": "chatgpt", "model": "gpt-6-luna", "effort": "low" }
       }
     }
   }

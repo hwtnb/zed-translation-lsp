@@ -894,6 +894,7 @@ fn production(directory: &Path) -> AnthropicProvider {
                 model: "claude-haiku-5-5".into(),
                 effort: AnthropicEffort::Low,
                 thinking: false,
+                speed: None,
             },
             None,
         ),

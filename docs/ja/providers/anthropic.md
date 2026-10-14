@@ -28,14 +28,20 @@
 | `provider.model` | `claude-haiku-5-5` | 省略できます。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
 | `provider.effort` | `low` | 省略できます。`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。ChatGPT用の `none` と `minimal` は設定エラーです。 |
 | `provider.thinking` | `model` と `effort` で決まる | 省略できます。省略した場合、`model` が `claude-haiku-5-5` で `effort` が `low`、`medium`、`high` のいずれかなら `false`、それ以外は `true` です。明示した `false` と、`effort` の `xhigh` または `max` の組み合わせは設定エラーです。APIがこの組み合わせを拒否するためです。 |
-| `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.effort`、`provider.thinking` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |
+| `provider.speed` | なし | 省略できます。`standard` か `fast` で、要求の `speed` として、ヘッダー `anthropic-beta: fast-mode-2026-02-01` と一緒に送ります。`standard` でもヘッダーを付けます。省略した場合は、どちらも送りません。`null` と、`priority` などのChatGPT用の値は設定エラーです。 |
+| `provider.document` | なし | 省略できます。タブに開く翻訳で使うモデルと設定を入れるオブジェクトです。中の値は `provider.model`、`provider.effort`、`provider.thinking`、`provider.speed` を引き継ぎません。中で省略した値は、下の行の既定値になります。中の未知の項目は設定エラーです。 |
 | `provider.document.model` | なし | `provider.document` を書く場合は必須です。規則は `provider.model` と同じです。 |
 | `provider.document.effort` | `low` | 省略できます。選べる値は `provider.effort` と同じです。 |
 | `provider.document.thinking` | `provider.document.model` と `provider.document.effort` で決まる | 省略できます。`provider.thinking` と同じ規則を、`provider.document` の中の値に当てはめます。 |
+| `provider.document.speed` | なし | 省略できます。選べる値は `provider.speed` と同じです。 |
 
 `effort` は、モデルが応答にかける作業量を決めます。`low` が最も軽く、費用も最も小さくなります。要求には必ず `effort` を含めるため、`model` は `effort` に対応している必要があります。APIの資料によると、Claude Haiku 4.5などの古いモデルは対応していません。
 
 `thinking` が `false` のとき、モデルは推論の段階を挟まずに答えます。`true` にすると、答える前に推論するかどうかをモデルが判断します。推論の内容は表示しません。推論に使ったトークンは、費用と出力トークンの上限に含まれます。モデルによっては、推論なしの要求を受け付けません。別のモデルを使い、`thinking` に明示的に `false` を指定すると、APIがHTTP 400を返すことがあります。その場合は `thinking` を省略するか、`true` にしてください。省略時の値は、`model` が `claude-haiku-5-5` と完全に一致するかどうかで決めます。
+
+`speed` を `fast` にすると、モデルは出力を速く返し、料金は高くなります。[Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode)によると、research previewで、使えるのはClaude APIだけです。対象はClaude Opus 5.5、Claude Opus 5、Claude Opus 4.8で、営業担当かwaitlistから利用を申し込む必要があります。ほかのモデルでは、APIが `fast` にエラーを返すか、標準の速度で処理します。Fast modeの上限を超えるとHTTP 429か529になり、ほかのレート制限や過負荷と同じように扱います。
+
+`speed` を書いた翻訳が完了すると、頼んだ値と、応答が報告した `usage.speed` を言語サーバーのログに書きます。例: `translation preview: Anthropic speed requested fast, served fast`。Zedでは、コマンドパレットから `dev: open language server logs` を実行すると読めます。応答が値を報告しなかったときは `(not reported)` と書きます。原文、訳文、キーは書きません。
 
 未知の項目は拒否します。APIキーや接続先を指定する設定項目はありません。設定を変更したら言語サーバーを再起動してください。
 
