@@ -105,7 +105,10 @@ async fn anthropic_declares_automatic_selection_and_the_key_menu() {
         .into_iter()
         .map(|action| action.title)
         .collect();
-    assert_eq!(titles, ["Translate selection to ja", "Anthropic API key…"]);
+    assert_eq!(
+        titles,
+        ["Translate selection to Japanese (ja)", "Anthropic API key…"]
+    );
     // A stable Markdown selection becomes an automatic candidate once a key is saved.
     assert!(server.selection.is_some());
     assert_eq!(fixture.calls(), 0);

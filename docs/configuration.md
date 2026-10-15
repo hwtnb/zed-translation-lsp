@@ -102,6 +102,8 @@ In that language, neither Hover translation nor the Code Actions appear. To turn
 
 UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language.
 
+A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans` or `pt-BR`, is shown with the English name of its language, as `Japanese (ja)`, both in Code Action titles and in the instructions sent to the provider. Any other value, such as `Japanese`, is used as written.
+
 ## Features
 
 `features` turns each way of starting a translation on or off, for every language or for one language. Every value is a boolean.

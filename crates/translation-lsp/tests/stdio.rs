@@ -355,7 +355,7 @@ impl Client {
             .find(|a| a["command"]["command"] == "translation-lsp.preview")
             .unwrap();
         assert!(action.get("edit").is_none());
-        assert_eq!(action["title"], "Translate selection to ja");
+        assert_eq!(action["title"], "Translate selection to Japanese (ja)");
         assert_eq!(action["command"]["title"], action["title"]);
         action["command"].clone()
     }
@@ -2045,7 +2045,10 @@ fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
             &uri,
             json!({"start":{"line":0,"character":0},"end":{"line":0,"character":0}}),
         );
-        assert_eq!(action["title"], "Translate document to ja and open in tab");
+        assert_eq!(
+            action["title"],
+            "Translate document to Japanese (ja) and open in tab"
+        );
         let request = client.execute(action.clone());
         while client.documents.is_empty() {
             client.pump();
@@ -2181,7 +2184,10 @@ fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
     );
     let range = json!({"start":{"line":1,"character":0},"end":{"line":2,"character":40}});
     let action = document_action(&mut client, uri, range);
-    assert_eq!(action["title"], "Translate selection to ja and open in tab");
+    assert_eq!(
+        action["title"],
+        "Translate selection to Japanese (ja) and open in tab"
+    );
     let id = client.execute(action);
     while client.documents.is_empty() {
         client.pump();
@@ -2944,14 +2950,14 @@ fn document_action_switch_hides_both_tab_actions_and_refuses_their_command() {
         assert_eq!(
             titles(client.actions(uri, range.clone())),
             [
-                "Translate selection to ja",
-                "Translate selection to ja and open in tab"
+                "Translate selection to Japanese (ja)",
+                "Translate selection to Japanese (ja) and open in tab"
             ]
         );
         let actions = client.actions(uri, cursor);
         assert_eq!(
             titles(actions.clone()),
-            ["Translate document to ja and open in tab"]
+            ["Translate document to Japanese (ja) and open in tab"]
         );
         opened(&mut client, actions[0]["command"].clone());
         client.finish(true);

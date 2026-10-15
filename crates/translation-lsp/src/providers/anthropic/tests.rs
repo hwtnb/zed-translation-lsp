@@ -80,7 +80,11 @@ async fn request_sends_only_the_documented_headers_and_fields() {
         assert_eq!(request["model"], "claude-haiku-5-5");
         assert_eq!(request["max_tokens"], max_tokens);
         assert_eq!(request["stream"], true);
-        assert_eq!(request["system"], prompt::instructions("ja", "en"));
+        assert!(
+            request["system"].as_str().unwrap().starts_with(
+                "Translate the text into Japanese (ja). Source language: English (en)."
+            )
+        );
         assert_eq!(
             request["messages"],
             json!([{"role": "user", "content": source}])

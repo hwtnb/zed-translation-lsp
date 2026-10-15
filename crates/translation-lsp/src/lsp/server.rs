@@ -45,6 +45,7 @@ use crate::{
     config::{
         AnthropicDocument, AnthropicEffort, AnthropicSpeed, ChatgptDocument, ChatgptSpeed,
         ProviderSettings, ReasoningEffort, Settings, anthropic_thinking, features::Feature,
+        language,
     },
     providers::{
         AccountChange, AuthUiState, Context, Interaction, Output, OutputOptions, Translated,
@@ -693,7 +694,10 @@ impl<P: TranslationProvider> Server<P> {
             add_action(
                 params.range,
                 COMMAND,
-                format!("Translate selection to {}", self.settings.target_language),
+                format!(
+                    "Translate selection to {}",
+                    language::display(&self.settings.target_language)
+                ),
             )?;
         }
         if enabled(Feature::DocumentAction)
@@ -713,7 +717,7 @@ impl<P: TranslationProvider> Server<P> {
                     DOCUMENT_COMMAND,
                     format!(
                         "Translate {subject} to {} and open in tab",
-                        self.settings.target_language
+                        language::display(&self.settings.target_language)
                     ),
                 )?;
             }

@@ -1,5 +1,6 @@
 pub(crate) mod error;
 pub(crate) mod features;
+pub(crate) mod language;
 pub(crate) mod limits;
 
 use error::{ConfigError, bounded_number};

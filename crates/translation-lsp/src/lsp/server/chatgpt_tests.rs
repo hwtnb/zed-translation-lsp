@@ -337,7 +337,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             Document::new(1, 1, "markdown".into(), "First sentence.".into()),
         );
         let actions = markdown_actions(&mut server, &uri, range);
-        assert_eq!(actions[0].title, "Translate selection to en");
+        assert_eq!(actions[0].title, "Translate selection to English (en)");
         assert_eq!(actions[1].title, "ChatGPT account…");
         let command = actions[0].command.clone().unwrap();
         assert_eq!(
@@ -455,7 +455,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
                 body["instructions"]
                     .as_str()
                     .unwrap()
-                    .starts_with("Translate the text into en. Source language: auto.")
+                    .starts_with("Translate the text into English (en). Source language: auto.")
             );
         }
         assert!(client.receiver.is_empty());

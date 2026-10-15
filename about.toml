@@ -92,6 +92,12 @@ files = [{ path = "LICENSE-APACHE", checksum = "a6cba85bc92e0cff7a450b1d873c0eaa
 license = "Apache-2.0"
 files = [{ path = "LICENSE-APACHE", checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9" }]
 
+# isolang spells its license file `LICENCE.md`, which cargo-about does not
+# read. The file holds the copyright notice and refers to the Apache License.
+[isolang.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENCE.md", checksum = "d0c838d2876214a3db47e92c246bc53ad2748161d4ace65ab6f6130da0ca00fa" }]
+
 # `LICENSE` names the three copyright holders and asks for all their notices;
 # the texts of the first two are in a hidden directory.
 [granit-parser.clarify]

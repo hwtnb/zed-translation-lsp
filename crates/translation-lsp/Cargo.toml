@@ -19,6 +19,7 @@ granit-parser = { version = "2.0", default-features = false, features = ["commen
 http-body-util = { version = "0.1", default-features = false }
 hyper = { version = "1.12", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+isolang = "2.4"
 lsp-server = "0.10"
 lsp-types = "0.97"
 openidconnect = { version = "4.0", default-features = false, features = ["timing-resistant-secret-traits"] }

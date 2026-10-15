@@ -119,7 +119,7 @@ async fn without_a_usable_key_the_code_actions_offer_only_the_key_menu() {
     directory.replace(NEW_KEY);
     assert_eq!(
         titles(&mut server, &comment, range),
-        ["Translate selection to ja", MENU]
+        ["Translate selection to Japanese (ja)", MENU]
     );
     titles(&mut server, &markdown, line(0));
     assert!(server.selection.is_some());
