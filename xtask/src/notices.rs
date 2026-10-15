@@ -5,18 +5,18 @@ use serde::Deserialize;
 
 use crate::source::{self, Target};
 
-// The version the workflows install. Another version may read licenses differently.
+/// The version the workflows install. Another version may read licenses differently.
 const CARGO_ABOUT: &str = "0.9.2";
 
-// The crates that may stand under the standard text of a license, which names
-// no copyright holder, each with why no text of its authors can be given.
+/// The crates that may stand under the standard text of a license, which names
+/// no copyright holder, each with why no text of its authors can be given.
 const STANDARD_TEXT: &[&str] = &[
     // Neither the crate nor its repository holds a license file.
     "eventsource-stream",
 ];
 
-// The crates for which `about.toml` gives another license expression than the
-// crate declares, each with the declaration that its entry was written for.
+/// The crates for which `about.toml` gives another license expression than the
+/// crate declares, each with the declaration that its entry was written for.
 const DECLARED: &[(&str, &str)] = &[
     // Used under the one license whose text the crate ships.
     ("dunce", "CC0-1.0 OR MIT-0 OR Apache-2.0"),
@@ -24,17 +24,17 @@ const DECLARED: &[(&str, &str)] = &[
     ("ra-ap-rustc_lexer", "MIT / Apache-2.0"),
 ];
 
-// How often to run cargo-about when it cannot download a license file.
+/// How often to run cargo-about when it cannot download a license file.
 const ATTEMPTS: u32 = 3;
 const PAUSE: Duration = Duration::from_secs(10);
 
-// What cargo-about wrote: the rendered template, and its warnings.
+/// What cargo-about wrote: the rendered template, and its warnings.
 struct Output {
     text: String,
     warnings: String,
 }
 
-// What `cargo metadata` tells of a crate.
+/// What `cargo metadata` tells of a crate.
 #[derive(Deserialize)]
 struct Package {
     name: String,
@@ -47,10 +47,10 @@ struct Metadata {
     packages: Vec<Package>,
 }
 
-// Lists the licenses of the native server's dependencies on these targets.
-// `about.toml` names the accepted licenses; a dependency under any other fails.
-// So does one that declares another license than `about.toml` gives for it,
-// and one for which cargo-about has only the standard text of a license.
+/// Lists the licenses of the native server's dependencies on these targets.
+/// `about.toml` names the accepted licenses; a dependency under any other fails.
+/// So does one that declares another license than `about.toml` gives for it,
+/// and one for which cargo-about has only the standard text of a license.
 pub fn generate(targets: &[Target]) -> Result<Vec<u8>> {
     let install =
         format!("install it with cargo install --locked --features cli cargo-about@{CARGO_ABOUT}");
@@ -73,7 +73,7 @@ pub fn generate(targets: &[Target]) -> Result<Vec<u8>> {
     retry(|| run(targets), || thread::sleep(PAUSE))
 }
 
-// The license that each `clarify` entry of `about.toml` gives for its crate.
+/// The license that each `clarify` entry of `about.toml` gives for its crate.
 fn clarified(about: &str) -> Result<BTreeMap<String, String>> {
     let about: toml::Table = toml::from_str(about).context("Invalid about.toml")?;
     Ok(about
@@ -85,10 +85,10 @@ fn clarified(about: &str) -> Result<BTreeMap<String, String>> {
         .collect())
 }
 
-// cargo-about uses the license of a `clarify` entry in place of the one the
-// crate declares, and checks only the license files that the entry names. This
-// lists the crates, one on a line, that declare another license than their
-// entry was written for.
+/// cargo-about uses the license of a `clarify` entry in place of the one the
+/// crate declares, and checks only the license files that the entry names. This
+/// lists the crates, one on a line, that declare another license than their
+/// entry was written for.
 fn changed(clarified: &BTreeMap<String, String>, packages: &[Package]) -> String {
     packages
         .iter()
@@ -134,9 +134,9 @@ fn run(targets: &[Target]) -> Result<Output> {
     })
 }
 
-// cargo-about falls back to the standard text of a license, and still succeeds,
-// when the checksum of a license file differs and when a download fails. Only a
-// failed download can pass on its own, so only that is tried again.
+/// cargo-about falls back to the standard text of a license, and still succeeds,
+/// when the checksum of a license file differs and when a download fails. Only a
+/// failed download can pass on its own, so only that is tried again.
 fn retry(mut run: impl FnMut() -> Result<Output>, mut pause: impl FnMut()) -> Result<Vec<u8>> {
     let mut attempt = 1;
     loop {
@@ -171,8 +171,8 @@ fn retry(mut run: impl FnMut() -> Result<Output>, mut pause: impl FnMut()) -> Re
     }
 }
 
-// The template lists the crates under the standard text of a license first,
-// one on a line, before the notices themselves.
+/// The template lists the crates under the standard text of a license first,
+/// one on a line, before the notices themselves.
 fn split(text: &str) -> (Vec<&str>, &str) {
     let mut standard = Vec::new();
     let mut notices = text;
@@ -185,7 +185,7 @@ fn split(text: &str) -> (Vec<&str>, &str) {
     (standard, notices)
 }
 
-// The crates, each given as its name and version, that `STANDARD_TEXT` does not list.
+/// The crates, each given as its name and version, that `STANDARD_TEXT` does not list.
 fn unexpected<'a>(standard: &[&'a str]) -> Vec<&'a str> {
     standard
         .iter()
@@ -197,8 +197,8 @@ fn unexpected<'a>(standard: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-// What cargo-about says about the license files that `about.toml` names and it
-// could not use, one crate on a line.
+/// What cargo-about says about the license files that `about.toml` names and it
+/// could not use, one crate on a line.
 fn reasons(warnings: &str) -> String {
     const START: &str = "in clarification for crate ";
     warnings

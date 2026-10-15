@@ -53,7 +53,7 @@ pub(super) fn parse(text: &str, deadline: Instant) -> Option<Vec<Comment>> {
     )
 }
 
-// The first statement of a module, or of the body of a class or a function.
+/// The first statement of a module, or of the body of a class or a function.
 fn first_statement(owner: Node<'_>) -> Option<Node<'_>> {
     let body = match owner.kind() {
         "module" => owner,

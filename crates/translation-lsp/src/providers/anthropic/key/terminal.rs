@@ -1,6 +1,6 @@
-// Opens a terminal window of the OS that runs this executable with the key
-// command. The window belongs to the terminal: the server gives it none of its
-// own streams, and does not wait for what the user does there.
+//! Opens a terminal window of the OS that runs this executable with the key
+//! command. The window belongs to the terminal: the server gives it none of its
+//! own streams, and does not wait for what the user does there.
 use std::{
     ffi::OsString,
     fs,
@@ -13,9 +13,9 @@ use std::{
 
 use super::command::ARGUMENT;
 
-// How long a started program has to fail. `open` and the terminals that hand
-// the window to a running instance end sooner than this; the others are still
-// running then, with the window open.
+/// How long a started program has to fail. `open` and the terminals that hand
+/// the window to a running instance end sooner than this; the others are still
+/// running then, with the window open.
 const GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
 
@@ -38,15 +38,15 @@ impl Launch {
     }
 }
 
-// Terminal of macOS takes a file to run and no arguments for it, so it is given
-// a script that runs the command.
+/// Terminal of macOS takes a file to run and no arguments for it, so it is given
+/// a script that runs the command.
 pub(super) fn macos(script: &Path) -> Vec<Launch> {
     vec![Launch::new("/usr/bin/open", &["-a", "Terminal"], &[script])]
 }
 
-// Linux has no single way to open a terminal, so the ones below are tried in
-// this order: the two that stand for the user's choice, then those of the
-// desktops, then the rest. Each takes the command the way its manual gives.
+/// Linux has no single way to open a terminal, so the ones below are tried in
+/// this order: the two that stand for the user's choice, then those of the
+/// desktops, then the rest. Each takes the command the way its manual gives.
 pub(super) fn linux(executable: &Path) -> Vec<Launch> {
     let command = [executable, Path::new(ARGUMENT)];
     let terminals: [(&str, &[&str]); 11] = [
@@ -68,14 +68,14 @@ pub(super) fn linux(executable: &Path) -> Vec<Launch> {
         .collect()
 }
 
-// Windows gives the command a console of its own; see `spawn`.
+/// Windows gives the command a console of its own; see `spawn`.
 pub(super) fn windows(executable: &Path) -> Vec<Launch> {
     vec![Launch::new(executable, &[ARGUMENT], &[])]
 }
 
-// The script Terminal runs. It removes itself first, so that it is gone
-// whatever happens to the command, and it holds nothing but the path of the
-// executable.
+/// The script Terminal runs. It removes itself first, so that it is gone
+/// whatever happens to the command, and it holds nothing but the path of the
+/// executable.
 pub(super) fn script(executable: &str) -> String {
     format!(
         "#!/bin/sh\nrm -f \"$0\"\nexec {} {ARGUMENT}\n",
@@ -87,8 +87,8 @@ fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-// What the user types to run the command by hand, when no window opens or the
-// server runs on another machine.
+/// What the user types to run the command by hand, when no window opens or the
+/// server runs on another machine.
 pub(in crate::providers::anthropic) fn manual_command(executable: &Path) -> String {
     let path = executable.to_string_lossy();
     let plain = |extra: &str| {
@@ -158,8 +158,8 @@ fn spawn(launch: &Launch) -> io::Result<Child> {
     command.spawn()
 }
 
-// Whether the program started and did not fail within `grace`. The program is
-// then left to itself; a thread collects its exit status when it ends.
+/// Whether the program started and did not fail within `grace`. The program is
+/// then left to itself; a thread collects its exit status when it ends.
 async fn started(mut child: Child, grace: Duration) -> bool {
     let deadline = Instant::now() + grace;
     loop {
@@ -186,7 +186,7 @@ pub(super) async fn first_started(launches: &[Launch], grace: Duration) -> bool 
     false
 }
 
-// Returns whether a terminal took the command.
+/// Returns whether a terminal took the command.
 pub(in crate::providers::anthropic) async fn open(executable: &Path) -> bool {
     if cfg!(target_os = "macos") {
         let Ok(script) = write_script(executable) else {

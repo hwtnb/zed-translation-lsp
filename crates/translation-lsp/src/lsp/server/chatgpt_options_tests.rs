@@ -1,4 +1,4 @@
-// The settings decide what each output sends through `chatgpt_options`.
+//! The settings decide what each output sends through `chatgpt_options`.
 use serde_json::{Value, json};
 
 use super::*;
@@ -7,9 +7,9 @@ use crate::providers::{Intent, chatgpt::test_support::Fixture};
 const RANGE_MODEL: &str = "synthetic-range-model";
 const TAB_MODEL: &str = "synthetic-tab-model";
 
-// The model, `reasoning`, and `service_tier` each output sends with these
-// provider settings. `service_tier` is `null` when the request did not carry
-// the field.
+/// The model, `reasoning`, and `service_tier` each output sends with these
+/// provider settings. `service_tier` is `null` when the request did not carry
+/// the field.
 async fn sent(provider: Value) -> (Value, Value) {
     let settings = Settings::from_options(Some(json!({"provider": provider}))).unwrap();
     let ProviderSettings::Chatgpt {

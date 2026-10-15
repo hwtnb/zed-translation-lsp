@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-// The request header that names a workspace. This server never sends it.
+/// The request header that names a workspace. This server never sends it.
 const WORKSPACE_HEADER: &str = "anthropic-workspace-id";
 const BILLING_ADVICE: &str =
     "Check the Billing page in the Claude Console at https://platform.claude.com/";
@@ -31,7 +31,7 @@ enum Advice {
 }
 
 impl Advice {
-    // `configured` is the output whose settings named the request's model.
+    /// `configured` is the output whose settings named the request's model.
     fn text(self, configured: Output) -> &'static str {
         match (self, configured) {
             (Self::Key, _) => key::REJECTED,
@@ -43,8 +43,8 @@ impl Advice {
     }
 }
 
-// Documented status and `error.type` pairs. A stream error arrives after HTTP
-// 200, so the type is matched first and the status covers bodies without one.
+/// Documented status and `error.type` pairs. A stream error arrives after HTTP
+/// 200, so the type is matched first and the status covers bodies without one.
 const FAILURES: [(u16, &str, RemoteKind, Option<Advice>); 9] = [
     (
         401,
@@ -169,19 +169,19 @@ pub(super) async fn failure(
 
 pub(super) struct Completed {
     pub text: String,
-    // The speed the response reports it was served at.
+    /// The speed the response reports it was served at.
     pub speed: Option<String>,
 }
 
-// The response value comes from outside, and is only written to the log.
+/// The response value comes from outside, and is only written to the log.
 fn reported_speed(value: Option<&str>, secrets: &[&str]) -> Option<String> {
     value
         .map(|value| safe(value, secrets, 32))
         .filter(|value| !value.is_empty())
 }
 
-// Fast mode costs more, so a request that names a speed tells in the log the
-// speed that `usage.speed` reports it was served at.
+/// Fast mode costs more, so a request that names a speed tells in the log the
+/// speed that `usage.speed` reports it was served at.
 pub(super) fn log_speed(requested: AnthropicSpeed, completed: &Completed) {
     eprintln!("{}", speed_line(requested, completed.speed.as_deref()));
 }
@@ -235,9 +235,9 @@ pub(super) async fn text(
     message.finish(secrets)
 }
 
-// The events that decide the result, and `message_start`, which reports the
-// speed. The API may add event types, so every other name, including
-// `content_block_stop` and `ping`, is skipped without inspecting its data.
+/// The events that decide the result, and `message_start`, which reports the
+/// speed. The API may add event types, so every other name, including
+/// `content_block_stop` and `ping`, is skipped without inspecting its data.
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
@@ -251,15 +251,15 @@ enum Kind {
     Other,
 }
 
-// Each handled event repeats its name as `type` in its data.
+/// Each handled event repeats its name as `type` in its data.
 #[derive(Deserialize)]
 struct Declared {
     #[serde(rename = "type")]
     kind: String,
 }
 
-// Without an SSE event name, `type` alone identifies the event, and data
-// without one is not an event this server handles.
+/// Without an SSE event name, `type` alone identifies the event, and data
+/// without one is not an event this server handles.
 #[derive(Deserialize)]
 struct Unnamed {
     #[serde(rename = "type")]
@@ -302,15 +302,15 @@ fn json<'a, T: Deserialize<'a>>(data: &'a str) -> Result<T, Error> {
     })
 }
 
-// A handled event must carry its required fields with the documented types.
-// Fields this server does not read are ignored. `Kind::of` has already
-// accepted the data as JSON.
+/// A handled event must carry its required fields with the documented types.
+/// Fields this server does not read are ignored. `Kind::of` has already
+/// accepted the data as JSON.
 fn parse<'a, T: Deserialize<'a>>(data: &'a str) -> Result<T, Error> {
     serde_json::from_str(data).map_err(|_| Error::failed(MALFORMED))
 }
 
-// Only `usage.speed` is read. It is reported here and not in later usage, and
-// its shape is not checked: a speed is never a reason to reject a translation.
+/// Only `usage.speed` is read. It is reported here and not in later usage, and
+/// its shape is not checked: a speed is never a reason to reject a translation.
 #[derive(Deserialize)]
 struct MessageStart {
     #[serde(default)]
@@ -329,7 +329,7 @@ enum Block {
     Text {
         text: String,
     },
-    // Thinking and block types added later carry no translation text.
+    /// Thinking and block types added later carry no translation text.
     #[serde(other)]
     Other,
 }
@@ -466,7 +466,7 @@ impl Message {
         Ok(())
     }
 
-    // Only the transport reader may call this, after EOF and truncation checks.
+    /// Only the transport reader may call this, after EOF and truncation checks.
     fn finish(self, secrets: &[&str]) -> Result<Completed, Error> {
         if !self.stopped {
             return Err(Error::failed("Anthropic stream ended without message_stop"));

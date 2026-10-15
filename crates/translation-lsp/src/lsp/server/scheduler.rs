@@ -82,9 +82,9 @@ impl Translation {
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
     }
-    // With `provider.document`, tab operations and range operations never
-    // share work, even for the same target. Without it, one operation serves
-    // every output.
+    /// With `provider.document`, tab operations and range operations never
+    /// share work, even for the same target. Without it, one operation serves
+    /// every output.
     pub fn serves(&self, output: Output, settings: &Settings) -> bool {
         !settings.provider.separates_documents() || self.document == (output == Output::Document)
     }
@@ -94,13 +94,13 @@ impl Translation {
 pub(super) struct Scheduler {
     pub pending: HashMap<RequestId, Pending>,
     pub translations: HashMap<u64, Translation>,
-    // Slots keep their dispatch category; adding another output does not start another operation.
-    // A canceled job occupies its slot until the worker acknowledges termination.
+    /// Slots keep their dispatch category; adding another output does not start another operation.
+    /// A canceled job occupies its slot until the worker acknowledges termination.
     dispatched: HashMap<u64, bool>,
 }
 
 impl Scheduler {
-    // The operation a request for `output` joins.
+    /// The operation a request for `output` joins.
     pub fn ticket(
         &self,
         target: &TranslationTarget,

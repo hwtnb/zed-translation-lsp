@@ -5,7 +5,7 @@ use super::{
 
 #[derive(thiserror::Error)]
 pub(crate) enum ConfigError {
-    // The source can contain rejected user input. Do not include it in UI/log output.
+    /// The source can contain rejected user input. Do not include it in UI/log output.
     #[error("Invalid translation settings: check field names and value types")]
     Decode(#[from] serde_json::Error),
     #[error("{setting} must be between {minimum} and {maximum}; received {value}")]
@@ -47,7 +47,7 @@ pub(crate) enum ConfigError {
         setting: &'static str,
         choices: &'static str,
     },
-    // `scope` is the table holding both settings: `provider` or `provider.document`.
+    /// `scope` is the table holding both settings: `provider` or `provider.document`.
     #[error("{scope}.thinking must not be false when {scope}.effort is {effort}")]
     ThinkingRequired {
         scope: &'static str,

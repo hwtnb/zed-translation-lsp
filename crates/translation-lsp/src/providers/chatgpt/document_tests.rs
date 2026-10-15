@@ -46,8 +46,8 @@ async fn translate(
         .map(|translated| translated.text)
 }
 
-// The model, `reasoning`, and `service_tier` of each translation request, in
-// order. `service_tier` is `null` when the request did not carry the field.
+/// The model, `reasoning`, and `service_tier` of each translation request, in
+/// order. `service_tier` is `null` when the request did not carry the field.
 fn sent(fixture: &Fixture) -> Vec<Value> {
     let state = fixture.state.lock().unwrap();
     state

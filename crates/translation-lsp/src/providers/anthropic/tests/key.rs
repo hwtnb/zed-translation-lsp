@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-// Differs from the key of `Fixture::provider`, so a request shows where its key came from.
+/// Differs from the key of `Fixture::provider`, so a request shows where its key came from.
 const FILE_KEY: &str = "sk-ant-synthetic-file-key";
 const ENVIRONMENT_KEY: &str = "sk-ant-synthetic-environment-key";
 const VARIABLES: [&str; 2] = ["TRANSLATION_LSP_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"];
@@ -39,15 +39,15 @@ fn provider(fixture: &Fixture, directory: &Path) -> AnthropicProvider {
     AnthropicProvider::synthetic(format!("{}/v1", fixture.base), directory)
 }
 
-// The key the last request to the fixture carried.
+/// The key the last request to the fixture carried.
 fn sent(fixture: &Fixture) -> String {
     let state = fixture.state.lock().unwrap();
     let key = &state.records.last().unwrap().headers["x-api-key"];
     key.to_str().unwrap().to_owned()
 }
 
-// What every request is answered with when the key in `directory` cannot be
-// used. The API is not contacted.
+/// What every request is answered with when the key in `directory` cannot be
+/// used. The API is not contacted.
 async fn refusal(fixture: &Fixture, directory: &Path) -> String {
     let calls = fixture.calls();
     let provider = provider(fixture, directory);
@@ -246,15 +246,15 @@ fn unlocated_directory_and_read_failure_are_settings_errors() {
     }
 }
 
-// The same length as `FILE_KEY`, so that the size of the file tells nothing.
+/// The same length as `FILE_KEY`, so that the size of the file tells nothing.
 const NEXT_KEY: &str = "sk-ant-synthetic-next-key";
 
-// The key that the file is found to hold now.
+/// The key that the file is found to hold now.
 fn held(file: &KeyFile) -> Result<String, Error> {
     file.read().map(|(key, _)| key.text.to_string())
 }
 
-// Writes into the file that is there, as an editor that saves in place does.
+/// Writes into the file that is there, as an editor that saves in place does.
 fn rewrite(path: &Path, contents: &str) {
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -269,8 +269,8 @@ fn set_modified(path: &Path, time: SystemTime) {
     file.set_modified(time).unwrap();
 }
 
-// Gives the file a modification time long past, whatever the clock of the
-// file system counts in, and returns the time as the file system kept it.
+/// Gives the file a modification time long past, whatever the clock of the
+/// file system counts in, and returns the time as the file system kept it.
 fn age(path: &Path) -> SystemTime {
     set_modified(path, SystemTime::now() - Duration::from_secs(3600));
     fs::metadata(path).unwrap().modified().unwrap()
@@ -424,8 +424,8 @@ fn remembered_key_is_not_used_once_the_file_or_its_directory_stops_being_private
     remember();
 }
 
-// The file is read for every request: a key saved, replaced, or removed while
-// the server runs is the key of the next request, and counts as another key.
+/// The file is read for every request: a key saved, replaced, or removed while
+/// the server runs is the key of the next request, and counts as another key.
 #[tokio::test(flavor = "current_thread")]
 async fn key_saved_replaced_or_removed_is_followed_without_a_restart() {
     let fixture = Fixture::new().await;
@@ -530,8 +530,8 @@ async fn stop_for_a_rejected_key_is_not_carried_to_the_key_that_replaces_it() {
     assert_eq!(fixture.calls(), 2);
 }
 
-// Holds the responses to requests that carry `key`, or to every request, until
-// the test adds a permit.
+/// Holds the responses to requests that carry `key`, or to every request, until
+/// the test adds a permit.
 fn gate(fixture: &Fixture, key: Option<&'static str>) -> Arc<Semaphore> {
     let gate = Arc::new(Semaphore::new(0));
     let mut state = fixture.state.lock().unwrap();
@@ -539,7 +539,7 @@ fn gate(fixture: &Fixture, key: Option<&'static str>) -> Arc<Semaphore> {
     gate
 }
 
-// Runs `pending` until the fixture has received `calls` requests.
+/// Runs `pending` until the fixture has received `calls` requests.
 async fn sent_while_pending<T>(
     fixture: &Fixture,
     calls: usize,
@@ -743,7 +743,7 @@ async fn menu_offers_saving_without_a_usable_key_and_replacing_or_removing_with_
     assert_eq!(provider.account_commands()[1].command, REMOVE);
 }
 
-// Answers a choice the way a test says, and remembers what was asked.
+/// Answers a choice the way a test says, and remembers what was asked.
 #[derive(Default)]
 struct Editor {
     accepts: bool,
@@ -886,7 +886,7 @@ async fn removing_refuses_what_is_not_a_private_directory_with_a_regular_file() 
     assert_eq!(fs::read(target.file()).unwrap(), FILE_KEY.as_bytes());
 }
 
-// The provider as the server builds it, with only the directory replaced.
+/// The provider as the server builds it, with only the directory replaced.
 fn production(directory: &Path) -> AnthropicProvider {
     AnthropicProvider::new(
         OutputOptions::new(
@@ -919,7 +919,7 @@ fn environment_child_process() {
     assert_eq!(&*key.text, FILE_KEY);
 }
 
-// Environment variables belong to the whole process, so a child gets them.
+/// Environment variables belong to the whole process, so a child gets them.
 #[test]
 fn environment_variables_supply_no_key() {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());

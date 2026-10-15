@@ -8,7 +8,7 @@ use crate::providers::{
 
 const NEW_KEY: &str = "sk-ant-synthetic-entered-key";
 
-// A terminal whose user types `lines`, then ends the input.
+/// A terminal whose user types `lines`, then ends the input.
 #[derive(Default)]
 struct Typed {
     lines: VecDeque<String>,
@@ -24,7 +24,7 @@ impl Typed {
         }
     }
 
-    // Runs the command for `directory`. Nothing typed may be shown.
+    /// Runs the command for `directory`. Nothing typed may be shown.
     fn run(lines: &[&str], directory: &Path) -> (bool, Self) {
         let mut console = Self::new(lines);
         let saved = super::run(Ok(directory.into()), &mut console);
@@ -55,7 +55,7 @@ fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
-// The key the provider sends with its next request.
+/// The key the provider sends with its next request.
 async fn sent(fixture: &Fixture, provider: &impl TranslationProvider) -> String {
     provider
         .translate(
@@ -208,8 +208,8 @@ fn input_that_is_not_a_key_is_asked_for_again_and_saves_nothing() {
     }
 }
 
-// Runs the command for a place that cannot take the key. It must say so before
-// it asks for the key, and wait for the user to have read it.
+/// Runs the command for a place that cannot take the key. It must say so before
+/// it asks for the key, and wait for the user to have read it.
 fn refused(directory: Result<&Path, CredentialError>) -> String {
     let mut console = Typed::new(&[NEW_KEY]);
     let saved = super::run(directory.map(Path::to_owned), &mut console);

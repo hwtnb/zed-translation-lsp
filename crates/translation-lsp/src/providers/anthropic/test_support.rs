@@ -1,5 +1,5 @@
-// Local-only fixture. The key is a synthetic test value; it cannot authenticate
-// to Anthropic.
+//! Local-only fixture. The key is a synthetic test value; it cannot authenticate
+//! to Anthropic.
 use std::{
     collections::VecDeque,
     convert::Infallible,
@@ -31,14 +31,14 @@ use crate::providers::credential_directory;
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
 
-// A credential directory of a test's own, removed with the value. Tests read
-// the key file here and never in the directory of the user.
+/// A credential directory of a test's own, removed with the value. Tests read
+/// the key file here and never in the directory of the user.
 pub(crate) struct KeyDirectory {
     pub path: PathBuf,
 }
 
 impl KeyDirectory {
-    // A private directory without a key file.
+    /// A private directory without a key file.
     pub fn new() -> Self {
         let path = std::env::temp_dir().join(format!("zed-anthropic-key-{}", uuid::Uuid::new_v4()));
         #[cfg(unix)]
@@ -51,7 +51,7 @@ impl KeyDirectory {
         Self { path }
     }
 
-    // A private directory whose private key file holds `contents`.
+    /// A private directory whose private key file holds `contents`.
     pub fn with_key(contents: impl AsRef<[u8]>) -> Self {
         let directory = Self::new();
         let mut options = fs::OpenOptions::new();
@@ -73,7 +73,7 @@ impl KeyDirectory {
         self.path.join("anthropic-api-key")
     }
 
-    // Replaces the key file at once, as the key command does.
+    /// Replaces the key file at once, as the key command does.
     pub fn replace(&self, contents: &str) {
         credential_directory::replace(&self.path, "anthropic-api-key", contents.as_bytes())
             .unwrap();
@@ -89,8 +89,8 @@ impl KeyDirectory {
     }
 }
 
-// Stands for the terminal of the OS. It opens no window: it records the
-// executable it was given and answers what `fails` says.
+/// Stands for the terminal of the OS. It opens no window: it records the
+/// executable it was given and answers what `fails` says.
 #[derive(Clone, Default)]
 pub(crate) struct Terminal {
     pub opened: Arc<Mutex<Vec<PathBuf>>>,
@@ -120,7 +120,7 @@ pub(crate) struct Record {
 pub(crate) struct Reply {
     pub status: u16,
     pub body: String,
-    // Close the connection after the body without ending the response.
+    /// Close the connection after the body without ending the response.
     pub interrupted: bool,
 }
 
@@ -160,17 +160,17 @@ impl Reply {
 #[derive(Default)]
 pub(crate) struct FixtureState {
     pub records: Vec<Record>,
-    // Scripted replies are consumed first, then `fallback` repeats. Without
-    // either, the fixture streams `訳` followed by the submitted text.
+    /// Scripted replies are consumed first, then `fallback` repeats. Without
+    /// either, the fixture streams `訳` followed by the submitted text.
     pub scripted: VecDeque<Reply>,
     pub fallback: Option<Reply>,
     pub retry_after: Option<String>,
     pub omit_request_id: bool,
-    // Leave each response open after its body, as an unfinished stream.
+    /// Leave each response open after its body, as an unfinished stream.
     pub hold: bool,
-    // A recorded request is answered only when the test adds a permit.
+    /// A recorded request is answered only when the test adds a permit.
     pub gate: Option<Arc<Semaphore>>,
-    // The only key whose requests wait at `gate`. Without one, every request waits.
+    /// The only key whose requests wait at `gate`. Without one, every request waits.
     pub gated_key: Option<&'static str>,
 }
 
@@ -216,7 +216,7 @@ impl Drop for Held {
 
 pub(crate) struct Fixture {
     pub base: String,
-    // Where `provider` reads its key, which is `KEY` until a test changes it.
+    /// Where `provider` reads its key, which is `KEY` until a test changes it.
     pub keys: KeyDirectory,
     pub state: Arc<Mutex<FixtureState>>,
     pub open: Arc<OpenResponses>,
@@ -296,7 +296,7 @@ pub(crate) fn started() -> String {
     )
 }
 
-// One text block whose content arrives as two deltas.
+/// One text block whose content arrives as two deltas.
 pub(crate) fn text_block(index: u64, text: &str) -> String {
     let split = (0..=text.len() / 2)
         .rev()

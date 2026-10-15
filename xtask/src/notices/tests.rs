@@ -4,7 +4,7 @@ use super::*;
 
 const NOTICES: &str = "Third-party licenses for Translation LSP\n\nlibm 0.2.16\n";
 
-// Lines as cargo-about 0.9.2 writes them, with its colors.
+/// Lines as cargo-about 0.9.2 writes them, with its colors.
 const CHANGED: &str = "2026-10-12T20:36:03.806369Z [\u{1b}[33mWARN\u{1b}[0m] failed to validate all files specified in clarification for crate libm 0.2.16: checksum mismatch, expected '39'\u{1b}[0m\n";
 const NOT_DOWNLOADED: &str = "2026-10-12T20:35:35.156804Z [\u{1b}[33mWARN\u{1b}[0m] failed to validate all files specified in clarification for crate tree-sitter-cpp 0.23.4: unable to retrieve 'LICENSE' for crate 'tree-sitter-cpp 0.23.4' from remote git host: failed to fetch contents of 'LICENSE' from repo 'https://github.com/tree-sitter/tree-sitter-cpp': failed to send request: io: Connection refused\u{1b}[0m\n";
 
@@ -19,7 +19,7 @@ fn output(standard: &[&str], warnings: &str) -> Output {
     }
 }
 
-// Runs `retry` on these outputs in turn and counts the runs and the pauses.
+/// Runs `retry` on these outputs in turn and counts the runs and the pauses.
 fn generate(outputs: Vec<Output>) -> (Result<Vec<u8>>, usize, usize) {
     let runs = Cell::new(0);
     let pauses = Cell::new(0);

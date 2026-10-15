@@ -1,5 +1,5 @@
-// Local-only fixtures. Each fixture generates its own signing key in memory.
-// Tokens are synthetic test values; they cannot authenticate to OpenAI.
+//! Local-only fixtures. Each fixture generates its own signing key in memory.
+//! Tokens are synthetic test values; they cannot authenticate to OpenAI.
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
@@ -73,7 +73,7 @@ impl Drop for HeldTail {
 }
 
 pub(crate) struct FixtureState {
-    // Signs the ID tokens, and is the only key the JWKS lists.
+    /// Signs the ID tokens, and is the only key the JWKS lists.
     signing_key: Arc<CoreEdDsaPrivateSigningKey>,
     pub records: Vec<Record>,
     pub authorization: HashMap<String, String>,
@@ -89,7 +89,7 @@ pub(crate) struct FixtureState {
     pub token_release: Option<Arc<tokio::sync::Notify>>,
     pub stream_tail_delay: Duration,
     pub stream_tail_gate: Option<Arc<StreamTailGate>>,
-    // Cut this many successful streams halfway by closing the connection.
+    /// Cut this many successful streams halfway by closing the connection.
     pub interrupted_streams: usize,
     pub refreshes: usize,
     pub revocations: usize,
@@ -197,7 +197,7 @@ impl Fixture {
         signed_token(&signing_key, &self.base, audience, nonce, mode)
     }
 
-    // Retires the signing key: the JWKS lists only the new one from here on.
+    /// Retires the signing key: the JWKS lists only the new one from here on.
     pub fn rotate_signing_key(&self) {
         self.state.lock().unwrap().signing_key = signing_key();
     }

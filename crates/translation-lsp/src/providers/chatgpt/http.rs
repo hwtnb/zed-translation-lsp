@@ -114,8 +114,8 @@ impl Http {
         http
     }
 
-    // openidconnect 4 uses a public AsyncHttpClient closure. Its HTTP types are
-    // compatible with reqwest 0.13; response limits apply before SDK parsing.
+    /// openidconnect 4 uses a public AsyncHttpClient closure. Its HTTP types are
+    /// compatible with reqwest 0.13; response limits apply before SDK parsing.
     pub async fn oidc(&self, request: HttpRequest) -> Result<HttpResponse, Error> {
         // RFC 7009 makes the SDK require an HTTPS revocation URL. Only tests
         // intercept that one synthetic URL to inspect its real encoded form

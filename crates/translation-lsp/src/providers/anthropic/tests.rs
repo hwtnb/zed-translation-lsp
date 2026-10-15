@@ -480,8 +480,8 @@ async fn billing_stop_pauses_automatic_work_until_an_explicit_translation_succee
     automatic(&provider).unwrap();
 }
 
-// The message is the one the API documents for a request without the
-// workspace header, made with a key that is not for a single workspace.
+/// The message is the one the API documents for a request without the
+/// workspace header, made with a key that is not for a single workspace.
 #[tokio::test(flavor = "current_thread")]
 async fn key_for_several_workspaces_asks_for_a_single_workspace_key() {
     const DETAIL: &str = concat!(

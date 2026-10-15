@@ -52,8 +52,8 @@ const READY: &str = "Translation ready. Hover over the selected text to view it.
 
 type Reply = Result<Value, ResponseError>;
 
-// Framing is read and written by the same published SDK used by the server.
-// Server requests are held until each test supplies the client's response.
+/// Framing is read and written by the same published SDK used by the server.
+/// Server requests are held until each test supplies the client's response.
 struct Client {
     child: Child,
     stdin: ChildStdin,
@@ -461,7 +461,7 @@ fn assert_error(reply: Reply, code: i32) {
     assert_eq!(reply.unwrap_err().code, code);
 }
 
-// The editor starts the server with `--stdio` or with no argument at all.
+/// The editor starts the server with `--stdio` or with no argument at all.
 #[test]
 fn server_starts_with_or_without_the_stdio_argument() {
     for arguments in [&[][..], &["--stdio"], &["--stdio", "--mock-delay-ms", "1"]] {

@@ -54,7 +54,7 @@ pub struct Target {
 }
 
 impl Target {
-    // The GitHub Actions runner that builds and tests this target.
+    /// The GitHub Actions runner that builds and tests this target.
     fn runner(&self) -> &'static str {
         match (self.os, self.arch) {
             (Os::Mac, Arch::Aarch64) => "macos-15",

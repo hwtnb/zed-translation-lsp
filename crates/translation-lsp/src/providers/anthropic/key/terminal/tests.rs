@@ -99,8 +99,8 @@ mod started {
 
     use super::*;
 
-    // Long enough for a failing program to end on a slow machine. A program
-    // that ends is not waited for any longer than it runs.
+    /// Long enough for a failing program to end on a slow machine. A program
+    /// that ends is not waited for any longer than it runs.
     const PATIENT: Duration = Duration::from_secs(60);
 
     fn shell(script: &str) -> Launch {

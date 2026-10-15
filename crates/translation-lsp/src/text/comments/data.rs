@@ -2,8 +2,8 @@ use granit_parser::{Scanner, StrInput, TokenType};
 
 use super::{Comment, Kind};
 
-// Comments in these formats are decided by tokens alone, so read tokens and
-// leave the structure unchecked. Errors in the structure then hide nothing.
+/// Comments in these formats are decided by tokens alone, so read tokens and
+/// leave the structure unchecked. Errors in the structure then hide nothing.
 pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
     match language_id {
         "yaml" | "dockercompose" => yaml(text),
@@ -12,7 +12,7 @@ pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
     }
 }
 
-// Where the line of this offset ends: at CR, LF, or the end of the text.
+/// Where the line of this offset ends: at CR, LF, or the end of the text.
 fn line_end(bytes: &[u8], from: usize) -> usize {
     bytes[from..]
         .iter()
@@ -68,8 +68,8 @@ fn json(text: &str) -> Vec<Comment> {
     comments
 }
 
-// Outside the four kinds of strings, every `#` starts a comment, and every
-// quote starts a string: also in the middle of a bare value, as in `r"# x"`.
+/// Outside the four kinds of strings, every `#` starts a comment, and every
+/// quote starts a string: also in the middle of a bare value, as in `r"# x"`.
 fn toml(text: &str) -> Vec<Comment> {
     let bytes = text.as_bytes();
     let mut comments = Vec::new();

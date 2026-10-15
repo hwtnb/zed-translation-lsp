@@ -19,7 +19,7 @@ pub(crate) fn network_error(service: Service) -> impl Fn(reqwest::Error) -> Erro
     }
 }
 
-// A date or invalid delay must not cause a retry earlier than requested.
+/// A date or invalid delay must not cause a retry earlier than requested.
 pub(crate) fn retry_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)

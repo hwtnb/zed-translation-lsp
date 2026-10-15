@@ -21,7 +21,7 @@ pub(crate) struct AuthStore {
     directory: PathBuf,
 }
 
-// Credential-bearing types deliberately have no Debug implementation.
+/// Credential-bearing types deliberately have no Debug implementation.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthState {
@@ -132,9 +132,9 @@ impl AuthStore {
         Self { directory }
     }
 
-    // Atomic rename permits coherent reads without holding a lock over display.
-    // Check a stable lock separately so another process's signout/refresh can
-    // suppress a cache hit while that credential operation is in progress.
+    /// Atomic rename permits coherent reads without holding a lock over display.
+    /// Check a stable lock separately so another process's signout/refresh can
+    /// suppress a cache hit while that credential operation is in progress.
     pub fn snapshot(&self) -> Result<Option<Snapshot>, CredentialError> {
         if !check_path(&self.directory, true)? {
             return Ok(None);

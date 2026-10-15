@@ -47,6 +47,10 @@ relative to the repository root.
 - Target Windows, macOS, and Linux. Document OS-specific prerequisites and paths;
   use OS-neutral editor action names in shared instructions. Keep all three
   platforms in CI, and distinguish build checks from actual Zed verification.
+- Write a comment that says what an item is or does, such as a function, type,
+  field, variant, or constant, as a doc comment (`///`, or `//!` for a module).
+  Keep `//` for reasons about particular lines and for a comment that covers
+  several items, such as the `cfg` variants of one item.
 - Follow `.editorconfig` and rustfmt. Keep UI labels in English independently of
   the translation target language. Update the affected pages in both languages
   for user-facing changes.

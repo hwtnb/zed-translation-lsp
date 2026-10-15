@@ -1,11 +1,11 @@
-// `translation-lsp anthropic-key` as the process the server starts in a new
-// terminal window. A pseudo-terminal stands for the window, and the process
-// gets no standard stream, as when the server starts it.
-//
-// The command saves in the credential directory of the user who runs it, so
-// every process here gets a home directory of the test's own. Windows takes the
-// directory from the OS and not from the environment, so nothing here runs
-// there: the unit tests of the command cover what it saves and refuses.
+//! `translation-lsp anthropic-key` as the process the server starts in a new
+//! terminal window. A pseudo-terminal stands for the window, and the process
+//! gets no standard stream, as when the server starts it.
+//!
+//! The command saves in the credential directory of the user who runs it, so
+//! every process here gets a home directory of the test's own. Windows takes the
+//! directory from the OS and not from the environment, so nothing here runs
+//! there: the unit tests of the command cover what it saves and refuses.
 #![cfg(unix)]
 
 use std::{
@@ -33,11 +33,11 @@ use std::{
 const KEY: &str = "sk-ant-synthetic-typed-key";
 const PROMPT: &str = "Press Enter alone to cancel: ";
 const FINISH: &str = "Press Enter to finish.";
-// Ends a test that would otherwise hang. Nothing waits this long when the
-// command works: each step goes on as soon as what it waits for is seen.
+/// Ends a test that would otherwise hang. Nothing waits this long when the
+/// command works: each step goes on as soon as what it waits for is seen.
 const LIMIT: Duration = Duration::from_secs(60);
 
-// A home directory that holds nothing of the user.
+/// A home directory that holds nothing of the user.
 struct Home {
     root: PathBuf,
 }
@@ -52,7 +52,7 @@ impl Home {
         Self { root }
     }
 
-    // Where the command looks for the credential directory under this home.
+    /// Where the command looks for the credential directory under this home.
     fn directory(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.root
@@ -66,7 +66,7 @@ impl Home {
         self.directory().join("anthropic-api-key")
     }
 
-    // The executable with this home, and without the streams of the test.
+    /// The executable with this home, and without the streams of the test.
     fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_translation-lsp"));
         command
@@ -95,25 +95,25 @@ fn mode(path: &std::path::Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
-// `ptsname` answers in a buffer that all threads share.
+/// `ptsname` answers in a buffer that all threads share.
 static PTSNAME: Mutex<()> = Mutex::new(());
 
-// The side of a pseudo-terminal that a terminal window holds: what is written
-// here is typed, and what is read here is shown.
+/// The side of a pseudo-terminal that a terminal window holds: what is written
+/// here is typed, and what is read here is shown.
 struct Window {
     master: File,
-    // The terminal as the shell that started the command holds it. While it is
-    // open, the terminal keeps the settings that the command leaves behind.
+    /// The terminal as the shell that started the command holds it. While it is
+    /// open, the terminal keeps the settings that the command leaves behind.
     shell: File,
     shown: Receiver<Vec<u8>>,
     seen: String,
-    // Where the text that `wait_for` found last ends. One read may bring more
-    // than that text, so what follows it is still to be found.
+    /// Where the text that `wait_for` found last ends. One read may bring more
+    /// than that text, so what follows it is still to be found.
     found: usize,
 }
 
-// How the terminal treats what is typed: whether it shows it, hands it over
-// line by line, and turns Ctrl+C into a signal.
+/// How the terminal treats what is typed: whether it shows it, hands it over
+/// line by line, and turns Ctrl+C into a signal.
 #[derive(Debug, PartialEq, Eq)]
 struct Settings {
     echo: bool,
@@ -121,7 +121,7 @@ struct Settings {
     signals: bool,
 }
 
-// What a fresh terminal does, and what a shell expects to find again.
+/// What a fresh terminal does, and what a shell expects to find again.
 const USUAL: Settings = Settings {
     echo: true,
     lines: true,
@@ -129,8 +129,8 @@ const USUAL: Settings = Settings {
 };
 
 impl Window {
-    // Opens a pseudo-terminal and starts `command` with it as the controlling
-    // terminal of a session of its own.
+    /// Opens a pseudo-terminal and starts `command` with it as the controlling
+    /// terminal of a session of its own.
     #[allow(
         unsafe_code,
         reason = "the standard library opens no pseudo-terminal and starts no session"
@@ -203,7 +203,7 @@ impl Window {
         )
     }
 
-    // Waits until the window has shown `text` after the text found before.
+    /// Waits until the window has shown `text` after the text found before.
     fn wait_for(&mut self, text: &str) {
         let begun = Instant::now();
         loop {
@@ -239,8 +239,8 @@ impl Window {
         }
     }
 
-    // Types `text` once the terminal has stopped showing what is typed. The
-    // prompt is shown a moment before that, so the prompt alone is too early.
+    /// Types `text` once the terminal has stopped showing what is typed. The
+    /// prompt is shown a moment before that, so the prompt alone is too early.
     fn type_hidden(&mut self, text: &str) {
         let begun = Instant::now();
         while self.settings().echo {
@@ -250,8 +250,8 @@ impl Window {
         self.master.write_all(text.as_bytes()).unwrap();
     }
 
-    // How the process ended, everything the window showed, and the settings
-    // the process left to the shell.
+    /// How the process ended, everything the window showed, and the settings
+    /// the process left to the shell.
     fn finish(mut self, mut child: Child) -> (ExitStatus, String, Settings) {
         let begun = Instant::now();
         let status = loop {
@@ -276,9 +276,9 @@ impl Window {
     }
 }
 
-// The harness shows what a terminal shows: what is typed while the terminal
-// echoes appears among what the window read. Without this, a harness that
-// could never see typed input would pass the tests below.
+/// The harness shows what a terminal shows: what is typed while the terminal
+/// echoes appears among what the window read. Without this, a harness that
+/// could never see typed input would pass the tests below.
 #[test]
 fn window_shows_what_is_typed_while_the_terminal_echoes() {
     let mut command = Command::new("/bin/cat");

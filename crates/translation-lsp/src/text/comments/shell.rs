@@ -2,8 +2,8 @@ use std::mem::replace;
 
 use super::Comment;
 
-// Reads sh, bash, and zsh alike, and follows bash where the shells differ.
-// What bash reads as data is never returned; a comment may be missed instead.
+/// Reads sh, bash, and zsh alike, and follows bash where the shells differ.
+/// What bash reads as data is never returned; a comment may be missed instead.
 pub(super) fn parse(text: &str) -> Vec<Comment> {
     let mut reader = Reader {
         bytes: text.as_bytes(),
@@ -20,26 +20,26 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
     reader.comments
 }
 
-// What the next word of a command can be. bash decides it from the token
-// before, and reads a reserved word only in some of these places.
+/// What the next word of a command can be. bash decides it from the token
+/// before, and reads a reserved word only in some of these places.
 #[derive(Clone, Copy, PartialEq)]
 enum Position {
-    // A reserved word or an assignment.
+    /// A reserved word or an assignment.
     Command,
-    // As `Command`, and the word after it starts a command too.
+    /// As `Command`, and the word after it starts a command too.
     Coproc,
-    // As `Command`, with `-p` or `--` after `time`, or `--` after `time -p`.
+    /// As `Command`, with `-p` or `--` after `time`, or `--` after `time -p`.
     Time,
     TimeOption,
-    // An assignment, after another one.
+    /// An assignment, after another one.
     Assigned,
-    // The target of a redirection that came before any word of a command,
-    // and the place after it: for an assignment, but for no reserved word.
+    /// The target of a redirection that came before any word of a command,
+    /// and the place after it: for an assignment, but for no reserved word.
     Target,
     Redirected,
-    // The name after `function`.
+    /// The name after `function`.
     Function,
-    // The name after `for` or `select`, then `in` or `do`.
+    /// The name after `for` or `select`, then `in` or `do`.
     For,
     Loop,
     Argument,
@@ -48,11 +48,11 @@ enum Position {
 #[derive(Clone, Copy)]
 enum Word {
     None,
-    // Only letters, digits, and `_` since this offset, and no digit first.
+    /// Only letters, digits, and `_` since this offset, and no digit first.
     Name(usize),
-    // Nothing quoted or expanded since this offset.
+    /// Nothing quoted or expanded since this offset.
     Plain(usize),
-    // A name and its subscript, which `=` turns into an assignment.
+    /// A name and its subscript, which `=` turns into an assignment.
     Subscript,
     Assignment,
     Other,
@@ -64,20 +64,20 @@ impl Word {
     }
 }
 
-// The commands that one parser reads: the file, or one substitution.
+/// The commands that one parser reads: the file, or one substitution.
 struct Stream {
     position: Position,
     word: Word,
-    // A `#` here starts a comment in every shell: at the start, and after a
-    // blank, a line break, `;`, or `&`.
+    /// A `#` here starts a comment in every shell: at the start, and after a
+    /// blank, a line break, `;`, or `&`.
     comment: bool,
-    // Inside `[[ ]]`, where no word is reserved.
+    /// Inside `[[ ]]`, where no word is reserved.
     condition: bool,
-    // The next word is a pattern inside `[[ ]]`, which holds `(` and `|`.
+    /// The next word is a pattern inside `[[ ]]`, which holds `(` and `|`.
     pattern: bool,
-    // Read for `$( )`, `<( )`, or `>( )`.
+    /// Read for `$( )`, `<( )`, or `>( )`.
     substitution: bool,
-    // Where its own entries start in `Reader::here_documents`.
+    /// Where its own entries start in `Reader::here_documents`.
     here_documents: usize,
 }
 
@@ -98,54 +98,54 @@ impl Stream {
 enum Case {
     Subject,
     In,
-    // Before a list of patterns, in its leading `( )`, and after its start.
+    /// Before a list of patterns, in its leading `( )`, and after its start.
     Start,
     Leading,
     Pattern,
     Body,
 }
 
-// What is open around the current offset. The file itself has no frame.
+/// What is open around the current offset. The file itself has no frame.
 enum Frame {
-    // `$( )`, `<( )`, or `>( )`, with the stream around it.
+    /// `$( )`, `<( )`, or `>( )`, with the stream around it.
     Substitution(Stream),
     Backquote {
         outer: Stream,
-        // The offset after the closing backquote.
+        /// The offset after the closing backquote.
         resume: usize,
         here_documents: usize,
     },
     Subshell,
-    // The words of `name=( )`, none of which is reserved, with what the word
-    // of the assignment could be.
+    /// The words of `name=( )`, none of which is reserved, with what the word
+    /// of the assignment could be.
     Array(Position),
     Case(Case),
     Double,
     Parameter,
-    // Text that ends where its brackets balance: an arithmetic expression, a
-    // subscript, or a group inside a pattern. No comment starts in it.
+    /// Text that ends where its brackets balance: an arithmetic expression, a
+    /// subscript, or a group inside a pattern. No comment starts in it.
     Group {
         close: u8,
         depth: usize,
-        // Whether `$( )`, `${ }`, and `$[ ]` are read inside.
+        /// Whether `$( )`, `${ }`, and `$[ ]` are read inside.
         expands: bool,
-        // For `(( ))`: the number of comments found before it, and whether the
-        // text so far reads the same as commands do.
+        /// For `(( ))`: the number of comments found before it, and whether the
+        /// text so far reads the same as commands do.
         arithmetic: Option<(usize, bool)>,
     },
 }
 
 struct HereDocument {
     delimiter: Vec<u8>,
-    // `<<-`, which ignores the tabs that lead a line.
+    /// `<<-`, which ignores the tabs that lead a line.
     tabs: bool,
-    // A quoted delimiter, which keeps a backslash at the end of a line.
+    /// A quoted delimiter, which keeps a backslash at the end of a line.
     quoted: bool,
 }
 
-// Whether a backslash and a line break between these two bytes come inside
-// what can be one token. bash removes the pair before it reads tokens, and the
-// reader does not look through it.
+/// Whether a backslash and a line break between these two bytes come inside
+/// what can be one token. bash removes the pair before it reads tokens, and the
+/// reader does not look through it.
 fn splits(before: Option<u8>, after: Option<u8>) -> bool {
     matches!(
         (before, after),
@@ -163,7 +163,7 @@ fn splits(before: Option<u8>, after: Option<u8>) -> bool {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
-    // The end of the text, or of the backquoted command being read.
+    /// The end of the text, or of the backquoted command being read.
     limit: usize,
     stack: Vec<Frame>,
     stream: Stream,
@@ -203,7 +203,7 @@ impl Reader<'_> {
         self.bytes[..self.limit].get(self.at + ahead).copied()
     }
 
-    // The offset of the line break at or after `from`.
+    /// The offset of the line break at or after `from`.
     fn line_end(&self, from: usize) -> usize {
         self.bytes[from..self.limit]
             .iter()
@@ -211,7 +211,7 @@ impl Reader<'_> {
             .map_or(self.limit, |length| from + length)
     }
 
-    // The length of the line break at `at`: LF, CRLF, or CR.
+    /// The length of the line break at `at`: LF, CRLF, or CR.
     fn line_break(&self, at: usize) -> usize {
         match self.bytes[..self.limit].get(at..) {
             Some([b'\r', b'\n', ..]) => 2,
@@ -332,7 +332,7 @@ impl Reader<'_> {
         self.at += length;
     }
 
-    // Skips a quotation that ends at the next `'`.
+    /// Skips a quotation that ends at the next `'`.
     fn quote(&mut self, opening: usize, escapes: bool) {
         self.at += opening;
         while self.at < self.limit {
@@ -345,7 +345,7 @@ impl Reader<'_> {
         }
     }
 
-    // Reads `$` and what it opens. `quote` allows `$'…'`.
+    /// Reads `$` and what it opens. `quote` allows `$'…'`.
     fn dollar(&mut self, quote: bool) -> Option<()> {
         let joined = self.line_break(self.at + 2);
         if self.peek(1) == Some(b'\\') && joined > 0 {
@@ -372,7 +372,7 @@ impl Reader<'_> {
         Some(())
     }
 
-    // Reads `$(`, `<(`, or `>(`.
+    /// Reads `$(`, `<(`, or `>(`.
     fn substitution(&mut self) {
         if self.peek(2) == Some(b'(') {
             // After a second `(`, bash ends the text where the parentheses
@@ -393,8 +393,8 @@ impl Reader<'_> {
         self.open(Frame::Substitution(outer), 2);
     }
 
-    // The offset up to which a backquoted command can be read as it is
-    // written, and the offset of the backquote that closes it.
+    /// The offset up to which a backquoted command can be read as it is
+    /// written, and the offset of the backquote that closes it.
     fn backquoted(&self) -> (usize, usize) {
         let mut end = self.at + 1;
         let mut stop = None;
@@ -416,8 +416,8 @@ impl Reader<'_> {
         (stop.unwrap_or(end), end)
     }
 
-    // Reads a backquoted command. It ends at the next backquote that no
-    // backslash escapes, whatever is open there, so no other one is open.
+    /// Reads a backquoted command. It ends at the next backquote that no
+    /// backslash escapes, whatever is open there, so no other one is open.
     fn backquote(&mut self) {
         let (stop, end) = self.backquoted();
         let here_documents = self.here_documents.len();
@@ -498,14 +498,14 @@ impl Reader<'_> {
         Some(())
     }
 
-    // Sets what the next word can be. Neither `[[ ]]` nor an array holds a
-    // reserved word or an assignment.
+    /// Sets what the next word can be. Neither `[[ ]]` nor an array holds a
+    /// reserved word or an assignment.
     fn position(&mut self, position: Position) {
         let words = self.stream.condition || matches!(self.stack.last(), Some(Frame::Array(_)));
         self.stream.position = if words { Position::Argument } else { position };
     }
 
-    // Whether the next word can be a reserved one.
+    /// Whether the next word can be a reserved one.
     fn reserves(&self) -> bool {
         matches!(
             self.stream.position,
@@ -513,7 +513,7 @@ impl Reader<'_> {
         )
     }
 
-    // What the word after a redirection operator is.
+    /// What the word after a redirection operator is.
     fn target(&self) -> Position {
         if self.reserves() || self.stream.position == Position::Redirected {
             Position::Target
@@ -522,7 +522,7 @@ impl Reader<'_> {
         }
     }
 
-    // Whether the next word can be an assignment.
+    /// Whether the next word can be an assignment.
     fn assigns(&self) -> bool {
         let position = self.stream.position;
         (self.reserves() || matches!(position, Position::Assigned | Position::Redirected))
@@ -532,7 +532,7 @@ impl Reader<'_> {
             )
     }
 
-    // Marks the current word as holding something quoted or expanded.
+    /// Marks the current word as holding something quoted or expanded.
     fn quoted(&mut self) {
         if !matches!(self.stream.word, Word::Assignment) {
             self.stream.word = Word::Other;
@@ -573,8 +573,8 @@ impl Reader<'_> {
         self.at += 1;
     }
 
-    // Ends the word before this offset, and tells from it what the next word
-    // can be.
+    /// Ends the word before this offset, and tells from it what the next word
+    /// can be.
     fn end_word(&mut self) {
         let word = replace(&mut self.stream.word, Word::None);
         let bytes = self.bytes;
@@ -682,9 +682,9 @@ impl Reader<'_> {
         };
     }
 
-    // Reads `#` where a word could start. Right after `(`, `)`, `|`, `<`, or
-    // `>`, bash reads a comment too, and zsh can read a part of a pattern, as
-    // in `(#b)` and `(a|b)#`. There the line is skipped, and not returned.
+    /// Reads `#` where a word could start. Right after `(`, `)`, `|`, `<`, or
+    /// `>`, bash reads a comment too, and zsh can read a part of a pattern, as
+    /// in `(#b)` and `(a|b)#`. There the line is skipped, and not returned.
     fn hash(&mut self) {
         let end = self.line_end(self.at);
         if self.stream.comment {
@@ -875,8 +875,8 @@ impl Reader<'_> {
         Some(())
     }
 
-    // Reads the word after `<<`, which ends the body once its quotes are
-    // removed.
+    /// Reads the word after `<<`, which ends the body once its quotes are
+    /// removed.
     fn here_document(&mut self) -> Option<()> {
         if self.peek(0) == Some(b'\\') && self.line_break(self.at + 1) > 0 {
             return None;
@@ -945,7 +945,7 @@ impl Reader<'_> {
         Some(())
     }
 
-    // Skips the bodies of the here-documents that the line before began.
+    /// Skips the bodies of the here-documents that the line before began.
     fn bodies(&mut self) -> Option<()> {
         let first = self.stream.here_documents;
         for index in first..self.here_documents.len() {

@@ -126,7 +126,7 @@ impl PreviewFiles {
     }
 }
 
-// Compare bounded chunks; never overwrite a preview that the user edited.
+/// Compare bounded chunks; never overwrite a preview that the user edited.
 fn matches_contents(path: &Path, text: &str) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;

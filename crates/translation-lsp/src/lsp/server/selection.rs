@@ -74,7 +74,7 @@ impl<P: TranslationProvider> Server<P> {
         });
     }
 
-    // Automatic selection only ever joins a range operation.
+    /// Automatic selection only ever joins a range operation.
     pub(super) fn range_ticket(&self, target: &TranslationTarget) -> Option<u64> {
         self.scheduler.ticket(target, Output::Range, &self.settings)
     }

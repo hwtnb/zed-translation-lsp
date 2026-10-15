@@ -23,7 +23,7 @@ fn chatgpt(fields: Value) -> Result<Settings, ConfigError> {
 
 type Sent = (String, AnthropicEffort, bool);
 
-// What the range output and the tab output send, as the server resolves them.
+/// What the range output and the tab output send, as the server resolves them.
 fn anthropic_sent(fields: Value) -> (Sent, Option<Sent>) {
     let settings = anthropic(fields).unwrap();
     let ProviderSettings::Anthropic {
@@ -154,8 +154,8 @@ fn document_settings_take_their_own_defaults_and_inherit_nothing() {
     }
 }
 
-// The speed each output requests: the range's, and the tab's when
-// `provider.document` is present.
+/// The speed each output requests: the range's, and the tab's when
+/// `provider.document` is present.
 fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
     fn value(speed: Option<impl serde::Serialize>) -> Option<Value> {
         speed.map(|speed| json!(speed))

@@ -73,7 +73,7 @@ pub(crate) fn management_commands(state: AuthUiState) -> Vec<ProviderCommand> {
         .collect()
 }
 
-// The model and options one output sends.
+/// The model and options one output sends.
 #[derive(Clone)]
 pub(crate) struct ModelOptions {
     pub model: String,
@@ -1050,10 +1050,10 @@ mod tests {
         }
     }
 
-    // Signing in gives an account a new key every time, and a request is given
-    // up once its account is no longer the active one. One account's failure
-    // can follow another's stop only when the store names a saved account
-    // again, which this server never writes.
+    /// Signing in gives an account a new key every time, and a request is given
+    /// up once its account is no longer the active one. One account's failure
+    /// can follow another's stop only when the store names a saved account
+    /// again, which this server never writes.
     #[tokio::test(flavor = "current_thread")]
     async fn failure_of_one_account_keeps_the_stop_of_another() {
         let limit = (

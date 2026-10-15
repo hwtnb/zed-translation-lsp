@@ -1,6 +1,6 @@
-// The server from `initialize` on, as `run_stdio` runs it. Only the directory
-// of the key file is the test's own. It never holds a key here: this server
-// sends its requests to the real API.
+//! The server from `initialize` on, as `run_stdio` runs it. Only the directory
+//! of the key file is the test's own. It never holds a key here: this server
+//! sends its requests to the real API.
 use std::{fs, path::Path};
 
 use serde_json::{Value, json};

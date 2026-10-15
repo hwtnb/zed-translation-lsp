@@ -213,8 +213,8 @@ impl<P: TranslationProvider> Server<P> {
         }
     }
 
-    // The actions of a feature turned off are not listed, so its command can
-    // only come from a client that did not take it from the list.
+    /// The actions of a feature turned off are not listed, so its command can
+    /// only come from a client that did not take it from the list.
     fn check_feature(&self, feature: Feature, target: &TranslationTarget) -> RequestResult<()> {
         if self.documents.get(&target.uri).is_some_and(|document| {
             !self

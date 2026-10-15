@@ -22,7 +22,7 @@ impl Output {
         }
     }
 
-    // Only the transport reader may call this, after EOF and truncation checks.
+    /// Only the transport reader may call this, after EOF and truncation checks.
     pub fn finish(self) -> Result<String, Error> {
         self.completed
             .ok_or_else(|| Error::failed("OpenAI stream ended without response.completed"))

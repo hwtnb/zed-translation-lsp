@@ -22,15 +22,15 @@ pub(crate) trait Interaction {
     ) -> impl Future<Output = Result<Option<String>, Error>>;
 }
 
-// When a command changes the account or key that translations are made with.
-// The change cancels the work in progress and discards the previews.
+/// When a command changes the account or key that translations are made with.
+/// The change cancels the work in progress and discards the previews.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AccountChange {
     Never,
-    // As soon as the command starts, so both are done before it runs.
+    /// As soon as the command starts, so both are done before it runs.
     AtOnce,
-    // Only if the user agrees while the command runs, so both are done after
-    // it, and only when it has changed the context.
+    /// Only if the user agrees while the command runs, so both are done after
+    /// it, and only when it has changed the context.
     IfConfirmed,
 }
 
@@ -69,15 +69,15 @@ pub(crate) enum Intent {
     Explicit,
 }
 
-// What a translation is for: a range read in place, or a tab.
+/// What a translation is for: a range read in place, or a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Output {
     Range,
     Document,
 }
 
-// A provider's request options for each output. `provider.document` gives tab
-// translations their own; without it, both outputs send the same options.
+/// A provider's request options for each output. `provider.document` gives tab
+/// translations their own; without it, both outputs send the same options.
 #[derive(Clone)]
 pub(crate) struct OutputOptions<T> {
     range: T,
@@ -96,7 +96,7 @@ impl<T> OutputOptions<T> {
         }
     }
 
-    // The output whose settings `output` is sent with.
+    /// The output whose settings `output` is sent with.
     pub fn configured(&self, output: Output) -> Output {
         if self.document.is_some() {
             output

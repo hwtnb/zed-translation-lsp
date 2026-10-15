@@ -18,7 +18,7 @@ pub(crate) enum ErrorKind {
     RefreshUnusable,
 }
 
-// The remote service named in user-visible diagnostics.
+/// The remote service named in user-visible diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Service {
     OpenAi,
@@ -97,7 +97,7 @@ pub(crate) enum Cause {
     Transport(#[from] TransportExceeded),
     #[error("Translation canceled")]
     Cancelled,
-    // What the translation was authorized with, which is no longer in use.
+    /// What the translation was authorized with, which is no longer in use.
     #[error("{0} changed; retry the preview")]
     Modified(&'static str),
     #[error("No terminal window could be opened. To {purpose}, run this in a terminal: {command}")]
@@ -135,9 +135,9 @@ pub(crate) enum Cause {
     },
 }
 
-// Only remote failures can carry these categories. Cancellation, local storage,
-// and size errors cannot be constructed as a remote usage-limit failure. A missing
-// local setting is `Cause::Configuration`.
+/// Only remote failures can carry these categories. Cancellation, local storage,
+/// and size errors cannot be constructed as a remote usage-limit failure. A missing
+/// local setting is `Cause::Configuration`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
     Failed,
@@ -210,9 +210,9 @@ impl Cause {
 }
 
 impl Cause {
-    // Only a temporary failure the service itself reported may be sent again.
-    // A network failure is also temporary, but the request may be in progress
-    // or partly answered, so it is left for a manual retry.
+    /// Only a temporary failure the service itself reported may be sent again.
+    /// A network failure is also temporary, but the request may be in progress
+    /// or partly answered, so it is left for a manual retry.
     fn service_reported_temporary(&self) -> bool {
         match self {
             Self::Remote(error) => error.kind == RemoteKind::Temporary,
@@ -294,7 +294,7 @@ impl Error {
     }
 }
 
-// Ordinary diagnostics must not dump credential/JSON/network source internals.
+/// Ordinary diagnostics must not dump credential/JSON/network source internals.
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Error")

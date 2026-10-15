@@ -12,7 +12,7 @@ pub(crate) enum CredentialError {
     Permissions,
     #[error("Could not locate the local credential directory")]
     MissingDirectory,
-    // Retain sources for diagnosis, but never interpolate file paths or JSON values.
+    /// Retain sources for diagnosis, but never interpolate file paths or JSON values.
     #[error("Could not read or save the dedicated ChatGPT credentials ({operation})")]
     Io {
         operation: &'static str,

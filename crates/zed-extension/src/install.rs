@@ -147,9 +147,9 @@ fn install(
     Ok(executable)
 }
 
-// Servers of other extension versions are never started again. A directory
-// that cannot be removed now, such as one whose server is still running on
-// Windows, is tried again at the next start.
+/// Servers of other extension versions are never started again. A directory
+/// that cannot be removed now, such as one whose server is still running on
+/// Windows, is tried again at the next start.
 fn remove_other_versions(root: &Path, release: &Release) {
     let Ok(entries) = fs::read_dir(root) else {
         return;

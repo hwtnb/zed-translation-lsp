@@ -2,14 +2,14 @@ use std::collections::HashSet;
 
 use super::Comment;
 
-// A comment is a line whose first character after its indent is `#`. Read
-// instructions only as far as that takes: the lines they continue on, and the
-// here-documents that follow them, whose lines are not comments.
-//
-// BuildKit has no here-document in some places where one was meant. A line that
-// one of the two readings hides can start a here-document in the other, so
-// neither reading holds the other. Where they differ, the file is read in both
-// ways, and a comment is a line that both take for one.
+/// A comment is a line whose first character after its indent is `#`. Read
+/// instructions only as far as that takes: the lines they continue on, and the
+/// here-documents that follow them, whose lines are not comments.
+///
+/// BuildKit has no here-document in some places where one was meant. A line that
+/// one of the two readings hides can start a here-document in the other, so
+/// neither reading holds the other. Where they differ, the file is read in both
+/// ways, and a comment is a line that both take for one.
 pub(super) fn parse(text: &str) -> Vec<Comment> {
     let (mut comments, same) = read(text, false);
     if !same {
@@ -20,12 +20,12 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
     comments
 }
 
-// The here-documents after one instruction, in order: for each, whether leading
-// tabs are stripped from the line that ends it, and that line.
+/// The here-documents after one instruction, in order: for each, whether leading
+/// tabs are stripped from the line that ends it, and that line.
 type Documents = Vec<(bool, String)>;
 
-// The comments of one reading, and whether the other reading has the same
-// here-documents after every instruction that this one came to.
+/// The comments of one reading, and whether the other reading has the same
+/// here-documents after every instruction that this one came to.
 fn read(text: &str, meant: bool) -> (Vec<Comment>, bool) {
     let mut comments = Vec::new();
     let mut same = true;
@@ -106,7 +106,7 @@ impl<'a> Iterator for Lines<'a> {
     }
 }
 
-// The value of the escape directive, or `None` for another directive.
+/// The value of the escape directive, or `None` for another directive.
 fn directive(comment: &str) -> Option<Option<&str>> {
     let (name, value) = comment[1..].split_once('=')?;
     if value.is_empty() {
@@ -122,8 +122,8 @@ fn directive(comment: &str) -> Option<Option<&str>> {
         .then_some(None)
 }
 
-// Adds a line without its continuation character, and tells whether the
-// instruction continues on a later line.
+/// Adds a line without its continuation character, and tells whether the
+/// instruction continues on a later line.
 fn add_line(instruction: &mut String, line: &str, escape: char) -> bool {
     let continued = line
         .trim_end_matches([' ', '\t'])
@@ -133,14 +133,14 @@ fn add_line(instruction: &mut String, line: &str, escape: char) -> bool {
     continued.is_some()
 }
 
-// The here-documents that follow an instruction: first the ones of BuildKit,
-// and then the ones that were meant. `None` where a delimiter cannot be read,
-// so that the end of its here-document is unknown.
-//
-// BuildKit splits the instruction into words, and then reads the word after
-// `<<` once more. It has no here-document where a blank follows `<<-`, where
-// the delimiter is empty or holds `<`, and anywhere in an instruction that its
-// lexer rejects. Those were still meant as here-documents.
+/// The here-documents that follow an instruction: first the ones of BuildKit,
+/// and then the ones that were meant. `None` where a delimiter cannot be read,
+/// so that the end of its here-document is unknown.
+///
+/// BuildKit splits the instruction into words, and then reads the word after
+/// `<<` once more. It has no here-document where a blank follows `<<-`, where
+/// the delimiter is empty or holds `<`, and anywhere in an instruction that its
+/// lexer rejects. Those were still meant as here-documents.
 fn here_documents(instruction: &str) -> (Documents, Option<Documents>) {
     let mut words = instruction.split_whitespace();
     let mut keyword = words.next().unwrap_or_default();
@@ -193,8 +193,8 @@ fn here_documents(instruction: &str) -> (Documents, Option<Documents>) {
     (buildkit, meant)
 }
 
-// The rest of a word that opens a here-document: what follows its digits,
-// `<<`, an optional `-`, and blanks. A third `<` makes the operator a here-string.
+/// The rest of a word that opens a here-document: what follows its digits,
+/// `<<`, an optional `-`, and blanks. A third `<` makes the operator a here-string.
 fn opening(word: &str) -> Option<(bool, &str)> {
     let word = word.trim_start_matches(|digit: char| digit.is_ascii_digit());
     let word = word.strip_prefix("<<")?;
@@ -208,8 +208,8 @@ fn opening(word: &str) -> Option<(bool, &str)> {
 
 #[derive(Clone, Copy)]
 enum Frame {
-    // The text of `${name ... }` up to this character. Another part follows
-    // the pattern of `${name/pattern/replacement}`.
+    /// The text of `${name ... }` up to this character. Another part follows
+    /// the pattern of `${name/pattern/replacement}`.
     Part {
         stop: char,
         escapes: bool,
@@ -222,24 +222,24 @@ enum Frame {
     },
 }
 
-// The words of BuildKit's shell lexer, which does not depend on the escape
-// directive. It keeps quotes and backslashes when it splits an instruction,
-// and removes them when it reads a delimiter. The lexer calls itself for each
-// `${name ... }` and each string; the stack takes the place of those calls.
+/// The words of BuildKit's shell lexer, which does not depend on the escape
+/// directive. It keeps quotes and backslashes when it splits an instruction,
+/// and removes them when it reads a delimiter. The lexer calls itself for each
+/// `${name ... }` and each string; the stack takes the place of those calls.
 struct Words<'a> {
     characters: std::iter::Peekable<std::str::Chars<'a>>,
     keeps: bool,
     stack: Vec<Frame>,
     words: Vec<String>,
     word: String,
-    // Where in the word a string outside every `${ }` began.
+    /// Where in the word a string outside every `${ }` began.
     string: usize,
-    // Whether the lexer read the text to its end without an error.
+    /// Whether the lexer read the text to its end without an error.
     complete: bool,
-    // Whether the lexer dropped the start of a word that `<<` began or followed.
+    /// Whether the lexer dropped the start of a word that `<<` began or followed.
     lost: bool,
-    // Whether the last whole word is an operator whose delimiter is the word
-    // after it. Decided once, where the word ends.
+    /// Whether the last whole word is an operator whose delimiter is the word
+    /// after it. Decided once, where the word ends.
     waits: bool,
 }
 
@@ -283,8 +283,8 @@ impl<'a> Words<'a> {
         }
     }
 
-    // The text of `${name ... }` outside every string is split into words once
-    // more, whatever quotes it holds. Other quoted or escaped text is not.
+    /// The text of `${name ... }` outside every string is split into words once
+    /// more, whatever quotes it holds. Other quoted or escaped text is not.
     fn put(&mut self, character: char) {
         match self.stack.first() {
             Some(Frame::Part { .. }) => self.split(character),
@@ -408,7 +408,7 @@ impl<'a> Words<'a> {
         Some(())
     }
 
-    // After `$`: a name, or `${name}`, or `${name ... }` with more text.
+    /// After `$`: a name, or `${name}`, or `${name ... }` with more text.
     fn dollar(&mut self) -> Option<()> {
         if self.characters.next_if_eq(&'{').is_none() {
             self.put('$');
@@ -464,7 +464,7 @@ impl<'a> Words<'a> {
         Some(())
     }
 
-    // A run of digits, one special parameter, or letters, digits, and `_`.
+    /// A run of digits, one special parameter, or letters, digits, and `_`.
     fn name(&mut self) -> String {
         let mut name = String::new();
         match self.characters.peek() {

@@ -81,8 +81,8 @@ impl RawLimit {
     }
 }
 
-// Passes each complete event to `accept` and returns once the stream ends on an
-// event boundary. The caller decides whether the events form a complete response.
+/// Passes each complete event to `accept` and returns once the stream ends on an
+/// event boundary. The caller decides whether the events form a complete response.
 pub(crate) async fn read_events(
     response: reqwest::Response,
     service: Service,

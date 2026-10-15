@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::error::ConfigError;
 
-// The language IDs that `extension.toml` registers, in its order.
+/// The language IDs that `extension.toml` registers, in its order.
 pub(super) const LANGUAGE_IDS: [&str; 18] = [
     "rust",
     "javascript",
@@ -27,7 +27,7 @@ pub(super) const LANGUAGE_IDS: [&str; 18] = [
     "plaintext",
 ];
 
-// What starts a translation.
+/// What starts a translation.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Feature {
@@ -38,7 +38,7 @@ pub(crate) enum Feature {
 }
 
 impl Feature {
-    // Whether the feature runs in a registered language.
+    /// Whether the feature runs in a registered language.
     fn applies_to(self, language_id: &str) -> bool {
         let prose = matches!(language_id, "markdown" | "plaintext");
         match self {
@@ -70,13 +70,13 @@ impl std::fmt::Display for Feature {
 
 type Switches = HashMap<Feature, bool>;
 
-// `features`: the switches written for every language, and those written for
-// one language under `languages`. An omitted switch leaves the feature on.
+/// `features`: the switches written for every language, and those written for
+/// one language under `languages`. An omitted switch leaves the feature on.
 #[derive(Clone, Default, Deserialize)]
 pub(crate) struct Features {
     #[serde(default)]
     languages: HashMap<String, Switches>,
-    // Every other key is a feature name.
+    /// Every other key is a feature name.
     #[serde(flatten)]
     switches: Switches,
 }
@@ -91,9 +91,9 @@ impl Features {
             .unwrap_or(true)
     }
 
-    // Decoding reports every mismatch as the same generic error. Name a
-    // language ID outside the registered ones, and a feature written for a
-    // language it does not run in.
+    /// Decoding reports every mismatch as the same generic error. Name a
+    /// language ID outside the registered ones, and a feature written for a
+    /// language it does not run in.
     pub(super) fn check_languages(options: &Value) -> Result<(), ConfigError> {
         let Value::Object(languages) = &options["features"]["languages"] else {
             return Ok(());

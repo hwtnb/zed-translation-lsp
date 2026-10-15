@@ -9,15 +9,15 @@ use uuid::Uuid;
 
 use super::error::credentials::CredentialError;
 
-// The directory that holds the user's credentials: the ChatGPT store and the
-// Anthropic API key file.
+/// The directory that holds the user's credentials: the ChatGPT store and the
+/// Anthropic API key file.
 pub(crate) fn locate() -> Result<PathBuf, CredentialError> {
     let root = dirs::config_local_dir().ok_or(CredentialError::MissingDirectory)?;
     Ok(root.join("translation-lsp"))
 }
 
-// Tells one state of a file from another without reading it, unless the file
-// was written again within the same tick of its modification time.
+/// Tells one state of a file from another without reading it, unless the file
+/// was written again within the same tick of its modification time.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Revision {
     modified: SystemTime,
@@ -45,14 +45,14 @@ impl Revision {
     }
 }
 
-// Whether the directory or the file inside it exists. One that exists must be
-// private: not a symbolic link and, on Unix, open to its owner alone. The file
-// must be a regular file; reading a named pipe would wait for its writer.
+/// Whether the directory or the file inside it exists. One that exists must be
+/// private: not a symbolic link and, on Unix, open to its owner alone. The file
+/// must be a regular file; reading a named pipe would wait for its writer.
 pub(crate) fn check_path(path: &Path, directory: bool) -> Result<bool, CredentialError> {
     Ok(inspect(path, directory)?.is_some())
 }
 
-// The same check, with what it found out about a path that exists.
+/// The same check, with what it found out about a path that exists.
 pub(crate) fn inspect(
     path: &Path,
     directory: bool,
@@ -80,8 +80,8 @@ pub(crate) fn inspect(
     Ok(Some(metadata))
 }
 
-// A directory that exists must be private already: its permissions are the
-// user's to correct.
+/// A directory that exists must be private already: its permissions are the
+/// user's to correct.
 pub(crate) fn create(directory: &Path) -> Result<(), CredentialError> {
     if check_path(directory, true)? {
         return Ok(());
@@ -101,9 +101,9 @@ pub(crate) fn create(directory: &Path) -> Result<(), CredentialError> {
     Ok(())
 }
 
-// The contents are written to a temporary file beside `name`, which then takes
-// its name, so a reader finds the old contents or the new and never a part of
-// either. Returns the metadata of the new file.
+/// The contents are written to a temporary file beside `name`, which then takes
+/// its name, so a reader finds the old contents or the new and never a part of
+/// either. Returns the metadata of the new file.
 pub(crate) fn replace(
     directory: &Path,
     name: &str,

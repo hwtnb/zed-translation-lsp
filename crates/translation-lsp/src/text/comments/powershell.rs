@@ -1,24 +1,24 @@
 use super::{Comment, Kind};
 
-// How PowerShell reads a character depends on whether it starts a token, and
-// that can depend on what the parser expects. This reader does not follow the
-// parser. It tells apart only the places where every reading agrees, and
-// follows PowerShell's own tokenizer there, also where that reads on although
-// the text looks finished: after a backtick before a line break, and inside
-// `$( ... )` and `${ ... }` in a string.
+/// How PowerShell reads a character depends on whether it starts a token, and
+/// that can depend on what the parser expects. This reader does not follow the
+/// parser. It tells apart only the places where every reading agrees, and
+/// follows PowerShell's own tokenizer there, also where that reads on although
+/// the text looks finished: after a backtick before a line break, and inside
+/// `$( ... )` and `${ ... }` in a string.
 #[derive(Clone, Copy, PartialEq)]
 enum Place {
-    // A token starts here, whatever the parser expects.
+    /// A token starts here, whatever the parser expects.
     Start,
-    // After other text: inside one argument of a command, or at the start of
-    // another token of an expression.
+    /// After other text: inside one argument of a command, or at the start of
+    /// another token of an expression.
     Glued,
-    // Inside one argument of a command, whatever the parser expects.
+    /// Inside one argument of a command, whatever the parser expects.
     Argument,
 }
 
-// Reads one character or one quoted piece at a time, in a single pass and
-// without a stack: nothing that nests changes what a `#` or a quote means.
+/// Reads one character or one quoted piece at a time, in a single pass and
+/// without a stack: nothing that nests changes what a `#` or a quote means.
 pub(super) fn parse(text: &str) -> Vec<Comment> {
     let mut reader = Reader {
         text,
@@ -41,18 +41,18 @@ struct Reader<'a> {
     text: &'a str,
     at: usize,
     place: Place,
-    // The end of a line whose `#` may or may not have started a comment. No
-    // comment is taken from the text before it, and nothing may reach past it.
+    /// The end of a line whose `#` may or may not have started a comment. No
+    /// comment is taken from the text before it, and nothing may reach past it.
     quiet: usize,
-    // The brackets open since a `[` that can start the name of a type, while
-    // nothing but such names followed it, whether the name after the last of
-    // them has begun, and whether a `,` followed.
+    /// The brackets open since a `[` that can start the name of a type, while
+    /// nothing but such names followed it, whether the name after the last of
+    /// them has begun, and whether a `,` followed.
     types: usize,
     named: bool,
     listed: bool,
-    // Whether a `-name` has begun since the last start of a token. A command
-    // reads its parameter up to a blank, a quote, or one of `{}();,|&.[:`, and
-    // a backtick or `$` in it is plain text.
+    /// Whether a `-name` has begun since the last start of a token. A command
+    /// reads its parameter up to a blank, a quote, or one of `{}();,|&.[:`, and
+    /// a backtick or `$` in it is plain text.
     parameter: bool,
     comments: Vec<Comment>,
 }
@@ -64,7 +64,7 @@ fn blank(character: char) -> bool {
     ) || character > '\u{ff}' && character.is_whitespace()
 }
 
-// PowerShell takes these for `'`, `"`, and `-`.
+/// PowerShell takes these for `'`, `"`, and `-`.
 fn single(character: char) -> bool {
     matches!(character, '\'' | '\u{2018}'..='\u{201b}')
 }
@@ -77,7 +77,7 @@ fn dash(character: char) -> bool {
     matches!(character, '-' | '\u{2013}'..='\u{2015}')
 }
 
-// These end every token before them.
+/// These end every token before them.
 fn ends_token(character: char) -> bool {
     matches!(
         character,
@@ -85,7 +85,7 @@ fn ends_token(character: char) -> bool {
     ) || blank(character)
 }
 
-// A type name such as ``List`1`` holds a backtick that escapes nothing.
+/// A type name such as ``List`1`` holds a backtick that escapes nothing.
 fn names_type(character: char) -> bool {
     character.is_alphanumeric() || matches!(character, '_' | '.' | '\\' | '+' | '#' | '`')
 }
@@ -107,8 +107,8 @@ impl Reader<'_> {
             .map_or(self.text.len(), |length| from + length)
     }
 
-    // `None` ends the reading: at the end of the text, inside something that
-    // is not closed, or where the readings differ.
+    /// `None` ends the reading: at the end of the text, inside something that
+    /// is not closed, or where the readings differ.
     fn step(&mut self) -> Option<()> {
         let start = self.at;
         let character = self.next()?;
@@ -208,10 +208,10 @@ impl Reader<'_> {
         (start >= self.quiet || self.at <= self.quiet).then_some(())
     }
 
-    // After `[name,`, PowerShell can read the name of an assembly up to the
-    // next blank, `,`, `=`, or `]`: quotes, `#`, and parentheses open nothing
-    // in it. Whether it does depends on the parser, so such a character stops
-    // the reading.
+    /// After `[name,`, PowerShell can read the name of an assembly up to the
+    /// next blank, `,`, `=`, or `]`: quotes, `#`, and parentheses open nothing
+    /// in it. Whether it does depends on the parser, so such a character stops
+    /// the reading.
     fn type_name(&mut self, character: char) -> Option<()> {
         match character {
             // Also after text that looks like it takes an index, as in `-is[`.
@@ -247,8 +247,8 @@ impl Reader<'_> {
         Some(())
     }
 
-    // Whether the `%` at this offset ends `--%`. PowerShell looks at an
-    // argument without its quotes and backticks, so `-'-%'` counts as well.
+    /// Whether the `%` at this offset ends `--%`. PowerShell looks at an
+    /// argument without its quotes and backticks, so `-'-%'` counts as well.
     fn stops(&self, percent: usize) -> bool {
         let skipped = |character: char| single(character) || double(character) || character == '`';
         let before = self.text[..percent].trim_end_matches(skipped);
@@ -257,9 +257,9 @@ impl Reader<'_> {
             .is_some_and(|before| before.trim_end_matches(skipped).ends_with('-'))
     }
 
-    // After `--%`, a command takes the rest of its line as it is written, up
-    // to `|` or `&&`. Elsewhere the same text is read as usual. So nothing is
-    // taken from that line, and both readings must end with it.
+    /// After `--%`, a command takes the rest of its line as it is written, up
+    /// to `|` or `&&`. Elsewhere the same text is read as usual. So nothing is
+    /// taken from that line, and both readings must end with it.
     fn verbatim(&mut self) -> Option<()> {
         let end = self.line_end(self.at);
         let rest = &self.text[self.at..end];
@@ -270,9 +270,9 @@ impl Reader<'_> {
         Some(())
     }
 
-    // A backtick continues the line, joins a blank or a line break to an
-    // argument, or escapes the next character and so makes the text around it
-    // an argument.
+    /// A backtick continues the line, joins a blank or a line break to an
+    /// argument, or escapes the next character and so makes the text around it
+    /// an argument.
     fn backtick(&mut self, start: usize, next: char) -> Option<()> {
         let line_break = matches!(next, '\n' | '\r');
         // `u{...}` names a character, and its braces open and close nothing.
@@ -306,7 +306,7 @@ impl Reader<'_> {
         Some(())
     }
 
-    // The rest of `u{...}` after a backtick: up to six digits and a `}`.
+    /// The rest of `u{...}` after a backtick: up to six digits and a `}`.
     fn unicode(&mut self) {
         self.at += 1;
         let digits = self.text[self.at..]
@@ -317,10 +317,10 @@ impl Reader<'_> {
         self.at += usize::from(self.peek(self.at) == Some('}'));
     }
 
-    // The rest of a string after its opening quote. Two quotes in a row stand
-    // for one, which reads the same as one string after another. In double
-    // quotes, a backtick escapes, and `$` can open a `$( ... )` or `${ ... }`
-    // that a quote does not end. No comment is taken from there.
+    /// The rest of a string after its opening quote. Two quotes in a row stand
+    /// for one, which reads the same as one string after another. In double
+    /// quotes, a backtick escapes, and `$` can open a `$( ... )` or `${ ... }`
+    /// that a quote does not end. No comment is taken from there.
     fn quoted(&mut self, quote: char) -> Option<()> {
         let closes = if double(quote) { double } else { single };
         loop {
@@ -337,8 +337,8 @@ impl Reader<'_> {
         }
     }
 
-    // What a backtick or `$` does inside double quotes and inside a
-    // here-string in double quotes.
+    /// What a backtick or `$` does inside double quotes and inside a
+    /// here-string in double quotes.
     fn expansion(&mut self, character: char) -> Option<()> {
         match (character, self.peek(self.at)) {
             ('`', _) => {
@@ -359,8 +359,8 @@ impl Reader<'_> {
         Some(())
     }
 
-    // The rest of `${ ... }` after its `{`: up to the next `}` that no
-    // backtick escapes, whatever else it holds.
+    /// The rest of `${ ... }` after its `{`: up to the next `}` that no
+    /// backtick escapes, whatever else it holds.
     fn braced(&mut self) -> Option<()> {
         loop {
             match self.next()? {
@@ -376,9 +376,9 @@ impl Reader<'_> {
         }
     }
 
-    // The rest of a `$( ... )` inside a string or an argument. PowerShell
-    // finds its end by counting parentheses, and nothing in it is escaped or
-    // quoted for that count.
+    /// The rest of a `$( ... )` inside a string or an argument. PowerShell
+    /// finds its end by counting parentheses, and nothing in it is escaped or
+    /// quoted for that count.
     fn counted(&mut self) -> Option<()> {
         let mut depth = 1_usize;
         while depth > 0 {
@@ -391,11 +391,11 @@ impl Reader<'_> {
         Some(())
     }
 
-    // The rest of a `$( ... )` after other text. Its end is found by counting
-    // parentheses if the text is an argument, and it holds commands with
-    // strings and comments of their own if a token starts at it. So it may
-    // hold nothing that the two readings take differently: a string in it
-    // holds no parenthesis.
+    /// The rest of a `$( ... )` after other text. Its end is found by counting
+    /// parentheses if the text is an argument, and it holds commands with
+    /// strings and comments of their own if a token starts at it. So it may
+    /// hold nothing that the two readings take differently: a string in it
+    /// holds no parenthesis.
     fn group(&mut self) -> Option<()> {
         let mut depth = 1_usize;
         // A `[` and then a `,` on this line: see `type_name`.
@@ -430,8 +430,8 @@ impl Reader<'_> {
         Some(())
     }
 
-    // A here-string starts after its opening line, and ends at a line that
-    // starts with its quote and `@`.
+    /// A here-string starts after its opening line, and ends at a line that
+    /// starts with its quote and `@`.
     fn here_string(&mut self, expands: bool) -> Option<()> {
         let closes = if expands { double } else { single };
         self.next();

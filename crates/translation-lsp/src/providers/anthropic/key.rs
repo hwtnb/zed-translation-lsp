@@ -14,12 +14,12 @@ use crate::providers::{
 };
 
 const FILE: &str = "anthropic-api-key";
-// A key is about a hundred bytes.
+/// A key is about a hundred bytes.
 const MAX_BYTES: usize = 4096;
-// How old a file must be before its attributes stand for its contents: one
-// written twice within a tick of its modification time changes without a
-// change in them. FAT has the coarsest tick, 2 seconds; the rest allows for a
-// clock that is set back a little.
+/// How old a file must be before its attributes stand for its contents: one
+/// written twice within a tick of its modification time changes without a
+/// change in them. FAT has the coarsest tick, 2 seconds; the rest allows for a
+/// clock that is set back a little.
 const SETTLED: Duration = Duration::from_secs(3);
 
 // The credential directory as the documentation writes it. The messages name
@@ -122,9 +122,9 @@ pub(super) enum NotKey {
 }
 
 impl ApiKey {
-    // No environment variable supplies the key. Zed writes the environment of a
-    // language server that fails to start to its log, and `ANTHROPIC_API_KEY`
-    // would also move the user's Claude Code usage to API billing.
+    /// No environment variable supplies the key. Zed writes the environment of a
+    /// language server that fails to start to its log, and `ANTHROPIC_API_KEY`
+    /// would also move the user's Claude Code usage to API billing.
     fn read(path: &Path) -> Result<Self, Error> {
         let mut bytes = Vec::new();
         File::open(path)
@@ -167,8 +167,8 @@ impl std::fmt::Debug for ApiKey {
     }
 }
 
-// Stands for one key in `Context`. It is a count of the keys the provider has
-// read, so it tells nothing of the key.
+/// Stands for one key in `Context`. It is a count of the keys the provider has
+/// read, so it tells nothing of the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KeyId(u64);
 
@@ -177,20 +177,20 @@ impl KeyId {
     pub const SYNTHETIC: Self = Self(0);
 }
 
-// The key file, looked at again whenever the key is needed: another process
-// saves and replaces it, and the user may edit or remove it at any time.
+/// The key file, looked at again whenever the key is needed: another process
+/// saves and replaces it, and the user may edit or remove it at any time.
 #[derive(Clone)]
 pub(super) struct KeyFile {
     directory: Result<PathBuf, Error>,
     seen: Arc<Mutex<Seen>>,
 }
 
-// The key of the last read, to tell when another takes its place. A read that
-// finds no usable key forgets it, so the same key saved again counts as new.
+/// The key of the last read, to tell when another takes its place. A read that
+/// finds no usable key forgets it, so the same key saved again counts as new.
 #[derive(Default)]
 struct Seen {
     key: Option<ApiKey>,
-    // Set only when the file had settled by the time it was read.
+    /// Set only when the file had settled by the time it was read.
     file: Option<Revision>,
     count: u64,
 }
@@ -225,8 +225,8 @@ impl KeyFile {
 }
 
 impl Seen {
-    // The directory and the file are checked every time. The file is opened
-    // only when its attributes differ from those of the last read.
+    /// The directory and the file are checked every time. The file is opened
+    /// only when its attributes differ from those of the last read.
     fn current(&mut self, directory: &Path) -> Result<ApiKey, Error> {
         let path = directory.join(FILE);
         let Some(metadata) = attributes(directory, &path).map_err(unusable)? else {
@@ -263,7 +263,7 @@ pub(super) fn unusable(error: CredentialError) -> Error {
     })
 }
 
-// `None` when the directory or the file is missing.
+/// `None` when the directory or the file is missing.
 fn attributes(directory: &Path, file: &Path) -> Result<Option<fs::Metadata>, CredentialError> {
     if !check_path(directory, true)? {
         return Ok(None);
@@ -271,8 +271,8 @@ fn attributes(directory: &Path, file: &Path) -> Result<Option<fs::Metadata>, Cre
     inspect(file, false)
 }
 
-// Whether there is a key file to replace. It may have any permissions, since a
-// new file takes its place, but only a regular file is replaced or removed.
+/// Whether there is a key file to replace. It may have any permissions, since a
+/// new file takes its place, but only a regular file is replaced or removed.
 pub(super) fn saved(directory: &Path) -> Result<bool, CredentialError> {
     if !check_path(directory, true)? {
         return Ok(false);
@@ -292,7 +292,7 @@ pub(super) fn save(directory: &Path, key: &ApiKey) -> Result<(), CredentialError
     Ok(())
 }
 
-// Returns whether there was a key file.
+/// Returns whether there was a key file.
 pub(super) fn remove(directory: &Path) -> Result<bool, CredentialError> {
     if !saved(directory)? {
         return Ok(false);

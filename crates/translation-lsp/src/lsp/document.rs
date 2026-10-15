@@ -19,14 +19,14 @@ pub(crate) struct TranslationInput {
 enum Reading {
     Pending,
     Done(Comments),
-    // Kept across edits, so that a text that cannot be read in time is not
-    // read again at every change.
+    /// Kept across edits, so that a text that cannot be read in time is not
+    /// read again at every change.
     Failed,
 }
 
 pub(crate) struct Document {
     pub version: i32,
-    // Versions can repeat after didClose/didOpen. This identifies an open lifetime.
+    /// Versions can repeat after didClose/didOpen. This identifies an open lifetime.
     pub session: u64,
     pub language_id: String,
     text: Option<IndexedText>,
@@ -157,7 +157,7 @@ impl Document {
         };
     }
 
-    // A failure to read this document's comments, the first time it is asked for.
+    /// A failure to read this document's comments, the first time it is asked for.
     pub fn take_comment_failure(&mut self) -> Option<Failure> {
         self.unreported.take()
     }

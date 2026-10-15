@@ -35,7 +35,7 @@ fn explicit(admission: &Admission<u8>, key: u8) -> u64 {
     admission.admit(&key, Intent::Explicit).unwrap()
 }
 
-// The error as the work admitted at `generation` reports it.
+/// The error as the work admitted at `generation` reports it.
 fn fail(admission: &Admission<u8>, key: u8, generation: u64, error: Error) -> Error {
     let mut result: Result<(), Error> = Err(error);
     admission.settle(&key, Intent::Automatic, generation, &mut result);
@@ -156,8 +156,8 @@ fn explicit_success_resumes_only_its_own_key_and_only_after_its_last_stop() {
     assert!(admission.check(&IN_USE, 0).is_err());
 }
 
-// The server gives queued work the generation an explicit request was admitted
-// with under the key in use, whichever key the work was prepared with.
+/// The server gives queued work the generation an explicit request was admitted
+/// with under the key in use, whichever key the work was prepared with.
 #[test]
 fn generation_admitted_under_one_key_is_held_against_the_stop_of_another() {
     let admission = Admission::default();

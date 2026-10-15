@@ -8,34 +8,34 @@ use super::{
     error::{Error, ErrorKind},
 };
 
-// Pauses automatic translation per provider key after a stop or temporary error.
-// Each stop starts a new generation, so work admitted for its key before it
-// fails without a new request or a second notification.
+/// Pauses automatic translation per provider key after a stop or temporary error.
+/// Each stop starts a new generation, so work admitted for its key before it
+/// fails without a new request or a second notification.
 pub(crate) struct Admission<K> {
     state: Arc<Mutex<State<K>>>,
 }
 
 struct State<K> {
-    // Counted for all keys together, so that a generation admitted under one
-    // key can be held against the stop of another: an explicit request that
-    // joins queued work gives it the generation of the key in use.
+    /// Counted for all keys together, so that a generation admitted under one
+    /// key can be held against the stop of another: an explicit request that
+    /// joins queued work gives it the generation of the key in use.
     generation: u64,
-    // Only keys that are paused or were stopped. A stopped key stays: its stop
-    // has no end, and work admitted before it may still be queued.
+    /// Only keys that are paused or were stopped. A stopped key stays: its stop
+    /// has no end, and work admitted before it may still be queued.
     keys: Vec<(K, Standing)>,
 }
 
 #[derive(Default)]
 struct Standing {
-    // Without an instant, until an explicit translation succeeds.
+    /// Without an instant, until an explicit translation succeeds.
     paused: Option<(Error, Option<Instant>)>,
-    // The generation the last stop started.
+    /// The generation the last stop started.
     stop: Option<(u64, Error)>,
 }
 
 pub(crate) struct Attempt<T> {
     pub result: Result<T, Error>,
-    // The wait the response allows before one retry of a retryable failure.
+    /// The wait the response allows before one retry of a retryable failure.
     pub retry_after: Option<Duration>,
 }
 
@@ -155,8 +155,8 @@ impl<K: Clone + PartialEq> Admission<K> {
         standing.paused = Some((error.clone(), until));
     }
 
-    // Only a successful explicit translation admitted after the last stop of
-    // its key resumes automatic translation.
+    /// Only a successful explicit translation admitted after the last stop of
+    /// its key resumes automatic translation.
     pub fn settle<T>(
         &self,
         key: &K,
@@ -176,8 +176,8 @@ impl<K: Clone + PartialEq> Admission<K> {
         }
     }
 
-    // Sends the request again at most once, and only after a failure that
-    // `Error::retryable` accepts.
+    /// Sends the request again at most once, and only after a failure that
+    /// `Error::retryable` accepts.
     pub async fn retrying<T>(
         &self,
         key: &K,

@@ -45,7 +45,7 @@ async fn translate(
         .map(|translated| translated.text)
 }
 
-// The model and options of each request the fixture received, in order.
+/// The model and options of each request the fixture received, in order.
 fn sent(fixture: &Fixture) -> Vec<Value> {
     let state = fixture.state.lock().unwrap();
     state
@@ -93,8 +93,8 @@ async fn each_output_sends_its_own_model_and_options() {
     assert_eq!(sent(&fixture), [range_sent.clone(), range_sent]);
 }
 
-// `speed` is a beta field: the header comes with it, and neither comes
-// without it.
+/// `speed` is a beta field: the header comes with it, and neither comes
+/// without it.
 #[tokio::test(flavor = "current_thread")]
 async fn each_output_sends_its_own_speed_with_the_beta_header() {
     use AnthropicSpeed::{Fast, Standard};

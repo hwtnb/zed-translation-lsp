@@ -97,8 +97,8 @@ struct Administration {
     ticket: u64,
     stop: watch::Sender<Option<Instant>>,
     deadline: Instant,
-    // The context when a command that asks before it changes the account was
-    // taken, to tell afterwards whether it did.
+    /// The context when a command that asks before it changes the account was
+    /// taken, to tell afterwards whether it did.
     context: Option<Context>,
 }
 
@@ -135,8 +135,8 @@ pub fn run_stdio() -> ServerResult<()> {
     Ok(())
 }
 
-// `key_directory` is where the Anthropic provider looks for its key file. Tests
-// pass a directory of their own, so that none reads the key of the user.
+/// `key_directory` is where the Anthropic provider looks for its key file. Tests
+/// pass a directory of their own, so that none reads the key of the user.
 fn serve(
     connection: &Connection,
     options: MockOptions,
@@ -200,8 +200,8 @@ fn serve(
     }
 }
 
-// What each output sends. A value omitted under `provider.document` takes its
-// own default for tabs, whatever the range sends.
+/// What each output sends. A value omitted under `provider.document` takes its
+/// own default for tabs, whatever the range sends.
 fn chatgpt_options(
     model: String,
     effort: ReasoningEffort,
@@ -222,8 +222,8 @@ fn chatgpt_options(
     )
 }
 
-// What each output sends. The tab's thinking follows the tab's own model and
-// effort, like every value under `provider.document`.
+/// What each output sends. The tab's thinking follows the tab's own model and
+/// effort, like every value under `provider.document`.
 fn anthropic_options(
     model: String,
     effort: AnthropicEffort,
@@ -873,7 +873,7 @@ impl<P: TranslationProvider> Drop for Server<P> {
     }
 }
 
-// The name of the file as the user sees it, not as the URI encodes it.
+/// The name of the file as the user sees it, not as the URI encodes it.
 fn file_name(uri: &Uri) -> String {
     let name = uri
         .path()
@@ -884,8 +884,8 @@ fn file_name(uri: &Uri) -> String {
     String::from_utf8_lossy(name.decode().as_bytes()).into_owned()
 }
 
-// Tells the user once per open document that its comments could not be read.
-// The log names the language and the kind of failure, and nothing of the document.
+/// Tells the user once per open document that its comments could not be read.
+/// The log names the language and the kind of failure, and nothing of the document.
 fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> RequestResult<()> {
     let Some(cause) = document.take_comment_failure() else {
         return Ok(());

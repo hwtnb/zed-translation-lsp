@@ -1,5 +1,5 @@
-// `translation-lsp anthropic-key`: asks for the key in the terminal and saves
-// it. The key reaches the file without passing through the editor.
+//! `translation-lsp anthropic-key`: asks for the key in the terminal and saves
+//! it. The key reaches the file without passing through the editor.
 use std::{
     fs::OpenOptions,
     io::{self, Write},
@@ -32,7 +32,7 @@ macro_rules! replaceable {
     };
 }
 
-// The texts are ASCII: a Windows console reads them in its own code page.
+/// The texts are ASCII: a Windows console reads them in its own code page.
 const INTRODUCTION: &str = concat!(
     "Translation LSP: Anthropic API key\n",
     "\n",
@@ -53,7 +53,7 @@ const SAVED: &str = "\nThe key was saved. Return to Zed: the next translation us
 const NOT_SAVED: &str = "\nThe key was not saved. ";
 const NOT_PRIVATE: &str = concat!(directory!(), replaceable!());
 const NO_DIRECTORY: &str = "The OS reported no local configuration directory for this user.";
-// A window that the server opened may close when the process ends.
+/// A window that the server opened may close when the process ends.
 const FINISH: &str = "Press Enter to finish.";
 const NO_TERMINAL: &str = "translation-lsp anthropic-key asks for the key in a terminal, and this process has none. Run it in a terminal window";
 const ARGUMENTS: &str = "translation-lsp anthropic-key takes no arguments";
@@ -81,8 +81,8 @@ impl Console for Terminal {
     }
 }
 
-// `None` when the arguments do not name the command: the process then serves
-// an editor.
+/// `None` when the arguments do not name the command: the process then serves
+/// an editor.
 pub fn from_arguments() -> Option<ExitCode> {
     let mut arguments = std::env::args().skip(1);
     if arguments.next()? != ARGUMENT {
@@ -117,14 +117,14 @@ pub fn from_arguments() -> Option<ExitCode> {
     })
 }
 
-// The hidden read takes Ctrl+C as a character and raises the signal itself,
-// before it restores the terminal. A process ended there would leave the shell
-// that started it without Ctrl+C. Received instead, the signal does nothing:
-// the read reports the interruption and restores the terminal. Between reads
-// Ctrl+C is ignored, so saving is never cut short.
-//
-// Unix only: a Windows console ends the process on Ctrl+C without the read
-// seeing it, and a process kept alive there would save what was typed so far.
+/// The hidden read takes Ctrl+C as a character and raises the signal itself,
+/// before it restores the terminal. A process ended there would leave the shell
+/// that started it without Ctrl+C. Received instead, the signal does nothing:
+/// the read reports the interruption and restores the terminal. Between reads
+/// Ctrl+C is ignored, so saving is never cut short.
+///
+/// Unix only: a Windows console ends the process on Ctrl+C without the read
+/// seeing it, and a process kept alive there would save what was typed so far.
 #[cfg(unix)]
 fn receive_interruptions() -> io::Result<impl Sized> {
     use tokio::signal::unix::{SignalKind, signal};
@@ -139,7 +139,7 @@ fn receive_interruptions() -> io::Result<impl Sized> {
     Ok((runtime, interruptions))
 }
 
-// Returns whether a key was saved.
+/// Returns whether a key was saved.
 pub(crate) fn run(directory: Result<PathBuf, CredentialError>, console: &mut impl Console) -> bool {
     // A terminal that went away ends the command like an input that ended.
     dialogue(directory, console).unwrap_or(false)

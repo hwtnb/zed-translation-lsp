@@ -43,7 +43,7 @@ pub(crate) enum ProviderSettings {
         model: String,
         #[serde(default)]
         effort: AnthropicEffort,
-        // `None` when omitted. `anthropic_thinking` chooses the value to send.
+        /// `None` when omitted. `anthropic_thinking` chooses the value to send.
         #[serde(default, deserialize_with = "explicit")]
         thinking: Option<bool>,
         #[serde(default, deserialize_with = "explicit")]
@@ -53,9 +53,9 @@ pub(crate) enum ProviderSettings {
     },
 }
 
-// `provider.document`: the model and options for translations opened in a
-// tab. An omitted field takes its own default here and inherits nothing from
-// the surrounding provider settings.
+/// `provider.document`: the model and options for translations opened in a
+/// tab. An omitted field takes its own default here and inherits nothing from
+/// the surrounding provider settings.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChatgptDocument {
@@ -79,8 +79,8 @@ pub(crate) struct AnthropicDocument {
 }
 
 impl ProviderSettings {
-    // Tab translations run apart from range translations exactly when
-    // `provider.document` is present, whatever its values are.
+    /// Tab translations run apart from range translations exactly when
+    /// `provider.document` is present, whatever its values are.
     pub fn separates_documents(&self) -> bool {
         match self {
             Self::Mock {} => false,
@@ -89,8 +89,8 @@ impl ProviderSettings {
         }
     }
 
-    // Decoding reports a missing field as the same generic error as any other
-    // mismatch. Name the one field that `provider.document` requires.
+    /// Decoding reports a missing field as the same generic error as any other
+    /// mismatch. Name the one field that `provider.document` requires.
     fn check_document_model(options: &Value) -> Result<(), ConfigError> {
         let provider = &options["provider"];
         if (provider["name"] == "chatgpt" || provider["name"] == "anthropic")
@@ -104,10 +104,10 @@ impl ProviderSettings {
         Ok(())
     }
 
-    // Decoding reports every mismatch as the same generic error. Name the
-    // setting when its value is a string outside its list: the providers take
-    // different values under the same names, such as `none` for ChatGPT effort
-    // and `standard` for Anthropic speed.
+    /// Decoding reports every mismatch as the same generic error. Name the
+    /// setting when its value is a string outside its list: the providers take
+    /// different values under the same names, such as `none` for ChatGPT effort
+    /// and `standard` for Anthropic speed.
     fn check_choices(options: &Value) -> Result<(), ConfigError> {
         let provider = &options["provider"];
         match provider["name"].as_str() {
@@ -124,7 +124,7 @@ impl ProviderSettings {
     }
 }
 
-// A field of both `provider` and `provider.document`.
+/// A field of both `provider` and `provider.document`.
 struct Choice {
     field: &'static str,
     settings: [&'static str; 2],
@@ -137,7 +137,7 @@ const EFFORT: Choice = Choice {
     named_null: false,
 };
 
-// A `null` speed may be meant as no speed, which is written by omitting it.
+/// A `null` speed may be meant as no speed, which is written by omitting it.
 const SPEED: Choice = Choice {
     field: "speed",
     settings: ["provider.speed", "provider.document.speed"],
@@ -181,16 +181,16 @@ fn default_anthropic_model() -> String {
     DEFAULT_ANTHROPIC_MODEL.into()
 }
 
-// Unlike a plain `Option`, this rejects an explicit `null`.
+/// Unlike a plain `Option`, this rejects an explicit `null`.
 fn explicit<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(deserializer).map(Some)
 }
 
-// An omitted setting turns thinking off only where that is known to be
-// accepted: the default model up to `high`. Other models may reject disabled
-// thinking, and no list of them is kept here, so the omitted value enables it.
+/// An omitted setting turns thinking off only where that is known to be
+/// accepted: the default model up to `high`. Other models may reject disabled
+/// thinking, and no list of them is kept here, so the omitted value enables it.
 pub(crate) fn anthropic_thinking(
     model: &str,
     effort: AnthropicEffort,
@@ -263,7 +263,7 @@ pub(crate) enum AnthropicEffort {
 impl AnthropicEffort {
     const CHOICES: &str = "low, medium, high, xhigh, max";
 
-    // The API rejects disabled thinking at these levels.
+    /// The API rejects disabled thinking at these levels.
     fn requires_thinking(self) -> Option<&'static str> {
         match self {
             Self::Xhigh => Some("xhigh"),
@@ -377,9 +377,9 @@ impl Settings {
     }
 }
 
-// No setting takes an array. Derived decoding would read one as the fields of
-// a table in declaration order, which would turn that order into a settings
-// format. Reject arrays before decoding, wherever they appear.
+/// No setting takes an array. Derived decoding would read one as the fields of
+/// a table in declaration order, which would turn that order into a settings
+/// format. Reject arrays before decoding, wherever they appear.
 fn reject_arrays(options: &Value) -> Result<(), ConfigError> {
     match options {
         Value::Array(_) => Err(ConfigError::Decode(serde::de::Error::custom(

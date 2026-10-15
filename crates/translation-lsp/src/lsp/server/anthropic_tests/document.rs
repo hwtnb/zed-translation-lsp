@@ -1,4 +1,4 @@
-// `provider.document` keeps tab translations apart from range translations.
+//! `provider.document` keeps tab translations apart from range translations.
 use serde_json::{Value, json};
 
 use super::{actions, next, target};
@@ -29,7 +29,7 @@ fn settings(separate: bool, work: Value) -> Settings {
     .unwrap()
 }
 
-// The provider sends what `serve` resolves from the same settings.
+/// The provider sends what `serve` resolves from the same settings.
 fn editor(fixture: &Fixture, settings: Settings) -> Editor {
     let ProviderSettings::Anthropic {
         model,
@@ -113,8 +113,8 @@ fn translate(
         .unwrap()
 }
 
-// Dispatched jobs wait here until the test hands them to the worker, so an
-// operation stays in flight for as long as the test needs it.
+/// Dispatched jobs wait here until the test hands them to the worker, so an
+/// operation stays in flight for as long as the test needs it.
 struct Held {
     worker: JobSender,
     jobs: JobReceiver,
@@ -150,7 +150,7 @@ impl Held {
     }
 }
 
-// The model and options of each request the fixture received, in order.
+/// The model and options of each request the fixture received, in order.
 fn sent(fixture: &Fixture) -> Vec<Value> {
     let state = fixture.state.lock().unwrap();
     state
@@ -175,7 +175,7 @@ fn tab_sent() -> Value {
     json!([TAB_MODEL, "low", "adaptive"])
 }
 
-// The contents of each tab the server asked the editor to open.
+/// The contents of each tab the server asked the editor to open.
 fn opened(messages: &[Message]) -> Vec<String> {
     messages
         .iter()
@@ -434,7 +434,7 @@ async fn each_operation_of_one_target_has_its_own_cancel_action() {
     }
 }
 
-// The text of the progress report the editor shows while work is in flight.
+/// The text of the progress report the editor shows while work is in flight.
 fn progress(server: &mut Server<AnthropicProvider>, client: &Connection) -> String {
     server.publish_activity();
     let created = client

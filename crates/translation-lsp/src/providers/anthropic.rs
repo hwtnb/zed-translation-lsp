@@ -20,7 +20,7 @@ use super::{
 
 const API: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2023-06-01";
-// `speed` is a beta field, so it is sent with this header whatever its value.
+/// `speed` is a beta field, so it is sent with this header whatever its value.
 const SPEED_BETA: &str = "fast-mode-2026-02-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
 const SERVICE: Service = Service::Anthropic;
@@ -56,12 +56,12 @@ fn key_commands(usable: bool) -> Vec<ProviderCommand> {
 #[derive(Clone)]
 enum Terminal {
     System,
-    // Records the executable instead, and answers whether a window opened.
+    /// Records the executable instead, and answers whether a window opened.
     #[cfg(test)]
     Synthetic(test_support::Terminal),
 }
 
-// The model and options one output sends.
+/// The model and options one output sends.
 #[derive(Clone)]
 pub(crate) struct ModelOptions {
     pub model: String,
@@ -83,7 +83,7 @@ pub(crate) struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    // `key_directory` is the credential directory, where the key file is.
+    /// `key_directory` is the credential directory, where the key file is.
     pub fn new(
         options: OutputOptions<ModelOptions>,
         source_language: String,
@@ -140,8 +140,8 @@ impl AnthropicProvider {
         self
     }
 
-    // The notice names the command either way: the window may be on a machine
-    // the user is not sitting at.
+    /// The notice names the command either way: the window may be on a machine
+    /// the user is not sitting at.
     async fn open_terminal(&self) -> Result<String, Error> {
         let executable = std::env::current_exe()
             .map_err(|_| Error::failed("Could not locate the language server executable"))?;
@@ -197,8 +197,8 @@ fn key_of(context: &Context) -> Result<KeyId, Error> {
 }
 
 impl TranslationProvider for AnthropicProvider {
-    // The key in use is part of the context: what was translated or refused
-    // with one key is not kept for another.
+    /// The key in use is part of the context: what was translated or refused
+    /// with one key is not kept for another.
     fn context(&self) -> Result<Context, Error> {
         let (_, key) = self.key.read()?;
         Ok(Context::Anthropic(key))

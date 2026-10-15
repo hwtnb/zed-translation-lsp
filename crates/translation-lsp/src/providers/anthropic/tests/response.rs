@@ -730,8 +730,8 @@ async fn output_and_transport_limits_scale_with_the_configured_output() {
     }
 }
 
-// The speed is read from the `usage` of `message_start`, where the API reports
-// it, and never decides whether the translation is returned.
+/// The speed is read from the `usage` of `message_start`, where the API reports
+/// it, and never decides whether the translation is returned.
 #[tokio::test(flavor = "current_thread")]
 async fn message_start_reports_the_served_speed_without_deciding_the_result() {
     let start = |message: Value| {

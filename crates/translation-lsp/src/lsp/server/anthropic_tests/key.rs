@@ -1,5 +1,5 @@
-// The key is saved, replaced, and removed while the server runs. What was
-// translated, refused, or stopped under one key is not kept for another.
+//! The key is saved, replaced, and removed while the server runs. What was
+//! translated, refused, or stopped under one key is not kept for another.
 use std::{fs, sync::Arc};
 
 use serde_json::{Value, json};
@@ -47,15 +47,15 @@ fn hover(uri: &Uri, line: u32) -> HoverParams {
         .unwrap()
 }
 
-// The key the last request to the fixture carried.
+/// The key the last request to the fixture carried.
 fn sent(fixture: &Fixture) -> String {
     let state = fixture.state.lock().unwrap();
     let key = &state.records.last().unwrap().headers["x-api-key"];
     key.to_str().unwrap().to_owned()
 }
 
-// Waits until the fixture has received this many requests. The limit only ends
-// a test that would otherwise hang.
+/// Waits until the fixture has received this many requests. The limit only ends
+/// a test that would otherwise hang.
 async fn received(fixture: &Fixture, calls: usize) {
     tokio::time::timeout(Duration::from_secs(30), async {
         while fixture.calls() < calls {
@@ -73,7 +73,7 @@ async fn message(client: &Connection) -> Message {
         .unwrap()
 }
 
-// Holds every response of the fixture until the test lets one go.
+/// Holds every response of the fixture until the test lets one go.
 fn gate(fixture: &Fixture) -> Arc<Semaphore> {
     let gate = Arc::new(Semaphore::new(0));
     fixture.state.lock().unwrap().gate = Some(gate.clone());

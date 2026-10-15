@@ -29,7 +29,7 @@ enum LineKind {
     CSharp(u8),
     CFamily(&'static str),
     Python,
-    // Ends at CR or LF, after an opening of this many bytes.
+    /// Ends at CR or LF, after an opening of this many bytes.
     Plain(u8),
 }
 
@@ -53,15 +53,15 @@ impl Comment {
     }
 }
 
-// Store only source byte spans and syntax kinds. Bodies and LSP coordinates are
-// produced for the requested group, rather than for every comment in a document.
+/// Store only source byte spans and syntax kinds. Bodies and LSP coordinates are
+/// produced for the requested group, rather than for every comment in a document.
 pub(crate) struct Comments(Vec<Comment>);
 
-// Why reading a document gave no comments.
+/// Why reading a document gave no comments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
     TimedOut,
-    // Where the panic was raised, as `file:line`.
+    /// Where the panic was raised, as `file:line`.
     Panicked(Option<String>),
 }
 
@@ -70,8 +70,8 @@ thread_local! {
     static PANICKED_AT: Cell<Option<String>> = const { Cell::new(None) };
 }
 
-// A panic message can quote the text being read. While a thread reads
-// comments, keep only the place of its panic; report every other panic as before.
+/// A panic message can quote the text being read. While a thread reads
+/// comments, keep only the place of its panic; report every other panic as before.
 fn keep_reading_panics_quiet() {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
@@ -91,8 +91,8 @@ fn keep_reading_panics_quiet() {
 }
 
 impl Comments {
-    // The limit starts here. It stops the Tree-sitter languages; no other
-    // reader can be stopped part way.
+    /// The limit starts here. It stops the Tree-sitter languages; no other
+    /// reader can be stopped part way.
     pub fn parse(
         language_id: &str,
         uri: &Uri,
@@ -150,7 +150,7 @@ impl Comments {
         Some(javascript::parse(language_id, uri, text))
     }
 
-    // A group is a range of comment indices, not a copy of the source or body.
+    /// A group is a range of comment indices, not a copy of the source or body.
     pub fn at(&self, text: &str, offset: usize) -> Option<Range<usize>> {
         let index = self
             .0
@@ -799,7 +799,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
-    // Valid YAML: each quoted value continues one column deeper than its key.
+    /// Valid YAML: each quoted value continues one column deeper than its key.
     fn yaml_values_continued_one_column_deeper() -> Vec<String> {
         ['"', '\'']
             .into_iter()
@@ -832,7 +832,7 @@ mod tests {
         }
     }
 
-    // The source of each comment, before grouping.
+    /// The source of each comment, before grouping.
     fn sources(language: &str, uri: &str, text: &str) -> Vec<String> {
         parsed(language, &uri.parse().unwrap(), text)
             .0
@@ -1608,7 +1608,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(60));
     }
 
-    // The example of the request, with tabs before the lines that `<<-` strips.
+    /// The example of the request, with tabs before the lines that `<<-` strips.
     const DOCKERFILE: &str = concat!(
         "# syntax=docker/dockerfile:1\n",
         "# escape=\\\n",
