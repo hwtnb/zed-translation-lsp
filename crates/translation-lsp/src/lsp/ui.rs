@@ -11,11 +11,25 @@ use tokio::sync::oneshot;
 
 use crate::providers::{Interaction, error::Error};
 
+/// Every request to the editor, whether a task awaits its response or the
+/// server loop handles it, is registered in one [`Ui`].
 #[derive(Clone)]
 pub(crate) struct Ui {
     pub(super) sender: Sender<Message>,
-    replies: Arc<Mutex<HashMap<RequestId, oneshot::Sender<Response>>>>,
+    replies: Arc<Mutex<HashMap<RequestId, Waiter>>>,
     pub(super) capabilities: UiCapabilities,
+}
+
+/// What the server loop does with the response to one of its requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Purpose {
+    CreateProgress,
+    OpenDocument,
+}
+
+enum Waiter {
+    Task(oneshot::Sender<Response>),
+    Server(Purpose),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -59,20 +73,44 @@ impl Ui {
         }
     }
 
-    pub fn response(&self, response: Response) {
-        if let Some(sender) = self.replies.lock().unwrap().remove(&response.id) {
-            let _ = sender.send(response);
+    /// Hands a response to the task that awaits it, or returns it with its
+    /// purpose for the server loop. A response to no live request is dropped.
+    pub fn response(&self, response: Response) -> Option<(Purpose, Response)> {
+        let waiter = self.replies.lock().unwrap().remove(&response.id)?;
+        match waiter {
+            Waiter::Task(sender) => {
+                let _ = sender.send(response);
+                None
+            }
+            Waiter::Server(purpose) => Some((purpose, response)),
         }
     }
 
-    async fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
-        let id = RequestId::from(format!("translation-ui-{}", uuid::Uuid::new_v4()));
-        let (sender, reply) = oneshot::channel();
-        self.replies.lock().unwrap().insert(id.clone(), sender);
-        let _pending = PendingUi {
-            ui: self.clone(),
-            id: id.clone(),
-        };
+    /// Sends a request whose response [`Ui::response`] returns with `purpose`.
+    pub(super) fn send_request(
+        &self,
+        id: RequestId,
+        method: &str,
+        params: Value,
+        purpose: Purpose,
+    ) -> Result<(), Error> {
+        self.replies
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Waiter::Server(purpose));
+        self.send(id, method, params)
+    }
+
+    /// Withdraws a request that is still waiting for its response.
+    pub(super) fn cancel_request(&self, id: &RequestId) {
+        if self.replies.lock().unwrap().remove(id).is_some() {
+            let _ = self.sender.send(
+                lsp_server::Notification::new("$/cancelRequest".into(), json!({"id": id})).into(),
+            );
+        }
+    }
+
+    fn send(&self, id: RequestId, method: &str, params: Value) -> Result<(), Error> {
         self.sender
             .send(
                 Request {
@@ -82,7 +120,21 @@ impl Ui {
                 }
                 .into(),
             )
-            .map_err(|_| Error::failed("The editor disconnected"))?;
+            .map_err(|_| Error::failed("The editor disconnected"))
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
+        let id = RequestId::from(format!("translation-ui-{}", uuid::Uuid::new_v4()));
+        let (sender, reply) = oneshot::channel();
+        self.replies
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Waiter::Task(sender));
+        let _pending = PendingUi {
+            ui: self.clone(),
+            id: id.clone(),
+        };
+        self.send(id, method, params)?;
         let response = reply
             .await
             .map_err(|_| Error::failed("The editor disconnected"))?;
@@ -118,12 +170,7 @@ impl Ui {
 
 impl Drop for PendingUi {
     fn drop(&mut self) {
-        if self.ui.replies.lock().unwrap().remove(&self.id).is_some() {
-            let _ = self.ui.sender.send(
-                lsp_server::Notification::new("$/cancelRequest".into(), json!({"id":self.id}))
-                    .into(),
-            );
-        }
+        self.ui.cancel_request(&self.id);
     }
 }
 

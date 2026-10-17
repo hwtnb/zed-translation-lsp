@@ -1,11 +1,10 @@
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Sender;
-use lsp_server::{Message, Request, RequestId, Response};
+use lsp_server::{RequestId, Response};
 use lsp_types::ProgressToken;
 use serde_json::{Value, json};
 
-use super::ui::UiCapabilities;
+use super::ui::{Purpose, Ui, UiCapabilities};
 
 const REPORT_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -65,7 +64,8 @@ enum Progress {
 }
 
 pub(super) struct Activity {
-    sender: Sender<Message>,
+    ui: Ui,
+    /// A rejected progress registration turns progress off for the session.
     capabilities: UiCapabilities,
     progress: Progress,
     generation: u64,
@@ -74,10 +74,10 @@ pub(super) struct Activity {
 }
 
 impl Activity {
-    pub fn new(sender: Sender<Message>, capabilities: UiCapabilities) -> Self {
+    pub fn new(ui: Ui) -> Self {
         Self {
-            sender,
-            capabilities,
+            capabilities: ui.capabilities,
+            ui,
             progress: Progress::Idle,
             generation: 0,
             work: Work::default(),
@@ -196,13 +196,11 @@ impl Activity {
             let identity = format!("translation-progress-{}", uuid::Uuid::new_v4());
             let id = RequestId::from(identity.clone());
             let token = ProgressToken::String(identity);
-            let _ = self.sender.send(
-                Request {
-                    id: id.clone(),
-                    method: "window/workDoneProgress/create".into(),
-                    params: json!({"token":token}),
-                }
-                .into(),
+            let _ = self.ui.send_request(
+                id.clone(),
+                "window/workDoneProgress/create",
+                json!({"token":token}),
+                Purpose::CreateProgress,
             );
             self.progress = Progress::Creating {
                 id,
@@ -220,9 +218,7 @@ impl Activity {
                 self.begin(&token, None);
                 self.end(&token);
             }
-            Progress::Creating { id, .. } => {
-                self.notify("$/cancelRequest", json!({"id":id}));
-            }
+            Progress::Creating { id, .. } => self.ui.cancel_request(&id),
             Progress::Idle => (),
         }
         self.work = Work::default();
@@ -269,6 +265,7 @@ impl Activity {
 
     fn notify(&self, method: &str, params: Value) {
         let _ = self
+            .ui
             .sender
             .send(lsp_server::Notification::new(method.into(), params).into());
     }
@@ -277,6 +274,7 @@ impl Activity {
 #[cfg(test)]
 mod tests {
     use crossbeam_channel::{Receiver, unbounded};
+    use lsp_server::{Message, Request};
 
     use super::*;
 
@@ -287,7 +285,7 @@ mod tests {
             server_status: status,
             ..Default::default()
         };
-        (Activity::new(sender, capabilities), receiver)
+        (Activity::new(Ui::new(sender, capabilities)), receiver)
     }
 
     fn create(receiver: &Receiver<Message>) -> Request {

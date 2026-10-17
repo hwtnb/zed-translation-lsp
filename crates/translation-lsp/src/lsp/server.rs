@@ -70,7 +70,7 @@ use super::{
         cache::{Cache, Stored, overlaps},
         files::PreviewFiles,
     },
-    ui::{Ui, UiCapabilities},
+    ui::{Purpose, Ui, UiCapabilities},
 };
 
 type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -354,12 +354,14 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         }
                         server.notification(connection, notification)?;
                     }
-                    Message::Response(response) => {
-                        if !server.activity.response(&response)
-                            && !server.preview_files.response(&server.ui, &response)
-                        {
-                            server.ui.response(response);
+                    Message::Response(response) => match server.ui.response(response) {
+                        Some((Purpose::CreateProgress, response)) => {
+                            server.activity.response(&response);
                         }
+                        Some((Purpose::OpenDocument, response)) => {
+                            server.preview_files.response(&server.ui, &response);
+                        }
+                        None => (),
                     },
                 },
                 recv(finished) -> event => match event? {
@@ -430,7 +432,7 @@ impl<P: TranslationProvider> Server<P> {
                     concurrency,
                 ))
             })?;
-        let activity = Activity::new(ui.sender.clone(), ui.capabilities);
+        let activity = Activity::new(ui.clone());
         Ok(Self {
             provider,
             cache: Cache::new(settings.translation_limits),

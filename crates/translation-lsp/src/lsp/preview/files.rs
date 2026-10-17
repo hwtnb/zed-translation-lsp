@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lsp_server::{ErrorCode, Request, RequestId, Response, ResponseError};
+use lsp_server::{ErrorCode, RequestId, Response, ResponseError};
 use serde_json::json;
 
-use crate::lsp::ui::Ui;
+use crate::lsp::ui::{Purpose, Ui};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -69,16 +69,13 @@ impl PreviewFiles {
         let uri = reqwest::Url::from_file_path(path)
             .map_err(|_| failed("Could not open the translation path"))?;
         let id = RequestId::from(format!("translation-document-{}", uuid::Uuid::new_v4()));
-        ui.sender
-            .send(
-                Request::new(
-                    id.clone(),
-                    "window/showDocument".into(),
-                    json!({"uri": uri.as_str(), "external": false, "takeFocus": true}),
-                )
-                .into(),
-            )
-            .map_err(|_| failed("The editor disconnected"))?;
+        ui.send_request(
+            id.clone(),
+            "window/showDocument",
+            json!({"uri": uri.as_str(), "external": false, "takeFocus": true}),
+            Purpose::OpenDocument,
+        )
+        .map_err(|_| failed("The editor disconnected"))?;
         self.opening.insert(id, Instant::now() + OPEN_TIMEOUT);
         Ok(())
     }
@@ -113,7 +110,7 @@ impl PreviewFiles {
             if *deadline > now {
                 return true;
             }
-            cancel_open(ui, id);
+            ui.cancel_request(id);
             let _ = ui.error("Opening the translation timed out");
             false
         });
@@ -121,7 +118,7 @@ impl PreviewFiles {
 
     pub fn cancel_all(&mut self, ui: &Ui) {
         for (id, _) in self.opening.drain() {
-            cancel_open(ui, &id);
+            ui.cancel_request(&id);
         }
     }
 }
@@ -154,12 +151,6 @@ fn failed(message: &str) -> ResponseError {
         message: message.into(),
         data: None,
     }
-}
-
-fn cancel_open(ui: &Ui, id: &RequestId) {
-    let _ = ui
-        .sender
-        .send(lsp_server::Notification::new("$/cancelRequest".into(), json!({"id": id})).into());
 }
 
 impl Drop for PreviewFiles {
