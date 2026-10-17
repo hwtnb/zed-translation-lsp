@@ -17,18 +17,7 @@ impl<P: TranslationProvider> Server<P> {
             self.command_failure(&error)?;
             respond(connection, id, Err(error))?;
         }
-        let tickets: Vec<_> = self
-            .scheduler
-            .translations
-            .iter()
-            .filter(|(_, work)| {
-                work.execution_deadline()
-                    .is_some_and(|deadline| deadline <= now)
-            })
-            .map(|(&ticket, _)| ticket)
-            .collect();
-        for ticket in tickets {
-            let work = self.scheduler.remove(ticket).unwrap();
+        for (ticket, work) in self.scheduler.take_expired(now) {
             self.complete(
                 connection,
                 ticket,
@@ -38,17 +27,8 @@ impl<P: TranslationProvider> Server<P> {
             )?;
             self.record_problem(&work, Problem::TimedOut);
         }
-        let ids: Vec<_> = self
-            .scheduler
-            .pending
-            .iter()
-            .filter(|(_, pending)| pending.deadline <= now)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            let pending = self.scheduler.pending.remove(&id).unwrap();
+        for id in self.scheduler.take_expired_waiters(now) {
             let error = failure(ErrorCode::RequestFailed, "Translation timed out");
-            self.scheduler.update_deadline(pending.ticket);
             respond(connection, id, Err(error))?;
         }
         self.start_selection();
@@ -69,29 +49,21 @@ impl<P: TranslationProvider> Server<P> {
             {
                 selection.start = None;
             }
-            let ids: Vec<_> = self
-                .scheduler
-                .pending
-                .iter()
-                .filter(|(_, p)| p.ticket == ticket)
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in ids {
-                self.cancel(connection, &id, code)?;
+            for (id, _) in self.scheduler.take_waiters(ticket) {
+                refuse_translation(connection, id, code)?;
             }
         }
         Ok(())
     }
 
-    pub(super) fn cancel_activity(&mut self, connection: &Connection) -> RequestResult<()> {
+    /// Cancels every translation and its Hover waiters, for `Cancel all
+    /// translations`. Account operations and tabs being opened go on, and the
+    /// current selection waits for its next change.
+    pub(super) fn cancel_translations(&mut self, connection: &Connection) -> RequestResult<()> {
         self.suppress_selection();
         self.clear_problem();
-        let ids: Vec<_> = self.scheduler.pending.keys().cloned().collect();
-        for id in ids {
-            self.cancel(connection, &id, ErrorCode::RequestCanceled)?;
-        }
-        for (_, work) in self.scheduler.translations.drain() {
-            work.deadline.send_replace(None);
+        for id in self.scheduler.stop_all() {
+            refuse_translation(connection, id, ErrorCode::RequestCanceled)?;
         }
         Ok(())
     }
@@ -119,49 +91,26 @@ impl<P: TranslationProvider> Server<P> {
         {
             self.retire_selection();
         }
-        let ids: Vec<_> = self
-            .scheduler
-            .pending
-            .iter()
-            .filter(|(_, pending)| {
-                self.scheduler
-                    .translations
-                    .get(&pending.ticket)
-                    .is_some_and(|work| &work.target.uri == uri)
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            self.cancel(connection, &id, ErrorCode::ContentModified)?;
+        for id in self.scheduler.stop_document(uri) {
+            refuse_translation(connection, id, ErrorCode::ContentModified)?;
         }
-        self.scheduler.translations.retain(|_, work| {
-            if &work.target.uri == uri {
-                work.deadline.send_replace(None);
-                false
-            } else {
-                true
-            }
-        });
         Ok(())
     }
 
-    pub(super) fn cancel_all(&mut self, connection: &Connection) -> ServerResult<()> {
+    /// Cancels all work, for shutdown and account changes: translations,
+    /// account operations, tabs being opened, and the current selection.
+    pub(super) fn cancel_all_work(&mut self, connection: &Connection) -> ServerResult<()> {
         self.preview_files.cancel_all(&self.ui);
         self.clear_problem();
         self.retire_selection();
-        let ids: Vec<_> = self
-            .scheduler
-            .pending
-            .keys()
-            .chain(self.administrations.keys())
-            .cloned()
-            .collect();
+        for id in self.scheduler.stop_all() {
+            refuse_translation(connection, id, ErrorCode::RequestCanceled)
+                .map_err(|error| error.message)?;
+        }
+        let ids: Vec<_> = self.administrations.keys().cloned().collect();
         for id in ids {
             self.cancel(connection, &id, ErrorCode::RequestCanceled)
                 .map_err(|error| error.message)?;
-        }
-        for (_, work) in self.scheduler.translations.drain() {
-            work.deadline.send_replace(None);
         }
         Ok(())
     }
@@ -185,17 +134,25 @@ impl<P: TranslationProvider> Server<P> {
                 )
                 .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
         }
-        if let Some(pending) = self.scheduler.pending.remove(id) {
-            self.scheduler.update_deadline(pending.ticket);
-            let response = Response {
-                id: id.clone(),
-                response_result: Err(failure(code, "Translation canceled or document changed")),
-            };
-            connection
-                .sender
-                .send(response.into())
-                .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
+        if self.scheduler.remove_waiter(id) {
+            refuse_translation(connection, id.clone(), code)?;
         }
         Ok(())
     }
+}
+
+/// Answers a Hover waiter whose translation will not come.
+fn refuse_translation(
+    connection: &Connection,
+    id: RequestId,
+    code: ErrorCode,
+) -> RequestResult<()> {
+    let response = Response {
+        id,
+        response_result: Err(failure(code, "Translation canceled or document changed")),
+    };
+    connection
+        .sender
+        .send(response.into())
+        .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))
 }

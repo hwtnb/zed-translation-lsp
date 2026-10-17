@@ -217,8 +217,8 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
     );
     finish(&mut server, "\u{a0}right ");
     assert_eq!(server.documents[&uri].text(), Some(source));
-    assert!(server.scheduler.pending.is_empty());
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.pending().is_empty());
+    assert!(server.scheduler.translations().is_empty());
 }
 #[test]
 fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
@@ -251,7 +251,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     };
     let id = RequestId::from("reused".to_owned());
     assert!(server.hover(id.clone(), params()).unwrap().is_none());
-    let old_ticket = server.scheduler.pending[&id].ticket;
+    let old_ticket = server.scheduler.pending()[&id].ticket;
     server
         .cancel_range(&connection, old_ticket, ErrorCode::RequestCanceled)
         .unwrap();
@@ -260,7 +260,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     };
     assert!(canceled.response_result.is_err());
     assert!(server.hover(id.clone(), params()).unwrap().is_none());
-    let new_ticket = server.scheduler.pending[&id].ticket;
+    let new_ticket = server.scheduler.pending()[&id].ticket;
     assert_ne!(old_ticket, new_ticket);
     server
         .finish(
@@ -276,7 +276,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
     assert!(server.cache.latest(&uri).is_none());
-    assert_eq!(server.scheduler.pending[&id].ticket, new_ticket);
+    assert_eq!(server.scheduler.pending()[&id].ticket, new_ticket);
     server
         .finish(
             &connection,
@@ -301,8 +301,8 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
             .contains("current result")
     );
     assert!(!value.to_string().contains("stale result"));
-    assert!(server.scheduler.pending.is_empty());
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.pending().is_empty());
+    assert!(server.scheduler.translations().is_empty());
 }
 
 #[test]

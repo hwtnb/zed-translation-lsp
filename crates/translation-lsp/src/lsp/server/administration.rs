@@ -10,7 +10,7 @@ impl<P: TranslationProvider> Server<P> {
         let mut actions = Vec::new();
         let mut ranges: Vec<_> = self
             .scheduler
-            .translations
+            .translations()
             .iter()
             .filter(|(_, work)| {
                 work.owners.retained()
@@ -34,7 +34,7 @@ impl<P: TranslationProvider> Server<P> {
                 work.target.range.end.line + 1
             ))?);
         }
-        if !self.scheduler.translations.is_empty() {
+        if !self.scheduler.translations().is_empty() {
             actions.push(ServerCommand::CancelAll.action("Cancel all translations".into())?);
         }
         Ok(actions)
@@ -67,7 +67,7 @@ impl<P: TranslationProvider> Server<P> {
             // The user agreed, and the command changed what translations
             // are made with.
             AccountChange::IfConfirmed if self.provider.context().ok() != operation.context => {
-                self.cancel_all(connection)?;
+                self.cancel_all_work(connection)?;
                 self.clear_previews();
             }
             _ => (),
@@ -129,7 +129,7 @@ impl<P: TranslationProvider> Server<P> {
         }
         let change = Self::account_change(&command);
         if change == AccountChange::AtOnce {
-            self.cancel_all(connection)
+            self.cancel_all_work(connection)
                 .map_err(|_| failure(ErrorCode::InternalError, "Could not cancel pending work"))?;
             self.clear_previews();
         }

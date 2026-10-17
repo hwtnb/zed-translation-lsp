@@ -111,14 +111,8 @@ impl<P: TranslationProvider> Server<P> {
             };
             self.scheduler
                 .join(ticket, request, &self.settings, Instant::now())?;
-            if let Some(fresh) = generation
-                && let Some(Task::Translation { generation, .. }) = self
-                    .scheduler
-                    .translations
-                    .get_mut(&ticket)
-                    .and_then(|work| work.task.as_mut())
-            {
-                *generation = fresh;
+            if let Some(fresh) = generation {
+                self.scheduler.set_generation(ticket, fresh);
             }
             return Ok(immediate.then_some(Value::Null));
         }
@@ -245,7 +239,7 @@ impl<P: TranslationProvider> Server<P> {
     ) -> ServerResult<()> {
         match &result {
             Ok(preview) => {
-                let has_hover = self.scheduler.pending.values().any(|p| p.ticket == ticket);
+                let has_hover = self.scheduler.has_waiters(ticket);
                 if work.owners.range_output() || has_hover {
                     self.cache.insert(
                         work.target.uri.clone(),
@@ -294,15 +288,7 @@ impl<P: TranslationProvider> Server<P> {
             }
             _ => (),
         }
-        let ids: Vec<_> = self
-            .scheduler
-            .pending
-            .iter()
-            .filter(|(_, p)| p.ticket == ticket)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            let pending = self.scheduler.pending.remove(&id).unwrap();
+        for (id, pending) in self.scheduler.take_waiters(ticket) {
             let response = match &result {
                 Err(error) => Err(error.clone()),
                 Ok(preview) => to_value(preview.hover(pending.position)),

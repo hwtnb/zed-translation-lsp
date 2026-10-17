@@ -350,7 +350,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             markdown_actions(&mut server, &uri, range);
             assert_eq!(server.selection.as_ref().unwrap().start, Some(due));
             server.expire(&connection).unwrap();
-            assert!(server.scheduler.translations.is_empty());
+            assert!(server.scheduler.translations().is_empty());
             assert!(fixture.state.lock().unwrap().records.is_empty());
             tokio::time::sleep(Duration::from_millis(110)).await;
             server.expire(&connection).unwrap();
@@ -364,7 +364,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             markdown_actions(&mut server, &uri, range);
             server.expire(&connection).unwrap();
             assert!(
-                server.scheduler.translations.is_empty(),
+                server.scheduler.translations().is_empty(),
                 "Same selection cannot duplicate completed work"
             );
         } else {
@@ -599,8 +599,8 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
             parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap(),
         )
         .unwrap();
-    let ticket = server.scheduler.pending[&1.into()].ticket;
-    let original_context = server.scheduler.translations[&ticket].context.clone();
+    let ticket = server.scheduler.pending()[&1.into()].ticket;
+    let original_context = server.scheduler.translations()[&ticket].context.clone();
     server.publish_activity();
     let Message::Request(create) = client.receiver.try_recv().unwrap() else {
         panic!("Expected create");
@@ -629,12 +629,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         panic!("Expected worker Started");
     };
     assert_eq!(started_ticket, ticket);
-    server
-        .scheduler
-        .translations
-        .get_mut(&ticket)
-        .unwrap()
-        .phase = Phase::Running;
+    server.scheduler.mark_running(ticket);
     assert!(matches!(
         auth.store.snapshot(),
         Err(crate::providers::error::credentials::CredentialError::Busy)
@@ -652,10 +647,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     );
     server
         .scheduler
-        .pending
-        .get_mut(&1.into())
-        .unwrap()
-        .deadline = Instant::now();
+        .set_waiter_deadline(&1.into(), Instant::now());
     server.expire(&connection).unwrap();
     server.publish_activity();
     let Message::Response(expired) = client.receiver.try_recv().unwrap() else {
@@ -665,7 +657,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         expired.response_result.unwrap_err().code,
         ErrorCode::RequestFailed as i32
     );
-    assert!(server.scheduler.translations[&ticket].owners.selection());
+    assert!(server.scheduler.translations()[&ticket].owners.selection());
     assert!(
         client.receiver.is_empty(),
         "Remaining background owner keeps progress alive"
@@ -803,7 +795,7 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
         )
         .unwrap();
     server.publish_activity();
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert!(server.selection.as_ref().is_none_or(|s| s.start.is_none()));
     assert_eq!(
         *server.administrations[&2.into()].stop.borrow(),
@@ -964,10 +956,10 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
             .is_none()
     );
     assert_eq!(
-        server.scheduler.pending[&1.into()].ticket,
-        server.scheduler.pending[&5.into()].ticket
+        server.scheduler.pending()[&1.into()].ticket,
+        server.scheduler.pending()[&5.into()].ticket
     );
-    assert_eq!(server.scheduler.translations.len(), 5);
+    assert_eq!(server.scheduler.translations().len(), 5);
     assert_eq!(
         fixture
             .state
@@ -985,11 +977,11 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
         let completion = next(&completions).await;
         assert!(completion.is_ok());
         server.finish(&connection, completion).unwrap();
-        if server.scheduler.translations.len() >= 2 {
+        if server.scheduler.translations().len() >= 2 {
             wait_held(&tail, 2).await;
         }
     }
-    assert!(server.scheduler.translations.is_empty() && server.scheduler.pending.is_empty());
+    assert!(server.scheduler.translations().is_empty() && server.scheduler.pending().is_empty());
     assert_eq!(
         fixture
             .state
@@ -1101,10 +1093,10 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         fixture.state.lock().unwrap().stream_tail_gate = Some(following.clone());
         let queued = operation.ends_with("queued");
         let id = RequestId::from(if queued { 3 } else { 1 });
-        let ticket = server.scheduler.pending[&id].ticket;
+        let ticket = server.scheduler.pending()[&id].ticket;
         let expected = match operation {
             "timeout-active" => {
-                server.scheduler.translations[&ticket]
+                server.scheduler.translations()[&ticket]
                     .deadline
                     .send_replace(Some(Instant::now()));
                 let completion = next(&completions).await;
@@ -1188,7 +1180,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         }
         tail.release.notify_waiters();
         following.release.notify_waiters();
-        while !server.scheduler.translations.is_empty() {
+        while !server.scheduler.translations().is_empty() {
             let completion = next(&completions).await;
             assert!(
                 completion.is_ok(),
@@ -1200,7 +1192,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             );
             server.finish(&connection, completion).unwrap();
         }
-        assert!(server.scheduler.pending.is_empty());
+        assert!(server.scheduler.pending().is_empty());
         assert_eq!(response_calls(&fixture), if queued { 2 } else { 3 });
         let successful: Vec<_> = client.receiver.try_iter().collect();
         assert_eq!(successful.len(), 2);
@@ -1275,7 +1267,7 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
         parallel_hover(&mut server, 4, &uris[3]);
         let targets: Vec<_> = server
             .scheduler
-            .translations
+            .translations()
             .values()
             .map(|work| work.target.clone())
             .collect();
@@ -1294,9 +1286,11 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
                 server.finish(&connection, completion).unwrap();
             }
         } else {
-            server.cancel_all(&connection).unwrap();
+            server.cancel_all_work(&connection).unwrap();
         }
-        assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
+        assert!(
+            server.scheduler.pending().is_empty() && server.scheduler.translations().is_empty()
+        );
         assert!((server.cache.successes() == 0));
         assert_eq!(response_calls(&fixture), 2);
         let replies: Vec<_> = client.receiver.try_iter().collect();
@@ -1497,13 +1491,13 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
             )
             .unwrap();
         parallel_hover(&mut server, 5, &uri);
-        while !server.scheduler.translations.is_empty() {
+        while !server.scheduler.translations().is_empty() {
             let completion = next(&completions).await;
             assert!(completion.is_ok());
             server.finish(&connection, completion).unwrap();
         }
         assert_eq!(response_calls(&fixture), (round + 1) * 5);
-        assert!(server.scheduler.pending.is_empty());
+        assert!(server.scheduler.pending().is_empty());
         assert_eq!(server.cache.successes(), 5);
         let replies: Vec<_> = client.receiver.try_iter().collect();
         assert_eq!(replies.len(), 5);
@@ -1572,7 +1566,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
         assert!(completion.is_ok());
         server.finish(&connection, completion).unwrap();
     }
-    assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
+    assert!(server.scheduler.pending().is_empty() && server.scheduler.translations().is_empty());
     for (index, uri) in uris.iter().enumerate() {
         assert_eq!(server.cache.latest(uri).is_some(), index >= 2);
     }
@@ -1733,25 +1727,25 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
             PendingReply::Hover(Position::new(0, 3)),
         )
         .unwrap();
-    let ticket = server.scheduler.pending[&1.into()].ticket;
-    let start = server.scheduler.translations[&ticket].started.unwrap();
+    let ticket = server.scheduler.pending()[&1.into()].ticket;
+    let start = server.scheduler.translations()[&ticket].started.unwrap();
     wait_held(&tail, 1).await;
     server
         .queue_translation(target.clone(), TranslationRequest::Document)
         .unwrap();
     assert_eq!(
-        server.scheduler.translations[&ticket].execution_deadline(),
+        server.scheduler.translations()[&ticket].execution_deadline(),
         Some(start + Duration::from_millis(1000))
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
     server.expire(&connection).unwrap();
-    assert!(server.scheduler.pending.is_empty());
-    assert!(server.scheduler.translations[&ticket].owners.tab());
+    assert!(server.scheduler.pending().is_empty());
+    assert!(server.scheduler.translations()[&ticket].owners.tab());
     server
         .queue_translation(target, TranslationRequest::Document)
         .unwrap();
     assert_eq!(
-        server.scheduler.translations[&ticket].execution_deadline(),
+        server.scheduler.translations()[&ticket].execution_deadline(),
         Some(start + Duration::from_millis(1000))
     );
     tail.release.notify_one();
@@ -1796,7 +1790,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
     wait_held(&tail, 1).await;
     let cap = server
         .scheduler
-        .translations
+        .translations()
         .values()
         .next()
         .unwrap()
@@ -1808,7 +1802,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
     assert_eq!(
         server
             .scheduler
-            .translations
+            .translations()
             .values()
             .next()
             .unwrap()
@@ -1820,7 +1814,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     let responses: Vec<_> = client
         .receiver
         .try_iter()
@@ -2094,7 +2088,7 @@ async fn chatgpt_worker_coalesces_and_invalidates_completed_cache_on_account_cha
     server.jobs = Some(held_sender);
     assert!(server.hover(RequestId::from(1), hover()).unwrap().is_none());
     assert!(server.hover(RequestId::from(2), hover()).unwrap().is_none());
-    assert_eq!(server.scheduler.translations.len(), 1);
+    assert_eq!(server.scheduler.translations().len(), 1);
     worker_jobs.try_send(held.recv().await.unwrap()).unwrap();
     server.jobs = Some(worker_jobs);
     server
@@ -2196,8 +2190,8 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
             .finish(&connection, next(&completions).await)
             .unwrap();
         assert!(server.cache.latest(&uri).is_none(), "SSE mode {mode}");
-        assert!(server.scheduler.pending.is_empty());
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.pending().is_empty());
+        assert!(server.scheduler.translations().is_empty());
         let Message::Response(response) = client.receiver.try_recv().unwrap() else {
             panic!("Expected failed Hover response");
         };
@@ -2314,7 +2308,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             .unwrap();
         // Wait for the worker to start and for its response to stay open, rather
         // than for a fixed time.
-        let ticket = server.scheduler.pending[&1.into()].ticket;
+        let ticket = server.scheduler.pending()[&1.into()].ticket;
         let started = {
             let completions = completions.clone();
             tokio::task::spawn_blocking(move || completions.recv_timeout(Duration::from_secs(3)))
@@ -2334,12 +2328,12 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         server
             .queue(2.into(), target, PendingReply::Hover(Position::new(0, 5)))
             .unwrap();
-        assert_eq!(server.scheduler.pending[&2.into()].ticket, ticket);
-        let execution_deadline = server.scheduler.translations[&ticket]
+        assert_eq!(server.scheduler.pending()[&2.into()].ticket, ticket);
+        let execution_deadline = server.scheduler.translations()[&ticket]
             .execution_deadline()
             .unwrap();
         assert_eq!(
-            *server.scheduler.translations[&ticket].deadline.borrow(),
+            *server.scheduler.translations()[&ticket].deadline.borrow(),
             Some(execution_deadline)
         );
         assert!(
@@ -2365,11 +2359,11 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
                     .cancel(&connection, &2.into(), ErrorCode::RequestCanceled)
                     .unwrap();
                 assert_eq!(
-                    *server.scheduler.translations[&ticket].deadline.borrow(),
+                    *server.scheduler.translations()[&ticket].deadline.borrow(),
                     Some(execution_deadline)
                 );
                 assert_eq!(
-                    server.scheduler.translations[&ticket].execution_deadline(),
+                    server.scheduler.translations()[&ticket].execution_deadline(),
                     Some(execution_deadline)
                 );
                 // Expiry holds at any time after the deadline, however late this runs.
@@ -2380,7 +2374,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
                 server.notification(&connection,lsp_server::Notification::new("textDocument/didChange".into(),json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"// Changed source.\n"}]}))).unwrap();
             }
             _ => {
-                server.cancel_all(&connection).unwrap();
+                server.cancel_all_work(&connection).unwrap();
             }
         }
         for _ in 0..2 {
@@ -2395,8 +2389,8 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             assert_eq!(response.response_result.unwrap_err().code, expected as i32);
         }
         assert!(client.receiver.try_recv().is_err());
-        assert!(server.scheduler.pending.is_empty());
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.pending().is_empty());
+        assert!(server.scheduler.translations().is_empty());
         assert!(server.cache.latest(&uri).is_none());
         // The worker abandons the open response instead of waiting for it to end.
         wait_held(&tail, 0).await;
@@ -2506,7 +2500,7 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
         assert!(server.cache.exact(&uri, range, Output::Range).is_some());
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.translations().is_empty());
     }
     server.publish_activity();
     let Message::Notification(status) = client.receiver.try_recv().unwrap() else {
@@ -2514,8 +2508,8 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     };
     assert_eq!(status.params["health"], "ok");
     assert_eq!(server.documents[&uri].text().unwrap(), source);
-    assert!(server.scheduler.pending.is_empty());
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.pending().is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert_eq!(response_calls(&fixture), 4);
 }
 
@@ -2543,7 +2537,7 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
             .unwrap(),
         Some(Value::Null)
     );
-    assert!(!server.scheduler.pending.contains_key(&2.into()));
+    assert!(!server.scheduler.pending().contains_key(&2.into()));
     server
         .cancel(&connection, &1.into(), ErrorCode::RequestCanceled)
         .unwrap();
@@ -2551,7 +2545,7 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
         .cancel(&connection, &2.into(), ErrorCode::RequestCanceled)
         .unwrap();
     markdown_actions(&mut server, &uri, Range::default());
-    assert_eq!(server.scheduler.translations.len(), 1);
+    assert_eq!(server.scheduler.translations().len(), 1);
     tail.release.notify_one();
     server
         .finish(&connection, next(&completions).await)
@@ -2578,7 +2572,7 @@ async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_tic
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
     }
-    assert_eq!(server.scheduler.translations.len(), 3);
+    assert_eq!(server.scheduler.translations().len(), 3);
     wait_held(&tail, 2).await;
     markdown_actions(&mut server, &uri, Range::default());
     let canceled = server
@@ -2611,7 +2605,7 @@ async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_tic
             .exact(&uri, range_target(&server, &uri, 2).range, Output::Range)
             .is_none()
     );
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert_eq!(response_calls(&fixture), 3);
 }
 
@@ -2677,7 +2671,7 @@ async fn automatic_selection_excludes_code_whitespace_non_markdown_and_ineligibl
         markdown_actions(&mut server, &uri, range);
         server.expire(&connection).unwrap();
         assert!(server.selection.is_none());
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.translations().is_empty());
         assert!(fixture.state.lock().unwrap().records.is_empty());
         assert!(client.receiver.try_recv().is_err());
         if mode == "signed-out" {
@@ -2842,7 +2836,7 @@ async fn automatic_selection_uses_document_code_context_and_sends_only_selected_
         } else {
             assert!(server.selection.is_none(), "{selected:?}");
             server.expire(&connection).unwrap();
-            assert!(server.scheduler.translations.is_empty());
+            assert!(server.scheduler.translations().is_empty());
             assert_eq!(fixture.state.lock().unwrap().records.len(), before);
         }
         assert_eq!(server.documents[&uri].text(), Some(text));
@@ -3813,11 +3807,11 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
     parallel_hover(&mut server, 3, &uris[2]);
     for id in 4..14 {
         parallel_hover(&mut server, id, &uris[3]);
-        assert_eq!(server.scheduler.translations.len(), 4);
+        assert_eq!(server.scheduler.translations().len(), 4);
         server
             .cancel_range(
                 &connection,
-                server.scheduler.pending[&id.into()].ticket,
+                server.scheduler.pending()[&id.into()].ticket,
                 ErrorCode::RequestCanceled,
             )
             .unwrap();
@@ -3834,7 +3828,7 @@ async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_runnin
     parallel_hover(&mut server, 14, &uris[3]);
     fixture.state.lock().unwrap().stream_tail_gate = None;
     tail.release.notify_waiters();
-    while !server.scheduler.translations.is_empty() {
+    while !server.scheduler.translations().is_empty() {
         server
             .finish(&connection, next(&completions).await)
             .unwrap();
@@ -4005,13 +3999,13 @@ async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_b
     markdown_actions(&mut server, &uri, adjusted);
     server.selection.as_mut().unwrap().start = Some(Instant::now());
     server.expire(&connection).unwrap();
-    assert!(!server.scheduler.translations.contains_key(&old));
+    assert!(!server.scheduler.translations().contains_key(&old));
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
     let kept = server
         .scheduler
-        .translations
+        .translations()
         .keys()
         .copied()
         .next()
@@ -4025,10 +4019,10 @@ async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_b
         server.expire(&connection).unwrap();
     }
     assert!(
-        server.scheduler.translations.contains_key(&kept),
+        server.scheduler.translations().contains_key(&kept),
         "Returning from B must not cancel the earlier A"
     );
-    assert_eq!(server.scheduler.translations.len(), 3);
+    assert_eq!(server.scheduler.translations().len(), 3);
     // A fourth automatic selection remains an unaccepted candidate, and is replaced by a later candidate.
     for end in [6, 9] {
         let range = Range::new(Position::new(4, 0), Position::new(4, end));
@@ -4036,9 +4030,9 @@ async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_b
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
         assert!(server.selection.as_ref().unwrap().start.is_some());
-        assert_eq!(server.scheduler.translations.len(), 3);
+        assert_eq!(server.scheduler.translations().len(), 3);
     }
-    server.cancel_activity(&connection).unwrap();
+    server.cancel_translations(&connection).unwrap();
     drop(completions);
     drop(server);
 }
@@ -4131,14 +4125,11 @@ async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_para
     }
     server
         .scheduler
-        .pending
-        .get_mut(&3.into())
-        .unwrap()
-        .deadline = Instant::now();
+        .set_waiter_deadline(&3.into(), Instant::now());
     server.expire(&connection).unwrap();
     assert_eq!(client.receiver.try_iter().count(), 3);
     assert_eq!(server.scheduler.automatic_count(), 3);
-    assert!(server.scheduler.pending.is_empty());
+    assert!(server.scheduler.pending().is_empty());
     let actions = server
         .cancel_actions(&CodeActionParams {
             text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
@@ -4160,7 +4151,7 @@ async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_para
     );
     fixture.state.lock().unwrap().stream_tail_gate = None;
     tail.release.notify_waiters();
-    while !server.scheduler.translations.is_empty() {
+    while !server.scheduler.translations().is_empty() {
         server
             .finish(&connection, next(&completions).await)
             .unwrap();
@@ -4260,7 +4251,7 @@ async fn comment_and_selection_share_automatic_capacity_but_manual_promotion_fre
             .message
             .contains("queue is full")
     );
-    while !server.scheduler.translations.is_empty() {
+    while !server.scheduler.translations().is_empty() {
         server
             .finish(&connection, next(&completions).await)
             .unwrap();
@@ -4428,7 +4419,7 @@ async fn explicit_outputs_reuse_completed_ranges_without_automatic_hover_promoti
             .unwrap();
         let second_uri = opened(&client);
         assert!(
-            server.scheduler.translations.is_empty(),
+            server.scheduler.translations().is_empty(),
             "Switching outputs must not enqueue another translation"
         );
         assert_eq!(response_calls(&fixture), 1);

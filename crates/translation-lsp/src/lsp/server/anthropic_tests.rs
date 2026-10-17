@@ -238,7 +238,7 @@ async fn billing_stop_drains_queued_work_with_one_notice_and_resumes_after_expli
     assert!(server.selection.is_some());
     server.selection.as_mut().unwrap().start = Some(Instant::now());
     server.start_selection();
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert_eq!(fixture.calls(), 1);
 
     fixture.always(None);
@@ -303,7 +303,7 @@ async fn worker_cancellation_and_deadline_close_the_open_request() {
         );
         fixture.open.wait(1).await;
         if operation == "cancel" {
-            server.cancel_all(&connection).unwrap();
+            server.cancel_all_work(&connection).unwrap();
         }
         // The worker drops the translation on its own at the execution deadline.
         fixture.open.wait(0).await;

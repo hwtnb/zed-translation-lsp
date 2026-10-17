@@ -111,7 +111,7 @@ async fn without_a_usable_key_the_code_actions_offer_only_the_key_menu() {
         assert_eq!(error.code, ErrorCode::RequestFailed as i32);
         assert_eq!(error.message, MISSING);
     }
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert_eq!(fixture.calls(), 0);
     assert!(directory.names().is_empty());
 
@@ -300,8 +300,8 @@ async fn removing_the_key_cancels_work_and_discards_previews_only_once_confirmed
     assert_eq!(response.id, 3.into());
     assert!(fixture.keys.file().exists());
     assert!(server.cache.latest(&uri).is_some());
-    assert_eq!(server.scheduler.translations.len(), 1);
-    assert_eq!(server.scheduler.pending.len(), 1);
+    assert_eq!(server.scheduler.translations().len(), 1);
+    assert_eq!(server.scheduler.pending().len(), 1);
     fixture.open.wait(0).await;
 
     // Agreeing removes the key. The work in progress is cancelled then, and the
@@ -332,7 +332,7 @@ async fn removing_the_key_cancels_work_and_discards_previews_only_once_confirmed
     };
     assert_eq!(response.id, 4.into());
     assert!(server.cache.latest(&uri).is_none());
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     // The worker drops the request it had open.
     let dropped = next(&completions).await;
     assert!(dropped.error().is_some());
@@ -552,13 +552,13 @@ async fn automatic_translation_stopped_for_a_rejected_key_starts_again_with_the_
         server.start_selection();
     };
     start(&mut server);
-    assert!(server.scheduler.translations.is_empty());
+    assert!(server.scheduler.translations().is_empty());
     assert_eq!(fixture.calls(), 1);
 
     fixture.keys.replace(NEW_KEY);
     fixture.always(None);
     start(&mut server);
-    assert_eq!(server.scheduler.translations.len(), 1);
+    assert_eq!(server.scheduler.translations().len(), 1);
     server
         .finish(&connection, next(&completions).await)
         .unwrap();

@@ -313,17 +313,9 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
         loop {
             let deadline = server
                 .scheduler
-                .pending
-                .values()
-                .map(|pending| pending.deadline)
+                .next_deadline()
+                .into_iter()
                 .chain(server.administrations.values().map(|work| work.deadline))
-                .chain(
-                    server
-                        .scheduler
-                        .translations
-                        .values()
-                        .filter_map(Translation::execution_deadline),
-                )
                 .chain(server.activity.deadline())
                 .chain(server.preview_files.deadline())
                 .chain(
@@ -340,7 +332,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                 recv(connection.receiver) -> message => match message? {
                     Message::Request(request) => {
                         if request.method == Shutdown::METHOD {
-                            server.cancel_all(connection)?;
+                            server.cancel_all_work(connection)?;
                             server.activity.shutdown();
                             server.preview_files.clear();
                             connection.handle_shutdown(&request)?;
@@ -363,7 +355,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                     },
                 },
                 recv(finished) -> event => match event? {
-                    WorkerEvent::Started(ticket) => { if let Some(work) = server.scheduler.translations.get_mut(&ticket) { work.phase = Phase::Running; } },
+                    WorkerEvent::Started(ticket) => server.scheduler.mark_running(ticket),
                     WorkerEvent::Finished(completion) => server.finish(connection, completion)?,
                 },
                 recv(deadline) -> _ => server.expire(connection)?,
@@ -490,7 +482,7 @@ impl<P: TranslationProvider> Server<P> {
             self.clear_problem();
         }
         let mut activity = Work::default();
-        for work in self.scheduler.translations.values() {
+        for work in self.scheduler.translations().values() {
             if work.phase == Phase::Running {
                 activity.running += 1;
             } else {
@@ -549,7 +541,7 @@ impl<P: TranslationProvider> Server<P> {
         self.expire(connection)?;
         let command = request.method == ExecuteCommand::METHOD;
         let id = request.id;
-        if self.scheduler.pending.contains_key(&id) || self.administrations.contains_key(&id) {
+        if self.scheduler.pending().contains_key(&id) || self.administrations.contains_key(&id) {
             // A duplicate live ID is invalid. Retire it once, allowing later reuse
             // without a completed old ticket answering a new request.
             if command {
@@ -651,7 +643,7 @@ impl<P: TranslationProvider> Server<P> {
             && document.selection(range).is_ok_and(|text| {
                 text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
             })
-            && !self.scheduler.translations.values().any(|work| {
+            && !self.scheduler.translations().values().any(|work| {
                 work.target.uri == params.text_document.uri
                     && work.target.range == range
                     && work.serves(Output::Range, &self.settings)
@@ -815,7 +807,7 @@ impl<P: TranslationProvider> Server<P> {
                 "window/workDoneProgress/cancel" => {
                     let params: WorkDoneProgressCancelParams = parse(notification.params)?;
                     if self.activity.matches_cancel(&params.token) {
-                        self.cancel_activity(connection)?;
+                        self.cancel_translations(connection)?;
                     }
                 }
                 "$/cancelRequest" => {
@@ -841,9 +833,7 @@ impl<P: TranslationProvider> Server<P> {
 impl<P: TranslationProvider> Drop for Server<P> {
     fn drop(&mut self) {
         self.activity.shutdown();
-        for work in self.scheduler.translations.values() {
-            let _ = work.deadline.send(None);
-        }
+        self.scheduler.stop_all();
         for work in self.administrations.values() {
             let _ = work.stop.send(None);
         }

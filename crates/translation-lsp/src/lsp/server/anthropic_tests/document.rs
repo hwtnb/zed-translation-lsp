@@ -236,7 +236,7 @@ async fn completed_results_stay_with_the_output_that_requested_them() {
             // The other output's completed result does not answer this request.
             fixture.reply(Reply::stream(completed(text(command))));
             translate(&mut server, &connection, command, &target);
-            assert_eq!(server.scheduler.translations.len(), 1);
+            assert_eq!(server.scheduler.translations().len(), 1);
             server
                 .finish(&connection, next(&completions).await)
                 .unwrap();
@@ -267,7 +267,7 @@ async fn completed_results_stay_with_the_output_that_requested_them() {
                 to_value(&target).unwrap(),
             );
         }
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.translations().is_empty());
         assert_eq!(fixture.calls(), 2);
         let messages: Vec<_> = client.receiver.try_iter().collect();
         assert_eq!(opened(&messages), [TAB_TEXT]);
@@ -294,7 +294,7 @@ async fn a_tab_and_a_range_for_one_target_run_as_two_operations() {
     let other = target(&server, &uri, line(1));
     let waiting = translate(&mut server, &connection, COMMAND, &other);
     assert_eq!(held.dispatched(), [range, tab]);
-    assert!(server.scheduler.translations[&waiting].started.is_none());
+    assert!(server.scheduler.translations()[&waiting].started.is_none());
 
     // A repeated request joins the operation of its own output.
     assert_eq!(translate(&mut server, &connection, COMMAND, &shared), range);
@@ -303,7 +303,7 @@ async fn a_tab_and_a_range_for_one_target_run_as_two_operations() {
         tab
     );
     assert_eq!(server.scheduler.admitted(), 3);
-    let work = &server.scheduler.translations;
+    let work = &server.scheduler.translations();
     assert!(work[&range].owners.manual() && !work[&range].owners.tab());
     assert!(work[&tab].owners.tab() && !work[&tab].owners.range_output());
     assert_eq!(fixture.calls(), 0);
@@ -314,7 +314,7 @@ async fn a_tab_and_a_range_for_one_target_run_as_two_operations() {
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.scheduler.translations.contains_key(&tab));
+    assert!(server.scheduler.translations().contains_key(&tab));
     assert_eq!(held.dispatched(), [tab, waiting]);
     let messages: Vec<_> = client.receiver.try_iter().collect();
     assert!(opened(&messages).is_empty());
@@ -338,7 +338,7 @@ async fn a_tab_and_a_range_for_one_target_run_as_two_operations() {
     assert_eq!(
         server
             .scheduler
-            .translations
+            .translations()
             .keys()
             .copied()
             .collect::<Vec<_>>(),
@@ -385,7 +385,7 @@ async fn each_operation_of_one_target_has_its_own_cancel_action() {
         assert_eq!(
             server
                 .scheduler
-                .translations
+                .translations()
                 .keys()
                 .copied()
                 .collect::<Vec<_>>(),
@@ -440,7 +440,7 @@ async fn each_operation_of_one_target_has_its_own_cancel_action() {
                     .is_some()
             );
         }
-        assert!(server.scheduler.translations.is_empty());
+        assert!(server.scheduler.translations().is_empty());
     }
 }
 
@@ -529,7 +529,7 @@ async fn automatic_selection_does_not_take_a_tab_operation_for_its_own() {
         let automatic = server.range_ticket(&selected).unwrap();
         assert_ne!(automatic, tab);
         assert_eq!(server.adjusting_ticket, Some(automatic));
-        let work = &server.scheduler.translations;
+        let work = &server.scheduler.translations();
         assert_eq!(work.len(), 2);
         assert!(work[&automatic].owners.selection() && !work[&automatic].owners.tab());
         assert!(work[&tab].owners.tab() && !work[&tab].owners.range_output());
@@ -574,7 +574,7 @@ async fn a_failed_range_can_be_retried_while_its_tab_is_in_flight() {
         );
         let range = server.range_ticket(&failed).unwrap();
         assert_ne!(range, tab);
-        assert_eq!(server.scheduler.translations.len(), 2);
+        assert_eq!(server.scheduler.translations().len(), 2);
         assert!(
             !titles(&actions(&mut server, &uri, cursor))
                 .contains(&"Retry translation of lines 1-1")

@@ -103,7 +103,7 @@ impl<P: TranslationProvider> Server<P> {
         }
         match command {
             ServerCommand::CancelAll => {
-                self.cancel_activity(connection)?;
+                self.cancel_translations(connection)?;
                 Ok(Some(Value::Null))
             }
             ServerCommand::Cancel(ticket) => {

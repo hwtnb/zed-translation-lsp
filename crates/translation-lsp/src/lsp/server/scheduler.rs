@@ -136,14 +136,146 @@ impl Translation {
 
 #[derive(Default)]
 pub(super) struct Scheduler {
-    pub pending: HashMap<RequestId, Pending>,
-    pub translations: HashMap<u64, Translation>,
+    /// Hover requests waiting for a translation.
+    pending: HashMap<RequestId, Pending>,
+    translations: HashMap<u64, Translation>,
     /// Slots keep their dispatch category; adding another output does not start another operation.
     /// A canceled job occupies its slot until the worker acknowledges termination.
     dispatched: HashMap<u64, bool>,
 }
 
 impl Scheduler {
+    pub fn translations(&self) -> &HashMap<u64, Translation> {
+        &self.translations
+    }
+
+    pub fn pending(&self) -> &HashMap<RequestId, Pending> {
+        &self.pending
+    }
+
+    pub fn has_waiters(&self, ticket: u64) -> bool {
+        self.pending
+            .values()
+            .any(|pending| pending.ticket == ticket)
+    }
+
+    /// Gives a queued translation the admission generation of a later request.
+    pub fn set_generation(&mut self, ticket: u64, fresh: u64) {
+        if let Some(Task::Translation { generation, .. }) = self
+            .translations
+            .get_mut(&ticket)
+            .and_then(|work| work.task.as_mut())
+        {
+            *generation = fresh;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_waiter_deadline(&mut self, id: &RequestId, deadline: Instant) {
+        self.pending.get_mut(id).unwrap().deadline = deadline;
+    }
+
+    pub fn mark_running(&mut self, ticket: u64) {
+        if let Some(work) = self.translations.get_mut(&ticket) {
+            work.phase = Phase::Running;
+        }
+    }
+
+    /// The earliest deadline of a waiter or of a running translation.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.pending
+            .values()
+            .map(|pending| pending.deadline)
+            .chain(
+                self.translations
+                    .values()
+                    .filter_map(Translation::execution_deadline),
+            )
+            .min()
+    }
+
+    /// Removes the waiters of `ticket`, which the caller answers.
+    pub fn take_waiters(&mut self, ticket: u64) -> Vec<(RequestId, Pending)> {
+        let ids: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.ticket == ticket)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .map(|id| {
+                let pending = self.pending.remove(&id).unwrap();
+                (id, pending)
+            })
+            .collect()
+    }
+
+    /// Removes one waiter. Its translation stops when nothing else keeps it.
+    pub fn remove_waiter(&mut self, id: &RequestId) -> bool {
+        let Some(pending) = self.pending.remove(id) else {
+            return false;
+        };
+        self.update_deadline(pending.ticket);
+        true
+    }
+
+    /// Removes the waiters whose deadline passed, which the caller answers.
+    pub fn take_expired_waiters(&mut self, now: Instant) -> Vec<RequestId> {
+        let ids: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.remove_waiter(id);
+        }
+        ids
+    }
+
+    /// Stops and removes the translations whose execution deadline passed.
+    pub fn take_expired(&mut self, now: Instant) -> Vec<(u64, Translation)> {
+        let tickets: Vec<_> = self
+            .translations
+            .iter()
+            .filter(|(_, work)| {
+                work.execution_deadline()
+                    .is_some_and(|deadline| deadline <= now)
+            })
+            .map(|(&ticket, _)| ticket)
+            .collect();
+        tickets
+            .into_iter()
+            .map(|ticket| (ticket, self.remove(ticket).unwrap()))
+            .collect()
+    }
+
+    /// Stops every translation and removes every waiter, which the caller
+    /// answers.
+    pub fn stop_all(&mut self) -> Vec<RequestId> {
+        for (_, work) in self.translations.drain() {
+            work.deadline.send_replace(None);
+        }
+        self.pending.drain().map(|(id, _)| id).collect()
+    }
+
+    /// Stops the translations of `uri` and removes their waiters, which the
+    /// caller answers.
+    pub fn stop_document(&mut self, uri: &Uri) -> Vec<RequestId> {
+        let tickets: Vec<_> = self
+            .translations
+            .iter()
+            .filter(|(_, work)| &work.target.uri == uri)
+            .map(|(&ticket, _)| ticket)
+            .collect();
+        let mut waiters = Vec::new();
+        for ticket in tickets {
+            waiters.extend(self.take_waiters(ticket).into_iter().map(|(id, _)| id));
+            self.remove(ticket);
+        }
+        waiters
+    }
+
     /// The operation a request for `output` joins.
     pub fn ticket(
         &self,
