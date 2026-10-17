@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
-use super::{ChatGptProvider, ModelOptions, auth::AccountKey, test_support::Fixture};
+use super::{ChatGptProvider, auth::AccountKey, test_support::Fixture};
 use crate::{
-    config::{ChatgptSpeed, ReasoningEffort},
+    config::{ChatgptModel, ChatgptSpeed, ReasoningEffort},
     providers::{
         Intent, Output, OutputOptions, TranslationProvider,
         error::{Error, ErrorKind},
@@ -12,8 +12,8 @@ use crate::{
 const RANGE_MODEL: &str = "synthetic-range-model";
 const TAB_MODEL: &str = "synthetic-tab-model";
 
-fn options(model: &str, effort: ReasoningEffort, speed: Option<ChatgptSpeed>) -> ModelOptions {
-    ModelOptions {
+fn options(model: &str, effort: ReasoningEffort, speed: Option<ChatgptSpeed>) -> ChatgptModel {
+    ChatgptModel {
         model: model.into(),
         effort,
         speed,
@@ -22,8 +22,8 @@ fn options(model: &str, effort: ReasoningEffort, speed: Option<ChatgptSpeed>) ->
 
 async fn provider(
     fixture: &Fixture,
-    range: ModelOptions,
-    document: Option<ModelOptions>,
+    range: ChatgptModel,
+    document: Option<ChatgptModel>,
 ) -> (ChatGptProvider, AccountKey) {
     let auth = fixture.auth();
     fixture.connected(&auth, 3600).await;

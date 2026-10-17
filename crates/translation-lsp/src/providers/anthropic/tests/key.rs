@@ -10,12 +10,12 @@ use tokio::sync::Semaphore;
 
 use super::{PAUSED, automatic, translate};
 use crate::{
-    config::{AnthropicEffort, limits::TranslationLimits},
+    config::{AnthropicEffort, AnthropicModel, limits::TranslationLimits},
     providers::{
         AccountChange, AuthUiState, Intent, Interaction, Output, OutputOptions,
         TranslationProvider,
         anthropic::{
-            AnthropicProvider, ModelOptions, REMOVE, SAVE,
+            AnthropicProvider, REMOVE, SAVE,
             key::{KeyFile, terminal},
             test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal, completed},
         },
@@ -890,10 +890,10 @@ async fn removing_refuses_what_is_not_a_private_directory_with_a_regular_file() 
 fn production(directory: &Path) -> AnthropicProvider {
     AnthropicProvider::new(
         OutputOptions::new(
-            ModelOptions {
+            AnthropicModel {
                 model: "claude-haiku-5-5".into(),
                 effort: AnthropicEffort::Low,
-                thinking: false,
+                thinking: Some(false),
                 speed: None,
             },
             None,

@@ -37,7 +37,7 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         speed: Option<ChatgptSpeed>,
         #[serde(default, deserialize_with = "explicit")]
-        document: Option<ChatgptDocument>,
+        document: Option<ChatgptModel>,
     },
     Anthropic {
         #[serde(default = "default_anthropic_model")]
@@ -50,16 +50,16 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         speed: Option<AnthropicSpeed>,
         #[serde(default, deserialize_with = "explicit")]
-        document: Option<AnthropicDocument>,
+        document: Option<AnthropicModel>,
     },
 }
 
-/// `provider.document`: the model and options for translations opened in a
-/// tab. An omitted field takes its own default here and inherits nothing from
-/// the surrounding provider settings.
+/// The model and options that one output sends. `provider.document` is one of
+/// these for translations opened in a tab: an omitted field takes its own
+/// default there and inherits nothing from the surrounding provider settings.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChatgptDocument {
+pub(crate) struct ChatgptModel {
     pub model: String,
     #[serde(default)]
     pub effort: ReasoningEffort,
@@ -67,12 +67,14 @@ pub(crate) struct ChatgptDocument {
     pub speed: Option<ChatgptSpeed>,
 }
 
+/// The Anthropic counterpart of [`ChatgptModel`].
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AnthropicDocument {
+pub(crate) struct AnthropicModel {
     pub model: String,
     #[serde(default)]
     pub effort: AnthropicEffort,
+    /// `None` when omitted. `anthropic_thinking` chooses the value to send.
     #[serde(default, deserialize_with = "explicit")]
     pub thinking: Option<bool>,
     #[serde(default, deserialize_with = "explicit")]

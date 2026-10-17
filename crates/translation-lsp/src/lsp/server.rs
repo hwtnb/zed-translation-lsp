@@ -45,16 +45,14 @@ use tokio::sync::watch;
 
 use crate::{
     config::{
-        AnthropicDocument, AnthropicEffort, AnthropicSpeed, ChatgptDocument, ChatgptSpeed,
-        ProviderSettings, ReasoningEffort, Settings, anthropic_thinking, features::Feature,
-        language,
+        AnthropicModel, ChatgptModel, ProviderSettings, Settings, features::Feature, language,
     },
     language::Language,
     providers::{
         AccountChange, AuthUiState, Interaction, Output, OutputOptions, Translated,
         TranslationProvider,
-        anthropic::{self, AnthropicProvider},
-        chatgpt::{self, ChatGptProvider},
+        anthropic::AnthropicProvider,
+        chatgpt::ChatGptProvider,
         credential_directory,
         error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
         mock::{MockOptions, MockProvider},
@@ -188,7 +186,14 @@ fn serve(
             document,
         } => {
             let provider = ChatGptProvider::new(
-                chatgpt_options(model, effort, speed, document),
+                OutputOptions::new(
+                    ChatgptModel {
+                        model,
+                        effort,
+                        speed,
+                    },
+                    document,
+                ),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
             )?;
@@ -202,7 +207,15 @@ fn serve(
             document,
         } => {
             let provider = AnthropicProvider::new(
-                anthropic_options(model, effort, thinking, speed, document),
+                OutputOptions::new(
+                    AnthropicModel {
+                        model,
+                        effort,
+                        thinking,
+                        speed,
+                    },
+                    document,
+                ),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
                 key_directory,
@@ -210,56 +223,6 @@ fn serve(
             serve_initialized(connection, settings, ui, provider)
         }
     }
-}
-
-/// What each output sends. A value omitted under `provider.document` takes its
-/// own default for tabs, whatever the range sends.
-fn chatgpt_options(
-    model: String,
-    effort: ReasoningEffort,
-    speed: Option<ChatgptSpeed>,
-    document: Option<ChatgptDocument>,
-) -> OutputOptions<chatgpt::ModelOptions> {
-    OutputOptions::new(
-        chatgpt::ModelOptions {
-            model,
-            effort,
-            speed,
-        },
-        document.map(|document| chatgpt::ModelOptions {
-            model: document.model,
-            effort: document.effort,
-            speed: document.speed,
-        }),
-    )
-}
-
-/// What each output sends. The tab's thinking follows the tab's own model and
-/// effort, like every value under `provider.document`.
-fn anthropic_options(
-    model: String,
-    effort: AnthropicEffort,
-    thinking: Option<bool>,
-    speed: Option<AnthropicSpeed>,
-    document: Option<AnthropicDocument>,
-) -> OutputOptions<anthropic::ModelOptions> {
-    let options = |model: String, effort, thinking, speed| anthropic::ModelOptions {
-        thinking: anthropic_thinking(&model, effort, thinking),
-        model,
-        effort,
-        speed,
-    };
-    OutputOptions::new(
-        options(model, effort, thinking, speed),
-        document.map(|document| {
-            options(
-                document.model,
-                document.effort,
-                document.thinking,
-                document.speed,
-            )
-        }),
-    )
 }
 
 pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {

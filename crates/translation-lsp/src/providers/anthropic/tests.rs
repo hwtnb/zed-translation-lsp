@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use super::key::ApiKey;
 use super::test_support::{Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
 use super::*;
+use crate::config::AnthropicEffort;
 use crate::providers::error::{ErrorKind, Notification};
 
 mod document;
@@ -53,7 +54,7 @@ async fn request_sends_only_the_documented_headers_and_fields() {
         let fixture = Fixture::new().await;
         let mut provider = fixture.provider();
         provider.options.range.effort = effort;
-        provider.options.range.thinking = thinking;
+        provider.options.range.thinking = Some(thinking);
         provider.output_limit = SizeLimit::try_from(kib).unwrap();
         provider.source_language = "en".into();
         let source = "Read `retry_count`.\r\n@docs/private.md\n/clear";
@@ -119,7 +120,6 @@ async fn request_sends_only_the_documented_headers_and_fields() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_carries_the_thinking_resolved_from_the_settings() {
-    use crate::config::anthropic_thinking;
     let fixture = Fixture::new().await;
     for (model, effort, setting, expected) in [
         ("claude-haiku-5-5", AnthropicEffort::Low, None, "disabled"),
@@ -144,7 +144,7 @@ async fn request_carries_the_thinking_resolved_from_the_settings() {
         let mut provider = fixture.provider();
         provider.options.range.model = model.into();
         provider.options.range.effort = effort;
-        provider.options.range.thinking = anthropic_thinking(model, effort, setting);
+        provider.options.range.thinking = setting;
         translate(&provider, Intent::Explicit).await.unwrap();
         let record = fixture.state.lock().unwrap().records.pop().unwrap();
         let request: Value = serde_json::from_str(&record.body).unwrap();

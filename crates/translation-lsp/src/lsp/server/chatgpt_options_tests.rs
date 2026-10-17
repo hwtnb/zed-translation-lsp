@@ -1,4 +1,4 @@
-//! The settings decide what each output sends through `chatgpt_options`.
+//! The settings decide what each output sends.
 use serde_json::{Value, json};
 
 use super::*;
@@ -29,7 +29,14 @@ async fn sent(provider: Value) -> (Value, Value) {
         format!("{}/v1", fixture.base),
         "replaced-by-the-settings".into(),
     )
-    .with_options(chatgpt_options(model, effort, speed, document));
+    .with_options(OutputOptions::new(
+        ChatgptModel {
+            model,
+            effort,
+            speed,
+        },
+        document,
+    ));
     let context = provider.context().unwrap();
     for output in [Output::Range, Output::Document] {
         provider

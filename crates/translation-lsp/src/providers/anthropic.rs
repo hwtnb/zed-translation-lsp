@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use key::{ApiKey, KeyFile, KeyId, terminal};
 use serde_json::json;
 
-use crate::config::{AnthropicEffort, AnthropicSpeed, limits::SizeLimit};
+#[cfg(test)]
+use crate::config::AnthropicEffort;
+use crate::config::{AnthropicModel, anthropic_thinking, limits::SizeLimit};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
@@ -80,21 +82,12 @@ enum Terminal {
     Synthetic(test_support::Terminal),
 }
 
-/// The model and options one output sends.
-#[derive(Clone)]
-pub(crate) struct ModelOptions {
-    pub model: String,
-    pub effort: AnthropicEffort,
-    pub thinking: bool,
-    pub speed: Option<AnthropicSpeed>,
-}
-
 #[derive(Clone)]
 pub(crate) struct AnthropicProvider {
     client: reqwest::Client,
     key: KeyFile,
     terminal: Terminal,
-    options: OutputOptions<ModelOptions>,
+    options: OutputOptions<AnthropicModel>,
     source_language: String,
     output_limit: SizeLimit,
     api: String,
@@ -104,7 +97,7 @@ pub(crate) struct AnthropicProvider {
 impl AnthropicProvider {
     /// `key_directory` is the credential directory, where the key file is.
     pub fn new(
-        options: OutputOptions<ModelOptions>,
+        options: OutputOptions<AnthropicModel>,
         source_language: String,
         output_limit: SizeLimit,
         key_directory: Result<PathBuf, CredentialError>,
@@ -131,10 +124,10 @@ impl AnthropicProvider {
             terminal: Terminal::Synthetic(test_support::Terminal::default()),
             ..Self::new(
                 OutputOptions::new(
-                    ModelOptions {
+                    AnthropicModel {
                         model: "claude-haiku-5-5".into(),
                         effort: AnthropicEffort::Low,
-                        thinking: false,
+                        thinking: None,
                         speed: None,
                     },
                     None,
@@ -154,7 +147,7 @@ impl AnthropicProvider {
     }
 
     #[cfg(test)]
-    pub fn with_options(mut self, options: OutputOptions<ModelOptions>) -> Self {
+    pub fn with_options(mut self, options: OutputOptions<AnthropicModel>) -> Self {
         self.options = options;
         self
     }
@@ -265,7 +258,11 @@ impl TranslationProvider for AnthropicProvider {
             "system": prompt::instructions(target_language, &self.source_language),
             "messages": [{"role": "user", "content": text}],
             "output_config": {"effort": options.effort},
-            "thinking": {"type": if options.thinking { "adaptive" } else { "disabled" }},
+            "thinking": {"type": if anthropic_thinking(&options.model, options.effort, options.thinking) {
+                "adaptive"
+            } else {
+                "disabled"
+            }},
         });
         if let Some(speed) = options.speed {
             request["speed"] = json!(speed);

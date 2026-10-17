@@ -44,9 +44,15 @@ fn editor(fixture: &Fixture, settings: Settings) -> Editor {
     else {
         panic!("Expected Anthropic settings")
     };
-    let provider = fixture
-        .provider()
-        .with_options(anthropic_options(model, effort, thinking, speed, document));
+    let provider = fixture.provider().with_options(OutputOptions::new(
+        AnthropicModel {
+            model,
+            effort,
+            thinking,
+            speed,
+        },
+        document,
+    ));
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
     let server = Server::configured(

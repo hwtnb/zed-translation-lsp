@@ -2,11 +2,11 @@ use serde_json::{Value, json};
 
 use super::{PAUSED, SOURCE, automatic};
 use crate::{
-    config::{AnthropicEffort, AnthropicSpeed},
+    config::{AnthropicEffort, AnthropicModel, AnthropicSpeed},
     providers::{
         Intent, Output, OutputOptions, TranslationProvider,
         anthropic::{
-            AnthropicProvider, ModelOptions,
+            AnthropicProvider,
             test_support::{Fixture, Reply},
         },
         error::{Error, ErrorKind},
@@ -16,20 +16,20 @@ use crate::{
 const RANGE_MODEL: &str = "claude-haiku-5-5";
 const TAB_MODEL: &str = "claude-sonnet-5-5";
 
-fn range() -> ModelOptions {
-    ModelOptions {
+fn range() -> AnthropicModel {
+    AnthropicModel {
         model: RANGE_MODEL.into(),
         effort: AnthropicEffort::Medium,
-        thinking: false,
+        thinking: Some(false),
         speed: None,
     }
 }
 
-fn tab() -> ModelOptions {
-    ModelOptions {
+fn tab() -> AnthropicModel {
+    AnthropicModel {
         model: TAB_MODEL.into(),
         effort: AnthropicEffort::Low,
-        thinking: true,
+        thinking: Some(true),
         speed: None,
     }
 }
@@ -105,11 +105,11 @@ async fn each_output_sends_its_own_speed_with_the_beta_header() {
     ] {
         let fixture = Fixture::new().await;
         let provider = fixture.provider().with_options(OutputOptions::new(
-            ModelOptions {
+            AnthropicModel {
                 speed: range_speed,
                 ..range()
             },
-            Some(ModelOptions {
+            Some(AnthropicModel {
                 speed: tab_speed,
                 ..tab()
             }),
