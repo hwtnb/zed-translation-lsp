@@ -12,7 +12,7 @@ Zed controls Hover placement and width. The extension cannot guarantee placement
 
 ## Markdown selection
 
-With ChatGPT connected and plan use enabled, or with the Anthropic provider selected, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
+With ChatGPT connected and plan use enabled, or with an Anthropic API key saved, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
 
 Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action.
 
@@ -33,6 +33,8 @@ Markdown translations open as temporary `.md` files. Run `markdown: open preview
 Use **Save As** to keep a translation before restarting the language server or closing Zed. The server removes its temporary files on normal shutdown; an abnormal exit can leave them in the system temporary directory. Saved copies are yours to keep.
 
 Relative links and images resolve from the temporary file location. To use the original relative paths, save the translation beside the source.
+
+A translation is model output. Text in the source that addresses the model can make the translation contain links and images that the source does not have. `markdown: open preview` loads images from their `http` and `https` URLs as it renders them, so the server named in such a URL can receive any text of the translation placed in the URL. When someone else wrote the source, read the translation tab as text before opening the preview.
 
 Reopening the same cached tab translation reuses its temporary file and focuses that document. If the file was deleted or its saved contents changed, the server creates a fresh preview without overwriting it. A newly translated result gets a separate file. Temporary previews are still removed on server exit; copies saved with Save As are preserved.
 

@@ -95,7 +95,7 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 | Operation | How |
 | --- | --- |
 | Comment Hover | Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. |
-| Markdown selection | With ChatGPT connected and plan use enabled, or with the Anthropic provider selected, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
+| Markdown selection | With ChatGPT connected and plan use enabled, or with an Anthropic API key saved, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
 | `Translate selection to …` | To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. |
 | `… and open in tab` | In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. |
 | Cancel | To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. `Cancel all translations` stops all translation work without canceling an account menu. |
