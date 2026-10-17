@@ -106,6 +106,14 @@ struct Administration {
     context: Option<Context>,
 }
 
+/// The problem shown in the status, with the translation it came from, so that
+/// it is cleared when that translation's document or account changes.
+struct ShownProblem {
+    problem: Problem,
+    target: TranslationTarget,
+    context: Option<Context>,
+}
+
 struct Server<P: TranslationProvider> {
     provider: P,
     settings: Settings,
@@ -113,7 +121,7 @@ struct Server<P: TranslationProvider> {
     activity: Activity,
     preview_files: PreviewFiles,
     cache: Cache,
-    problem_target: Option<(TranslationTarget, Option<Context>)>,
+    problem: Option<ShownProblem>,
     administrations: HashMap<RequestId, Administration>,
     documents: HashMap<Uri, Document>,
     scheduler: Scheduler,
@@ -430,7 +438,7 @@ impl<P: TranslationProvider> Server<P> {
             ui,
             activity,
             preview_files: PreviewFiles::default(),
-            problem_target: None,
+            problem: None,
             administrations: HashMap::new(),
             documents: HashMap::new(),
             scheduler: Scheduler::default(),
@@ -446,8 +454,7 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn clear_problem(&mut self) {
-        self.problem_target = None;
-        self.activity.clear_problem();
+        self.problem = None;
     }
 
     fn target_is_current(&self, target: &TranslationTarget) -> bool {
@@ -462,10 +469,12 @@ impl<P: TranslationProvider> Server<P> {
         if !self.ui.capabilities.work_done_progress && !self.ui.capabilities.server_status {
             return;
         }
-        if self
-            .problem_target
-            .as_ref()
-            .is_some_and(|(target, previous)| {
+        if self.problem.as_ref().is_some_and(
+            |ShownProblem {
+                 target,
+                 context: previous,
+                 ..
+             }| {
                 !self.target_is_current(target)
                     || self.provider.context().map_or_else(
                         |_| {
@@ -477,8 +486,8 @@ impl<P: TranslationProvider> Server<P> {
                         },
                         |current| previous.as_ref() != Some(&current),
                     )
-            })
-        {
+            },
+        ) {
             self.clear_problem();
         }
         let mut activity = Work::default();
@@ -494,7 +503,8 @@ impl<P: TranslationProvider> Server<P> {
                 && self.target_is_current(&selection.target)
                 && self.range_ticket(&selection.target).is_none()
         });
-        self.activity.publish(activity, Instant::now());
+        let problem = self.problem.as_ref().map(|shown| &shown.problem);
+        self.activity.publish(activity, problem, Instant::now());
     }
 
     fn record_problem(&mut self, work: &Translation, problem: Problem) {
@@ -507,8 +517,11 @@ impl<P: TranslationProvider> Server<P> {
                 .as_ref()
                 .is_none_or(|current| work.context == *current)
         {
-            self.problem_target = Some((work.target.clone(), context));
-            self.activity.problem(problem);
+            self.problem = Some(ShownProblem {
+                problem,
+                target: work.target.clone(),
+                context,
+            });
         }
     }
 

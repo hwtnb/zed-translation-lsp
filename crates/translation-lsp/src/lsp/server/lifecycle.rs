@@ -78,9 +78,9 @@ impl<P: TranslationProvider> Server<P> {
             self.previous_selection = None;
         }
         if self
-            .problem_target
+            .problem
             .as_ref()
-            .is_some_and(|(target, _)| &target.uri == uri)
+            .is_some_and(|shown| shown.target.uri == *uri)
         {
             self.clear_problem();
         }

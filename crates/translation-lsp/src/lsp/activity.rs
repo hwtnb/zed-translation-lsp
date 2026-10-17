@@ -70,7 +70,6 @@ pub(super) struct Activity {
     progress: Progress,
     generation: u64,
     work: Work,
-    problem: Option<Problem>,
     last_status: Option<Value>,
 }
 
@@ -82,17 +81,8 @@ impl Activity {
             progress: Progress::Idle,
             generation: 0,
             work: Work::default(),
-            problem: None,
             last_status: None,
         }
-    }
-
-    pub fn clear_problem(&mut self) {
-        self.problem = None;
-    }
-
-    pub fn problem(&mut self, status: Problem) {
-        self.problem = Some(status);
     }
 
     pub fn response(&mut self, response: &Response) -> bool {
@@ -148,7 +138,8 @@ impl Activity {
         }
     }
 
-    pub fn publish(&mut self, work: Work, now: Instant) {
+    /// Shows the work and the problem, if any, as progress and status.
+    pub fn publish(&mut self, work: Work, problem: Option<&Problem>, now: Instant) {
         if work.busy() && !self.work.busy() {
             self.generation += 1;
         }
@@ -219,7 +210,7 @@ impl Activity {
                 generation: self.generation,
             };
         }
-        self.publish_status();
+        self.publish_status(problem);
     }
 
     pub fn shutdown(&mut self) {
@@ -235,8 +226,7 @@ impl Activity {
             Progress::Idle => (),
         }
         self.work = Work::default();
-        self.clear_problem();
-        self.publish_status();
+        self.publish_status(None);
     }
 
     fn begin(&self, token: &ProgressToken, message: Option<&str>) {
@@ -251,11 +241,11 @@ impl Activity {
         self.notify("$/progress", json!({"token":token,"value":{"kind":"end"}}));
     }
 
-    fn publish_status(&mut self) {
+    fn publish_status(&mut self, problem: Option<&Problem>) {
         if !self.capabilities.server_status {
             return;
         }
-        let params = match &self.problem {
+        let params = match problem {
             Some(Problem::Failed(message)) => Some(json!({
                 "health":"warning", "quiescent":!self.work.busy(),
                 "message":message
@@ -329,6 +319,7 @@ mod tests {
                 queued: 2,
                 ..Default::default()
             },
+            None,
             now,
         );
         let request = create(&output);
@@ -340,6 +331,7 @@ mod tests {
                 queued: 1,
                 ..Default::default()
             },
+            None,
             now,
         );
         let begin = notification(&output, "$/progress");
@@ -356,6 +348,7 @@ mod tests {
                 running: 1,
                 ..Default::default()
             },
+            None,
             now + Duration::from_millis(20),
         );
         assert!(output.is_empty());
@@ -366,6 +359,7 @@ mod tests {
                 queued: 2,
                 ..Default::default()
             },
+            None,
             now + REPORT_INTERVAL,
         );
         let report = notification(&output, "$/progress");
@@ -380,13 +374,14 @@ mod tests {
                 running: 1,
                 ..Default::default()
             },
+            None,
             now + REPORT_INTERVAL * 2,
         );
         assert_eq!(
             notification(&output, "$/progress")["value"]["message"],
             "Translating: 1, queued: 0"
         );
-        activity.publish(Work::default(), now + REPORT_INTERVAL * 2);
+        activity.publish(Work::default(), None, now + REPORT_INTERVAL * 2);
         assert_eq!(
             notification(&output, "$/progress"),
             json!({
@@ -405,15 +400,15 @@ mod tests {
             queued: 1,
             ..Default::default()
         };
-        activity.publish(queued, now);
+        activity.publish(queued, None, now);
         let old = create(&output);
-        activity.publish(Work::default(), now);
-        activity.publish(queued, now);
+        activity.publish(Work::default(), None, now);
+        activity.publish(queued, None, now);
         assert!(output.is_empty(), "At most one pending create");
         let old_token: ProgressToken = serde_json::from_value(old.params["token"].clone()).unwrap();
         assert!(!activity.matches_cancel(&old_token));
         acknowledge(&mut activity, &old);
-        activity.publish(queued, now);
+        activity.publish(queued, None, now);
         let begin = notification(&output, "$/progress");
         assert_eq!(begin["token"], old.params["token"]);
         assert!(begin["value"].get("message").is_none());
@@ -422,7 +417,7 @@ mod tests {
         assert_ne!(current.params["token"], old.params["token"]);
         assert!(!activity.response(&Response::new_ok(old.id, Value::Null)));
         acknowledge(&mut activity, &current);
-        activity.publish(queued, now);
+        activity.publish(queued, None, now);
         assert_eq!(
             notification(&output, "$/progress")["value"]["message"],
             "Queued: 1"
@@ -438,15 +433,15 @@ mod tests {
             running: 1,
             ..Default::default()
         };
-        activity.publish(work, now);
+        activity.publish(work, None, now);
         let request = create(&output);
         assert!(activity.response(&Response::new_err(request.id, -32601, "unsupported".into())));
-        activity.publish(work, now);
-        activity.publish(Work::default(), now);
-        activity.publish(work, now);
+        activity.publish(work, None, now);
+        activity.publish(Work::default(), None, now);
+        activity.publish(work, None, now);
         assert!(output.is_empty());
         let (mut activity, output) = fixture(true, false);
-        activity.publish(work, now);
+        activity.publish(work, None, now);
         let request = create(&output);
         activity.shutdown();
         assert_eq!(
@@ -462,10 +457,10 @@ mod tests {
         for (progress, status) in [(false, false), (false, true), (true, false), (true, true)] {
             let (mut activity, output) = fixture(progress, status);
             let now = Instant::now();
-            activity.publish(Work::default(), now);
+            activity.publish(Work::default(), None, now);
             assert!(output.is_empty(), "Healthy idle is silent");
-            activity.problem(Problem::Failed("Translation response was rejected.".into()));
-            activity.publish(Work::default(), now);
+            let problem = Problem::Failed("Translation response was rejected.".into());
+            activity.publish(Work::default(), Some(&problem), now);
             if status {
                 assert_eq!(
                     notification(&output, "experimental/serverStatus"),
@@ -474,17 +469,17 @@ mod tests {
                     })
                 );
             }
-            activity.publish(Work::default(), now);
+            activity.publish(Work::default(), Some(&problem), now);
             assert!(
                 output.is_empty(),
                 "Repeated problem does not flood notifications"
             );
-            activity.clear_problem();
             activity.publish(
                 Work {
                     waiting: true,
                     ..Default::default()
                 },
+                None,
                 now,
             );
             if progress {
@@ -504,6 +499,7 @@ mod tests {
                     waiting: true,
                     ..Default::default()
                 },
+                None,
                 now,
             );
             if progress {
