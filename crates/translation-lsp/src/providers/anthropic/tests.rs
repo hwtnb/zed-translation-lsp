@@ -14,6 +14,22 @@ mod response;
 const SOURCE: &str = "Private source sentence.";
 const PAUSED: &str = "Automatic translation is paused";
 
+#[test]
+fn range_max_tokens_grow_with_the_source_up_to_the_output_limit() {
+    let limit = SizeLimit::try_from(4096).unwrap();
+    for (bytes, expected) in [(0, 16_384), (200, 17_184), (4096, 32_768), (11_904, 64_000)] {
+        let source = "a".repeat(bytes);
+        assert_eq!(
+            max_tokens(Output::Range, &source, limit),
+            expected,
+            "{bytes}"
+        );
+        assert_eq!(max_tokens(Output::Document, &source, limit), 64_000);
+    }
+    let small = SizeLimit::try_from(8).unwrap();
+    assert_eq!(max_tokens(Output::Range, "", small), 8192);
+}
+
 async fn translate(provider: &AnthropicProvider, intent: Intent) -> Result<String, Error> {
     provider
         .translate(intent, Output::Range, SOURCE, "ja", provider.context()?)
@@ -27,11 +43,12 @@ fn automatic(provider: &AnthropicProvider) -> Result<u64, Error> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_sends_only_the_documented_headers_and_fields() {
-    for (effort, thinking, kib, max_tokens) in [
-        (AnthropicEffort::Low, false, 4096, 64_000),
-        (AnthropicEffort::High, false, 1, 1024),
-        (AnthropicEffort::Medium, true, 62, 63_488),
-        (AnthropicEffort::Max, true, 63, 64_000),
+    // The source is 44 bytes, so a range asks for 16,384 + 44 × 4 tokens at most.
+    for (output, effort, thinking, kib, max_tokens) in [
+        (Output::Document, AnthropicEffort::Low, false, 4096, 64_000),
+        (Output::Range, AnthropicEffort::High, false, 1, 1024),
+        (Output::Document, AnthropicEffort::Medium, true, 62, 63_488),
+        (Output::Range, AnthropicEffort::Max, true, 63, 16_560),
     ] {
         let fixture = Fixture::new().await;
         let mut provider = fixture.provider();
@@ -43,7 +60,7 @@ async fn request_sends_only_the_documented_headers_and_fields() {
         let translated = provider
             .translate(
                 Intent::Automatic,
-                Output::Range,
+                output,
                 source,
                 "ja",
                 provider.context().unwrap(),

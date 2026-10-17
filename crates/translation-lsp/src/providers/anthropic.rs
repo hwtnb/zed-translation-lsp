@@ -23,6 +23,11 @@ const VERSION: &str = "2023-06-01";
 /// `speed` is a beta field, so it is sent with this header whatever its value.
 const SPEED_BETA: &str = "fast-mode-2026-02-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
+/// Output tokens a range translation may use besides those that grow with its
+/// source. Thinking counts toward `max_tokens`, so this leaves room for it.
+const RANGE_OUTPUT_ALLOWANCE: usize = 16_384;
+/// Output tokens a range translation may use for each byte of its source.
+const RANGE_OUTPUT_PER_SOURCE_BYTE: usize = 4;
 const SERVICE: Service = Service::Anthropic;
 
 const SAVE: &str = "translation-lsp.save-anthropic-key";
@@ -42,6 +47,20 @@ const COMMANDS: [ProviderCommand; 2] = [
 ];
 const REMOVAL: &str = "Remove the saved Anthropic API key from this computer? The key stays valid until you delete it in the Claude Console.";
 const CONFIRM: &str = "Remove";
+
+/// The `max_tokens` a request asks for. A range translation is also bounded by
+/// the size of its source, so that text in a comment cannot make the model write
+/// at length when the pointer only passes over it.
+fn max_tokens(output: Output, source: &str, output_limit: SizeLimit) -> usize {
+    let limit = MAX_OUTPUT_TOKENS.min(output_limit.bytes());
+    match output {
+        Output::Range => limit.min(
+            RANGE_OUTPUT_ALLOWANCE
+                .saturating_add(source.len().saturating_mul(RANGE_OUTPUT_PER_SOURCE_BYTE)),
+        ),
+        Output::Document => limit,
+    }
+}
 
 fn key_commands(usable: bool) -> Vec<ProviderCommand> {
     let [mut save, remove] = COMMANDS;
@@ -252,7 +271,7 @@ impl TranslationProvider for AnthropicProvider {
         let configured = self.options.configured(output);
         let mut request = json!({
             "model": options.model,
-            "max_tokens": MAX_OUTPUT_TOKENS.min(self.output_limit.bytes()),
+            "max_tokens": max_tokens(output, text, self.output_limit),
             "stream": true,
             "system": prompt::instructions(target_language, &self.source_language),
             "messages": [{"role": "user", "content": text}],
