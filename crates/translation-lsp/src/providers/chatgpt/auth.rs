@@ -21,7 +21,7 @@ use crate::providers::{
 };
 
 use super::{
-    auth_store::{AuthStore, Credentials, Registration, now},
+    auth_store::{AuthState, AuthStore, Credentials, Registration, now},
     http::{Http, response_error},
 };
 
@@ -92,6 +92,34 @@ pub(crate) struct Access {
     pub credentials: Credentials,
 }
 
+/// The selected account as the credential store records it.
+enum Selection {
+    NoStore,
+    NoAccount,
+    OtherIssuer,
+    NoCredentials,
+    PlanDisabled,
+    Ready(AccountKey),
+}
+
+/// The credentials of `expected`, which must still be the selected account with
+/// plan use enabled.
+fn expected_credentials<'a>(
+    state: &'a AuthState,
+    expected: &AccountKey,
+) -> Result<&'a Credentials, Error> {
+    state
+        .registrations
+        .get(&expected.registration)
+        .filter(|registration| {
+            state.active_registration == Some(expected.registration)
+                && AccountKey::for_registration(expected.registration, registration) == *expected
+        })
+        .and_then(|registration| registration.credentials.as_ref())
+        .filter(|credentials| credentials.plan_enabled())
+        .ok_or_else(account_changed)
+}
+
 impl Auth {
     pub fn production(http: Http) -> Result<Self, Error> {
         Ok(Self {
@@ -110,48 +138,51 @@ impl Auth {
         }
     }
 
-    pub fn ui_state(&self) -> AuthUiState {
-        let snapshot = match self.store.snapshot() {
-            Ok(Some(snapshot)) => snapshot,
-            Ok(None) => return AuthUiState::SignedOut,
-            Err(_) => return AuthUiState::Unavailable,
+    fn selection(&self) -> Result<Selection, CredentialError> {
+        let Some(snapshot) = self.store.snapshot()? else {
+            return Ok(Selection::NoStore);
         };
         let Some(id) = snapshot.state.active_registration else {
-            return AuthUiState::SignedOut;
+            return Ok(Selection::NoAccount);
         };
         let registration = &snapshot.state.registrations[&id];
         if registration.issuer != self.issuer.as_str() {
-            return AuthUiState::Unavailable;
+            return Ok(Selection::OtherIssuer);
         }
-        match &registration.credentials {
-            None => AuthUiState::SignedOut,
-            Some(credentials) if credentials.plan_enabled() => AuthUiState::Ready,
-            Some(_) => AuthUiState::PlanDisabled,
+        Ok(match &registration.credentials {
+            None => Selection::NoCredentials,
+            Some(credentials) if credentials.plan_enabled() => {
+                Selection::Ready(AccountKey::for_registration(id, registration))
+            }
+            Some(_) => Selection::PlanDisabled,
+        })
+    }
+
+    pub fn ui_state(&self) -> AuthUiState {
+        match self.selection() {
+            Ok(Selection::NoStore | Selection::NoAccount | Selection::NoCredentials) => {
+                AuthUiState::SignedOut
+            }
+            Ok(Selection::PlanDisabled) => AuthUiState::PlanDisabled,
+            Ok(Selection::Ready(_)) => AuthUiState::Ready,
+            Ok(Selection::OtherIssuer) | Err(_) => AuthUiState::Unavailable,
         }
     }
 
     pub fn key(&self) -> Result<AccountKey, Error> {
-        let snapshot = self
-            .store
-            .snapshot()?
-            .ok_or_else(|| Error::failed("Use Continue with ChatGPT before translating"))?;
-        let id = snapshot
-            .state
-            .active_registration
-            .ok_or_else(|| Error::failed("Choose a ChatGPT account before translating"))?;
-        let registration = &snapshot.state.registrations[&id];
-        if registration.issuer != self.issuer.as_str() {
-            return Err(Error::failed("The selected account has a different issuer"));
-        }
-        let credentials = registration.credentials.as_ref().ok_or_else(|| {
-            Error::failed("Use Continue with ChatGPT / Choose account to reconnect the saved registration before translating")
-        })?;
-        if !credentials.plan_enabled() {
-            return Err(Error::failed(
-                "ChatGPT plan use is disabled. Explicitly choose Enable ChatGPT plan use",
-            ));
-        }
-        Ok(AccountKey::for_registration(id, registration))
+        let message = match self.selection()? {
+            Selection::Ready(key) => return Ok(key),
+            Selection::NoStore => "Use Continue with ChatGPT before translating",
+            Selection::NoAccount => "Choose a ChatGPT account before translating",
+            Selection::OtherIssuer => "The selected account has a different issuer",
+            Selection::NoCredentials => {
+                "Use Continue with ChatGPT / Choose account to reconnect the saved registration before translating"
+            }
+            Selection::PlanDisabled => {
+                "ChatGPT plan use is disabled. Explicitly choose Enable ChatGPT plan use"
+            }
+        };
+        Err(Error::failed(message))
     }
 
     async fn discovery(&self) -> Result<Metadata, Error> {
@@ -332,27 +363,7 @@ impl Auth {
         // Unchanged credentials are a read. Refresh rechecks under the writer lock.
         match self.store.snapshot() {
             Ok(Some(snapshot)) => {
-                if snapshot.state.active_registration != Some(expected.registration)
-                    || snapshot
-                        .state
-                        .registrations
-                        .get(&expected.registration)
-                        .is_none_or(|registration| {
-                            AccountKey::for_registration(expected.registration, registration)
-                                != *expected
-                        })
-                {
-                    return Err(account_changed());
-                }
-                let credentials = snapshot
-                    .state
-                    .registrations
-                    .get(&expected.registration)
-                    .and_then(|registration| registration.credentials.as_ref())
-                    .ok_or_else(account_changed)?;
-                if !credentials.plan_enabled() {
-                    return Err(account_changed());
-                }
+                let credentials = expected_credentials(&snapshot.state, expected)?;
                 if !credentials.needs_refresh() {
                     return Ok(Access {
                         key: expected.clone(),
@@ -365,29 +376,12 @@ impl Auth {
             Err(error) => return Err(Error::from(error)),
         }
         let mut locked = self.store.lock(false).await?.ok_or_else(account_changed)?;
-        if locked.state.active_registration != Some(expected.registration)
-            || locked
-                .state
-                .registrations
-                .get(&expected.registration)
-                .is_none_or(|registration| {
-                    AccountKey::for_registration(expected.registration, registration) != *expected
-                })
-        {
-            return Err(account_changed());
-        }
+        let previous = expected_credentials(&locked.state, expected)?.clone();
         let registration = locked
             .state
             .registrations
             .get_mut(&expected.registration)
-            .ok_or_else(account_changed)?;
-        let previous = registration
-            .credentials
-            .clone()
-            .ok_or_else(account_changed)?;
-        if !previous.plan_enabled() {
-            return Err(account_changed());
-        }
+            .expect("expected_credentials found the registration");
         if previous.needs_refresh() {
             let metadata = self.discovery().await?;
             let client = CoreClient::from_provider_metadata(
