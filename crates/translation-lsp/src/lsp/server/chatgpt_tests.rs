@@ -665,7 +665,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         expired.response_result.unwrap_err().code,
         ErrorCode::RequestFailed as i32
     );
-    assert!(server.scheduler.translations[&ticket].automatic);
+    assert!(server.scheduler.translations[&ticket].owners.selection());
     assert!(
         client.receiver.is_empty(),
         "Remaining background owner keeps progress alive"
@@ -1745,7 +1745,7 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     server.expire(&connection).unwrap();
     assert!(server.scheduler.pending.is_empty());
-    assert!(server.scheduler.translations[&ticket].document);
+    assert!(server.scheduler.translations[&ticket].owners.tab());
     server
         .queue_translation(target, TranslationRequest::Document)
         .unwrap();

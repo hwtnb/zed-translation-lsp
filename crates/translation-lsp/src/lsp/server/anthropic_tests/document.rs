@@ -304,8 +304,8 @@ async fn a_tab_and_a_range_for_one_target_run_as_two_operations() {
     );
     assert_eq!(server.scheduler.admitted(), 3);
     let work = &server.scheduler.translations;
-    assert!(work[&range].manual && !work[&range].document);
-    assert!(work[&tab].document && !work[&tab].range_output());
+    assert!(work[&range].owners.manual() && !work[&range].owners.tab());
+    assert!(work[&tab].owners.tab() && !work[&tab].owners.range_output());
     assert_eq!(fixture.calls(), 0);
 
     // The range completes while the tab is still in flight.
@@ -531,8 +531,8 @@ async fn automatic_selection_does_not_take_a_tab_operation_for_its_own() {
         assert_eq!(server.adjusting_ticket, Some(automatic));
         let work = &server.scheduler.translations;
         assert_eq!(work.len(), 2);
-        assert!(work[&automatic].automatic && !work[&automatic].document);
-        assert!(work[&tab].document && !work[&tab].range_output());
+        assert!(work[&automatic].owners.selection() && !work[&automatic].owners.tab());
+        assert!(work[&tab].owners.tab() && !work[&tab].owners.range_output());
     }
 }
 

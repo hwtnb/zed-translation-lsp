@@ -25,7 +25,7 @@ impl<P: TranslationProvider> Server<P> {
             .translations
             .iter()
             .filter(|(_, work)| {
-                work.retained()
+                work.owners.retained()
                     && work.target.uri == params.text_document.uri
                     && overlaps(work.target.range, params.range)
             })
@@ -38,7 +38,7 @@ impl<P: TranslationProvider> Server<P> {
             add(
                 format!(
                     "Cancel {} of lines {}-{}",
-                    if separate && work.document {
+                    if separate && work.owners.tab() {
                         "tab translation"
                     } else {
                         "translation"

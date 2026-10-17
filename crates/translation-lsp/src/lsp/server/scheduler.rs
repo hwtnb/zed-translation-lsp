@@ -54,15 +54,67 @@ pub(super) struct PreparedTranslation {
     pub task: Task,
 }
 
+/// The requests that keep a translation going besides Hover waiters.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Owners {
+    /// A stable automatic selection.
+    selection: bool,
+    /// A comment Hover, which keeps its translation past its response.
+    comment_hover: bool,
+    /// A selection translation or retry run from a Code Action.
+    manual: bool,
+    /// A tab translation.
+    tab: bool,
+}
+
+impl Owners {
+    fn add(&mut self, request: &TranslationRequest, is_comment: bool) {
+        match request {
+            TranslationRequest::Reply(_, PendingReply::Hover(_)) => {
+                self.comment_hover |= is_comment;
+            }
+            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
+                self.manual = true;
+            }
+            TranslationRequest::Selection => self.selection = true,
+            TranslationRequest::Document => self.tab = true,
+        }
+    }
+    /// Whether the translation survives without Hover waiters.
+    pub fn retained(self) -> bool {
+        self.range_output() || self.tab
+    }
+    /// Whether the result is read in Hover.
+    pub fn range_output(self) -> bool {
+        self.selection || self.comment_hover || self.manual
+    }
+    /// Whether only automatic requests own it, so it counts toward the
+    /// automatic limit.
+    pub fn automatic_only(self) -> bool {
+        (self.selection || self.comment_hover) && !self.manual && !self.tab
+    }
+    /// Whether a stable automatic selection is its only owner.
+    pub fn selection_only(self) -> bool {
+        self.selection && !self.comment_hover && !self.manual && !self.tab
+    }
+    #[cfg(test)]
+    pub fn selection(self) -> bool {
+        self.selection
+    }
+    pub fn manual(self) -> bool {
+        self.manual
+    }
+    pub fn tab(self) -> bool {
+        self.tab
+    }
+}
+
 pub(super) struct Translation {
     pub context: Context,
     pub target: TranslationTarget,
     pub is_comment: bool,
     pub deadline: watch::Sender<Option<Instant>>,
-    pub automatic: bool,
-    pub comment_hover: bool,
-    pub manual: bool,
-    pub document: bool,
+    pub owners: Owners,
     pub phase: Phase,
     pub started: Option<Instant>,
     pub limit: Duration,
@@ -70,15 +122,6 @@ pub(super) struct Translation {
 }
 
 impl Translation {
-    pub fn retained(&self) -> bool {
-        self.range_output() || self.document
-    }
-    pub fn range_output(&self) -> bool {
-        self.automatic || self.comment_hover || self.manual
-    }
-    pub fn automatic_only(&self) -> bool {
-        (self.automatic || self.comment_hover) && !self.manual && !self.document
-    }
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
     }
@@ -86,7 +129,8 @@ impl Translation {
     /// share work, even for the same target. Without it, one operation serves
     /// every output.
     pub fn serves(&self, output: Output, settings: &Settings) -> bool {
-        !settings.provider.separates_documents() || self.document == (output == Output::Document)
+        !settings.provider.separates_documents()
+            || self.owners.tab() == (output == Output::Document)
     }
 }
 
@@ -117,7 +161,7 @@ impl Scheduler {
             .iter()
             .filter(|(_, w)| {
                 &w.target.uri == uri
-                    && (!w.document || w.range_output())
+                    && (!w.owners.tab() || w.owners.range_output())
                     && w.target.range.start <= position
                     && position <= w.target.range.end
             })
@@ -136,7 +180,7 @@ impl Scheduler {
     pub fn automatic_count(&self) -> usize {
         self.translations
             .values()
-            .filter(|w| w.automatic_only())
+            .filter(|w| w.owners.automatic_only())
             .count()
     }
     pub fn available(&self, settings: &Settings, automatic: bool) -> bool {
@@ -178,31 +222,21 @@ impl Scheduler {
         ) {
             work.limit = work.limit.max(request.timeout(settings));
         }
-        match request {
-            TranslationRequest::Reply(id, PendingReply::Hover(position)) => {
-                work.comment_hover |= work.is_comment;
-                self.pending.insert(
-                    id,
-                    Pending {
-                        ticket,
-                        deadline: now + Duration::from_millis(settings.hover_timeout_ms),
-                        position,
-                    },
-                );
-            }
-            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
-                work.manual = true;
-                if let Some(Task::Translation { intent, .. }) = work.task.as_mut() {
-                    *intent = crate::providers::Intent::Explicit;
-                }
-            }
-            TranslationRequest::Selection => work.automatic = true,
-            TranslationRequest::Document => {
-                work.document = true;
-                if let Some(Task::Translation { intent, .. }) = work.task.as_mut() {
-                    *intent = crate::providers::Intent::Explicit;
-                }
-            }
+        work.owners.add(&request, work.is_comment);
+        if request.explicit()
+            && let Some(Task::Translation { intent, .. }) = work.task.as_mut()
+        {
+            *intent = crate::providers::Intent::Explicit;
+        }
+        if let TranslationRequest::Reply(id, PendingReply::Hover(position)) = request {
+            self.pending.insert(
+                id,
+                Pending {
+                    ticket,
+                    deadline: now + Duration::from_millis(settings.hover_timeout_ms),
+                    position,
+                },
+            );
         }
         self.update_deadline(ticket);
         Ok(())
@@ -230,10 +264,7 @@ impl Scheduler {
                 target,
                 is_comment,
                 deadline,
-                automatic: false,
-                comment_hover: false,
-                manual: false,
-                document: false,
+                owners: Owners::default(),
                 phase: Phase::Queued,
                 started: None,
                 limit: request.timeout(settings),
@@ -255,7 +286,7 @@ impl Scheduler {
 
     pub fn retire_automatic(&mut self, ticket: u64) {
         if let Some(work) = self.translations.get_mut(&ticket) {
-            work.automatic = false;
+            work.owners.selection = false;
         }
         self.update_deadline(ticket);
     }
@@ -270,12 +301,12 @@ impl Scheduler {
         let Some(work) = self.translations.get(&ticket) else {
             return;
         };
-        if !work.retained() && waiter_deadline.is_none() {
+        if !work.owners.retained() && waiter_deadline.is_none() {
             self.remove(ticket);
             return;
         }
         let deadline = work.execution_deadline().map(|cap| {
-            if work.retained() {
+            if work.owners.retained() {
                 cap
             } else {
                 cap.min(waiter_deadline.unwrap())
@@ -297,7 +328,7 @@ impl Scheduler {
                 .translations
                 .iter()
                 .filter(|(_, work)| {
-                    work.task.is_some() && (!work.document || tabs < limits.documents)
+                    work.task.is_some() && (!work.owners.tab() || tabs < limits.documents)
                 })
                 .map(|(&ticket, _)| ticket)
                 .min();
@@ -308,7 +339,7 @@ impl Scheduler {
             work.started = Some(now);
             let task = work.task.take().unwrap();
             let deadline = work.deadline.subscribe();
-            let tab = work.document;
+            let tab = work.owners.tab();
             self.update_deadline(ticket);
             jobs.try_send(Job {
                 ticket,

@@ -89,7 +89,7 @@ impl<P: TranslationProvider> Server<P> {
         let replacing = self
             .adjusting_ticket
             .and_then(|t| self.scheduler.translations.get(&t))
-            .is_some_and(|w| w.automatic && !w.comment_hover && !w.manual && !w.document);
+            .is_some_and(|w| w.owners.selection_only());
         self.scheduler.admitted() < self.settings.translation_limits.work.admitted
             && (replacing
                 || self.scheduler.automatic_count()

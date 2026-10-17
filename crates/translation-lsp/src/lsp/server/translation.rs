@@ -308,18 +308,18 @@ impl<P: TranslationProvider> Server<P> {
         match &result {
             Ok(preview) => {
                 let has_hover = self.scheduler.pending.values().any(|p| p.ticket == ticket);
-                if work.range_output() || has_hover {
+                if work.owners.range_output() || has_hover {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
                         Stored::Translation(Output::Range, preview.clone()),
                     );
                 }
-                if work.manual {
+                if work.owners.manual() {
                     self.ui
                         .inform(&format!("{}: {TRANSLATION_READY}", location(&work.target)))?;
                 }
-                if work.document {
+                if work.owners.tab() {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
@@ -339,14 +339,14 @@ impl<P: TranslationProvider> Server<P> {
                     && error.code != ErrorCode::RequestCanceled as i32 =>
             {
                 self.record_problem(work, Problem::Failed(error.message.clone()));
-                if work.range_output() {
+                if work.owners.range_output() {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
                         Stored::failure(work.context.clone(), work.target.range, &error.message),
                     );
                 }
-                if (work.manual || work.document) && !silent {
+                if (work.owners.manual() || work.owners.tab()) && !silent {
                     self.command_failure(&failure(
                         ErrorCode::RequestFailed,
                         &format!("{}: {}", location(&work.target), error.message),
