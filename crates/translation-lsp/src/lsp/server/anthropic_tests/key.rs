@@ -460,7 +460,7 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
             .unwrap();
     }
     let cursor = |line| Range::new(Position::new(line, 3), Position::new(line, 3));
-    assert!(server.cache.exact(&uri, line(0), false).is_some());
+    assert!(server.cache.exact(&uri, line(0), Output::Range).is_some());
     assert!(
         titles(&mut server, &uri, cursor(2)).contains(&"Retry translation of lines 3-3".to_owned())
     );
@@ -490,7 +490,7 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
             .any(|title| title.starts_with("Retry"))
     );
     assert!(server.cache.latest(&uri).is_none());
-    assert!(server.cache.exact(&uri, line(0), false).is_none());
+    assert!(server.cache.exact(&uri, line(0), Output::Range).is_none());
 
     // The same range is sent again, with the new key.
     let target = target(&server, &uri, line(0));
@@ -503,7 +503,11 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
     assert_eq!(fixture.calls(), 3);
     assert_eq!(sent(&fixture), NEW_KEY);
     assert_eq!(
-        server.cache.exact(&uri, line(0), false).unwrap().context,
+        server
+            .cache
+            .exact(&uri, line(0), Output::Range)
+            .unwrap()
+            .context,
         server.provider.context().unwrap()
     );
 }
@@ -563,5 +567,5 @@ async fn automatic_translation_stopped_for_a_rejected_key_starts_again_with_the_
         .unwrap();
     assert_eq!(fixture.calls(), 2);
     assert_eq!(sent(&fixture), NEW_KEY);
-    assert!(server.cache.exact(&uri, line(2), false).is_some());
+    assert!(server.cache.exact(&uri, line(2), Output::Range).is_some());
 }

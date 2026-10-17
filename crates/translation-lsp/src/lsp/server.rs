@@ -64,7 +64,7 @@ use super::{
     document::Document,
     preview::{
         Preview,
-        cache::{Cache, overlaps},
+        cache::{Cache, Stored, overlaps},
         files::PreviewFiles,
     },
     ui::{Ui, UiCapabilities},
@@ -755,12 +755,10 @@ impl<P: TranslationProvider> Server<P> {
                 || preview.range.end != position.position
                 || (end_is_clear && !range.is_some_and(|range| range.start == position.position))
         };
-        if let Some(hover) = self.cache.hover(
-            &position.text_document.uri,
-            position.position,
-            false,
-            eligible,
-        ) {
+        if let Some(hover) =
+            self.cache
+                .hover(&position.text_document.uri, position.position, eligible)
+        {
             authorization?;
             return to_value(hover).map(Some);
         }
@@ -770,11 +768,9 @@ impl<P: TranslationProvider> Server<P> {
         {
             return self.queue(id, target, PendingReply::Hover(position.position));
         }
-        if let Some(hover) =
-            self.cache
-                .hover(&position.text_document.uri, position.position, true, |_| {
-                    true
-                })
+        if let Some(hover) = self
+            .cache
+            .failure_hover(&position.text_document.uri, position.position)
         {
             authorization?;
             return to_value(hover).map(Some);

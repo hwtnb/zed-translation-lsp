@@ -1770,7 +1770,7 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
     assert!(
         server
             .cache
-            .hover(&uri, Position::new(0, 3), false, |_| true)
+            .hover(&uri, Position::new(0, 3), |_| true)
             .is_none()
     );
 }
@@ -2504,7 +2504,7 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
         markdown_actions(&mut server, &uri, range);
         server.selection.as_mut().unwrap().start = Some(Instant::now());
         server.expire(&connection).unwrap();
-        assert!(server.cache.exact(&uri, range, false).is_some());
+        assert!(server.cache.exact(&uri, range, Output::Range).is_some());
         assert!(server.scheduler.translations.is_empty());
     }
     server.publish_activity();
@@ -2555,7 +2555,12 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
     server
         .finish(&connection, next(&completions).await)
         .unwrap();
-    assert!(server.cache.exact(&uri, target.range, false).is_some());
+    assert!(
+        server
+            .cache
+            .exact(&uri, target.range, Output::Range)
+            .is_some()
+    );
     assert_eq!(response_calls(&fixture), 1);
     assert!(client.receiver.try_iter().any(|m| matches!(m, Message::Notification(n) if n.params["message"].as_str().is_some_and(|m| m.contains("ranges.md:1-1")))));
 }
@@ -2595,14 +2600,14 @@ async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_tic
         assert!(
             server
                 .cache
-                .exact(&uri, range_target(&server, &uri, line).range, false)
+                .exact(&uri, range_target(&server, &uri, line).range, Output::Range)
                 .is_some()
         );
     }
     assert!(
         server
             .cache
-            .exact(&uri, range_target(&server, &uri, 2).range, false)
+            .exact(&uri, range_target(&server, &uri, 2).range, Output::Range)
             .is_none()
     );
     assert!(server.scheduler.translations.is_empty());
@@ -3099,14 +3104,15 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
         server.cache.insert(
             uri.clone(),
             0,
-            Preview::new(
-                Context::Mock,
-                Range::new(Position::new(0, 0), Position::new(0, 11)),
-                "cached".into(),
-                true,
+            Stored::Translation(
+                Output::Range,
+                Preview::new(
+                    Context::Mock,
+                    Range::new(Position::new(0, 0), Position::new(0, 11)),
+                    "cached".into(),
+                    true,
+                ),
             ),
-            false,
-            false,
         );
         let state = server.provider.auth_ui_state();
         server
@@ -3966,7 +3972,12 @@ async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_
         .finish(&connection, next(&completions).await)
         .unwrap();
     assert_eq!(response_calls(&fixture), 3);
-    assert!(server.cache.exact(&uri, target.range, false).is_some());
+    assert!(
+        server
+            .cache
+            .exact(&uri, target.range, Output::Range)
+            .is_some()
+    );
     server
         .provider
         .admit(
@@ -4311,21 +4322,20 @@ async fn retry_action_refreshes_failed_range_without_discarding_readable_transla
     server.cache.insert(
         uri.clone(),
         1,
-        Preview::new(
-            context.clone(),
-            target.range,
-            "Previous translation".into(),
-            false,
+        Stored::Translation(
+            Output::Range,
+            Preview::new(
+                context.clone(),
+                target.range,
+                "Previous translation".into(),
+                false,
+            ),
         ),
-        false,
-        false,
     );
     server.cache.insert(
         uri.clone(),
         2,
-        Preview::new(context, target.range, "Synthetic failure".into(), false),
-        false,
-        true,
+        Stored::failure(context, target.range, "Synthetic failure"),
     );
     server.next_ticket = 2;
     let cursor = Range::new(Position::new(0, 5), Position::new(0, 5));
@@ -4424,12 +4434,12 @@ async fn explicit_outputs_reuse_completed_ranges_without_automatic_hover_promoti
         assert_eq!(
             server
                 .cache
-                .exact(&uri, target.range, true)
+                .exact(&uri, target.range, Output::Document)
                 .unwrap()
                 .translation,
             server
                 .cache
-                .exact(&uri, target.range, false)
+                .exact(&uri, target.range, Output::Range)
                 .unwrap()
                 .translation
         );
@@ -4496,7 +4506,12 @@ async fn cross_output_reuse_checks_input_limits_and_document_freshness() {
         .queue(1.into(), target.clone(), PendingReply::Command)
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams as i32);
-    assert!(server.cache.exact(&uri, target.range, false).is_none());
+    assert!(
+        server
+            .cache
+            .exact(&uri, target.range, Output::Range)
+            .is_none()
+    );
     assert_eq!(response_calls(&fixture), 1);
     server.notification(&connection, lsp_server::Notification::new(DidChangeTextDocument::METHOD.into(), json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"Changed."}]}))).unwrap();
     let error = server

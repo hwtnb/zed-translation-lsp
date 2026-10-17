@@ -1,13 +1,76 @@
 use super::{Preview, fenced_text};
-use crate::{config::limits::TranslationLimits, providers::Context};
+use crate::{
+    config::limits::TranslationLimits,
+    providers::{Context, Output},
+};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range, Uri};
+
+/// What a cache entry holds.
+pub(crate) enum Stored {
+    /// A completed translation, kept for the output it was made for.
+    Translation(Output, Preview),
+    /// A failed range translation. Its Hover shows the message.
+    Failure {
+        context: Context,
+        range: Range,
+        message: String,
+    },
+}
+
+impl Stored {
+    /// A failure whose message is cut to a size that a Hover can show.
+    pub fn failure(context: Context, range: Range, message: &str) -> Self {
+        Self::Failure {
+            context,
+            range,
+            message: message.chars().take(2048).collect(),
+        }
+    }
+
+    fn output(&self) -> Output {
+        match self {
+            Self::Translation(output, _) => *output,
+            Self::Failure { .. } => Output::Range,
+        }
+    }
+
+    fn range(&self) -> Range {
+        match self {
+            Self::Translation(_, preview) => preview.range,
+            Self::Failure { range, .. } => *range,
+        }
+    }
+
+    fn context(&self) -> &Context {
+        match self {
+            Self::Translation(_, preview) => &preview.context,
+            Self::Failure { context, .. } => context,
+        }
+    }
+
+    fn text(&self) -> &str {
+        match self {
+            Self::Translation(_, preview) => &preview.translation,
+            Self::Failure { message, .. } => message,
+        }
+    }
+
+    fn translation(&self, output: Output) -> Option<&Preview> {
+        match self {
+            Self::Translation(stored, preview) if *stored == output => Some(preview),
+            _ => None,
+        }
+    }
+
+    fn is_failure(&self) -> bool {
+        matches!(self, Self::Failure { .. })
+    }
+}
 
 struct Entry {
     uri: Uri,
     ticket: u64,
-    preview: Preview,
-    tab: bool,
-    failed: bool,
+    stored: Stored,
     used: u64,
 }
 
@@ -37,13 +100,20 @@ impl Cache {
     pub fn latest(&self, uri: &Uri) -> Option<&Preview> {
         self.entries
             .iter()
-            .filter(|e| &e.uri == uri && !e.failed)
-            .max_by_key(|e| e.ticket)
-            .map(|e| &e.preview)
+            .filter(|e| &e.uri == uri)
+            .filter_map(|e| match &e.stored {
+                Stored::Translation(_, preview) => Some((e.ticket, preview)),
+                Stored::Failure { .. } => None,
+            })
+            .max_by_key(|(ticket, _)| *ticket)
+            .map(|(_, preview)| preview)
     }
     #[cfg(test)]
     pub fn successes(&self) -> usize {
-        self.entries.iter().filter(|e| !e.failed).count()
+        self.entries
+            .iter()
+            .filter(|e| !e.stored.is_failure())
+            .count()
     }
 
     pub fn new(limits: TranslationLimits) -> Self {
@@ -66,19 +136,31 @@ impl Cache {
         self.entries.retain(|e| &e.uri != uri);
     }
     pub fn retain_context(&mut self, context: &Context) {
-        self.entries.retain(|e| &e.preview.context == context);
+        self.entries.retain(|e| e.stored.context() == context);
     }
-    pub fn exact(&mut self, uri: &Uri, range: Range, tab: bool) -> Option<Preview> {
+
+    /// Marks the newest entry of `uri` that `select` accepts as used.
+    fn use_newest(&mut self, uri: &Uri, select: impl Fn(&Stored) -> bool) -> Option<&Stored> {
         let index = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| &e.uri == uri && e.preview.range == range && e.tab == tab && !e.failed)
+            .filter(|(_, e)| &e.uri == uri && select(&e.stored))
             .max_by_key(|(_, e)| e.ticket)
             .map(|(i, _)| i)?;
         self.clock += 1;
         self.entries[index].used = self.clock;
-        Some(self.entries[index].preview.clone())
+        Some(&self.entries[index].stored)
+    }
+
+    pub fn exact(&mut self, uri: &Uri, range: Range, output: Output) -> Option<Preview> {
+        self.use_newest(uri, |stored| {
+            stored
+                .translation(output)
+                .is_some_and(|preview| preview.range == range)
+        })
+        .and_then(|stored| stored.translation(output))
+        .cloned()
     }
 
     pub fn failed_range(&self, uri: &Uri, position: Position) -> Option<Range> {
@@ -86,87 +168,89 @@ impl Cache {
             .iter()
             .filter(|entry| {
                 &entry.uri == uri
-                    && !entry.tab
-                    && entry.failed
-                    && contains(entry.preview.range, Range::new(position, position))
+                    && entry.stored.is_failure()
+                    && contains(entry.stored.range(), Range::new(position, position))
             })
             .max_by_key(|entry| entry.ticket)
-            .map(|entry| entry.preview.range)
+            .map(|entry| entry.stored.range())
     }
 
+    /// The Hover of the newest range translation at `position` that `eligible`
+    /// accepts.
     pub fn hover(
         &mut self,
         uri: &Uri,
         position: Position,
-        failed: bool,
         eligible: impl Fn(&Preview) -> bool,
     ) -> Option<Hover> {
-        let index = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                &e.uri == uri
-                    && !e.tab
-                    && e.failed == failed
-                    && e.preview.range.start <= position
-                    && position <= e.preview.range.end
-                    && eligible(&e.preview)
+        self.use_newest(uri, |stored| {
+            stored.translation(Output::Range).is_some_and(|preview| {
+                preview.range.start <= position
+                    && position <= preview.range.end
+                    && eligible(preview)
             })
-            .max_by_key(|(_, e)| e.ticket)
-            .map(|(i, _)| i)?;
-        self.clock += 1;
-        let entry = &mut self.entries[index];
-        entry.used = self.clock;
-        if failed {
-            Some(Hover {
-                range: Some(entry.preview.range),
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!(
-                        "> **Translation LSP: translation failed**\n\n{}\n\nTo retry, place the cursor in this range and run Retry translation of lines … from Code Actions.",
-                        fenced_text(&entry.preview.translation)
-                    ),
-                }),
-            })
-        } else {
-            entry.preview.hover(position)
-        }
+        })
+        .and_then(|stored| stored.translation(Output::Range))
+        .and_then(|preview| preview.hover(position))
     }
 
-    pub fn insert(&mut self, uri: Uri, ticket: u64, preview: Preview, tab: bool, failed: bool) {
+    /// The Hover of the newest failure at `position`.
+    pub fn failure_hover(&mut self, uri: &Uri, position: Position) -> Option<Hover> {
+        let Stored::Failure { range, message, .. } = self.use_newest(uri, |stored| {
+            stored.is_failure()
+                && stored.range().start <= position
+                && position <= stored.range().end
+        })?
+        else {
+            return None;
+        };
+        Some(Hover {
+            range: Some(*range),
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!(
+                    "> **Translation LSP: translation failed**\n\n{}\n\nTo retry, place the cursor in this range and run Retry translation of lines … from Code Actions.",
+                    fenced_text(message)
+                ),
+            }),
+        })
+    }
+
+    pub fn insert(&mut self, uri: Uri, ticket: u64, stored: Stored) {
+        let output = stored.output();
+        let tab = output == Output::Document;
+        let range = stored.range();
         if self.entries.iter().any(|e| {
             e.uri == uri
-                && e.tab == tab
+                && e.stored.output() == output
                 && e.ticket > ticket
-                && !e.failed
-                && (tab || contains(e.preview.range, preview.range))
+                && !e.stored.is_failure()
+                && (tab || contains(e.stored.range(), range))
         }) {
             return;
         }
+        let failure = stored.is_failure();
         self.entries.retain(|e| {
-            if e.uri != uri || e.tab != tab || e.ticket > ticket {
+            if e.uri != uri || e.stored.output() != output || e.ticket > ticket {
                 return true;
             }
-            if failed {
-                return !e.failed || e.preview.range != preview.range;
+            if failure {
+                return !e.stored.is_failure() || e.stored.range() != range;
             }
-            !(tab || contains(preview.range, e.preview.range))
+            !(tab || contains(range, e.stored.range()))
         });
         self.clock += 1;
         self.entries.push(Entry {
             uri,
             ticket,
-            preview,
-            tab,
-            failed,
+            stored,
             used: self.clock,
         });
         while self.entries.len() > self.count_limit
             || self
                 .entries
                 .iter()
-                .map(|e| e.preview.translation.len())
+                .map(|e| e.stored.text().len())
                 .sum::<usize>()
                 > self.byte_limit
         {
@@ -205,59 +289,48 @@ mod tests {
     fn ranges_survive_reverse_completion_failures_and_tab_results() {
         let uri: Uri = "file:///ranges.md".parse().unwrap();
         let mut cache = Cache::new(TranslationLimits::default());
-        cache.insert(uri.clone(), 2, preview(range(0, 10), "new"), false, false);
-        cache.insert(uri.clone(), 1, preview(range(0, 5), "old"), false, false);
-        assert!(cache.exact(&uri, range(0, 5), false).is_none());
+        cache.insert(
+            uri.clone(),
+            2,
+            Stored::Translation(Output::Range, preview(range(0, 10), "new")),
+        );
+        cache.insert(
+            uri.clone(),
+            1,
+            Stored::Translation(Output::Range, preview(range(0, 5), "old")),
+        );
+        assert!(cache.exact(&uri, range(0, 5), Output::Range).is_none());
         cache.insert(
             uri.clone(),
             3,
-            preview(range(12, 20), "second"),
-            false,
-            false,
+            Stored::Translation(Output::Range, preview(range(12, 20), "second")),
         );
         cache.insert(
             uri.clone(),
             4,
-            preview(range(0, 10), "failure"),
-            false,
-            true,
+            Stored::failure(Context::Mock, range(0, 10), "failure"),
         );
         cache.insert(
             uri.clone(),
             5,
-            preview(range(0, 30), "whole document"),
-            true,
-            false,
+            Stored::Translation(Output::Document, preview(range(0, 30), "whole document")),
         );
+        assert!(value(cache.hover(&uri, Position::new(0, 3), |_| true).unwrap()).contains("new"));
         assert!(
-            value(
-                cache
-                    .hover(&uri, Position::new(0, 3), false, |_| true)
-                    .unwrap()
-            )
-            .contains("new")
+            value(cache.hover(&uri, Position::new(0, 15), |_| true).unwrap()).contains("second")
         );
-        assert!(
-            value(
-                cache
-                    .hover(&uri, Position::new(0, 15), false, |_| true)
-                    .unwrap()
-            )
-            .contains("second")
+        assert!(cache.hover(&uri, Position::new(0, 25), |_| true).is_none());
+        cache.insert(
+            uri.clone(),
+            6,
+            Stored::Translation(Output::Range, preview(range(0, 10), "retry")),
         );
-        assert!(
-            cache
-                .hover(&uri, Position::new(0, 25), false, |_| true)
-                .is_none()
-        );
-        cache.insert(uri.clone(), 6, preview(range(0, 10), "retry"), false, false);
-        assert!(
-            cache
-                .hover(&uri, Position::new(0, 3), true, |_| true)
-                .is_none()
-        );
+        assert!(cache.failure_hover(&uri, Position::new(0, 3)).is_none());
         assert_eq!(
-            cache.exact(&uri, range(0, 10), false).unwrap().translation,
+            cache
+                .exact(&uri, range(0, 10), Output::Range)
+                .unwrap()
+                .translation,
             "retry"
         );
         cache.remove_document(&uri);
@@ -276,20 +349,34 @@ mod tests {
         cache.insert(
             a.clone(),
             1,
-            preview(range(0, 1), &"a".repeat(2048)),
-            false,
-            false,
+            Stored::Translation(Output::Range, preview(range(0, 1), &"a".repeat(2048))),
         );
         assert!(cache.latest(&a).is_some());
-        cache.insert(b.clone(), 2, preview(range(0, 1), "b"), false, false);
+        cache.insert(
+            b.clone(),
+            2,
+            Stored::Translation(Output::Range, preview(range(0, 1), "b")),
+        );
         assert!(cache.latest(&a).is_none());
         limits.cache.capacity_kib = 16.try_into().unwrap();
         let mut cache = Cache::new(limits);
-        cache.insert(a.clone(), 1, preview(range(0, 1), "a"), false, false);
-        cache.insert(b.clone(), 2, preview(range(0, 1), "b"), false, false);
-        cache.exact(&a, range(0, 1), false).unwrap();
-        cache.insert(a.clone(), 3, preview(range(2, 3), "c"), false, false);
+        cache.insert(
+            a.clone(),
+            1,
+            Stored::Translation(Output::Range, preview(range(0, 1), "a")),
+        );
+        cache.insert(
+            b.clone(),
+            2,
+            Stored::Translation(Output::Range, preview(range(0, 1), "b")),
+        );
+        cache.exact(&a, range(0, 1), Output::Range).unwrap();
+        cache.insert(
+            a.clone(),
+            3,
+            Stored::Translation(Output::Range, preview(range(2, 3), "c")),
+        );
         assert!(cache.latest(&b).is_none());
-        assert!(cache.exact(&a, range(0, 1), false).is_some());
+        assert!(cache.exact(&a, range(0, 1), Output::Range).is_some());
     }
 }

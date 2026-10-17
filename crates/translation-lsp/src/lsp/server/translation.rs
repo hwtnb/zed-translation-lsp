@@ -55,25 +55,24 @@ impl<P: TranslationProvider> Server<P> {
             .check(original.len(), setting)
             .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))?;
         if request.reuses_completed()
-            && let Some(preview) = self
-                .cache
-                .exact(&target.uri, target.range, tab)
-                .or_else(|| {
-                    // Each output keeps its own results when tabs have their own settings.
-                    if request.explicit() && !self.settings.provider.separates_documents() {
-                        self.cache.exact(&target.uri, target.range, !tab)
-                    } else {
-                        None
-                    }
-                })
+            && let Some(preview) =
+                self.cache
+                    .exact(&target.uri, target.range, output)
+                    .or_else(|| {
+                        // Each output keeps its own results when tabs have their own settings.
+                        if request.explicit() && !self.settings.provider.separates_documents() {
+                            let other = if tab { Output::Range } else { Output::Document };
+                            self.cache.exact(&target.uri, target.range, other)
+                        } else {
+                            None
+                        }
+                    })
         {
             self.next_ticket += 1;
             self.cache.insert(
                 target.uri.clone(),
                 self.next_ticket,
-                preview.clone(),
-                tab,
-                false,
+                Stored::Translation(output, preview.clone()),
             );
             return match request {
                 TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
@@ -313,9 +312,7 @@ impl<P: TranslationProvider> Server<P> {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
-                        preview.clone(),
-                        false,
-                        false,
+                        Stored::Translation(Output::Range, preview.clone()),
                     );
                 }
                 if work.manual {
@@ -326,9 +323,7 @@ impl<P: TranslationProvider> Server<P> {
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
-                        preview.clone(),
-                        true,
-                        false,
+                        Stored::Translation(Output::Document, preview.clone()),
                     );
                     let markdown = self.documents[&work.target.uri].language_id == "markdown";
                     if let Err(error) = self.preview_files.open(&self.ui, preview, markdown) {
@@ -345,18 +340,10 @@ impl<P: TranslationProvider> Server<P> {
             {
                 self.record_problem(work, Problem::Failed(error.message.clone()));
                 if work.range_output() {
-                    let preview = Preview::new(
-                        work.context.clone(),
-                        work.target.range,
-                        error.message.chars().take(2048).collect(),
-                        false,
-                    );
                     self.cache.insert(
                         work.target.uri.clone(),
                         ticket,
-                        preview.clone(),
-                        false,
-                        true,
+                        Stored::failure(work.context.clone(), work.target.range, &error.message),
                     );
                 }
                 if (work.manual || work.document) && !silent {

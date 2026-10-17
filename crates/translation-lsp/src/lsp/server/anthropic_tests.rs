@@ -250,7 +250,12 @@ async fn billing_stop_drains_queued_work_with_one_notice_and_resumes_after_expli
         .finish(&connection, next(&completions).await)
         .unwrap();
     assert_eq!(fixture.calls(), 2);
-    assert!(server.cache.exact(&uri, target.range, false).is_some());
+    assert!(
+        server
+            .cache
+            .exact(&uri, target.range, Output::Range)
+            .is_some()
+    );
     server
         .provider
         .admit(&server.provider.context().unwrap(), Intent::Automatic)

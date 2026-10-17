@@ -422,13 +422,23 @@ async fn each_operation_of_one_target_has_its_own_cancel_action() {
         if cancel_tab {
             assert!(opened(&messages).is_empty());
             assert_eq!(ready(&messages), 1);
-            assert!(server.cache.exact(&uri, line(0), false).is_some());
-            assert!(server.cache.exact(&uri, line(0), true).is_none());
+            assert!(server.cache.exact(&uri, line(0), Output::Range).is_some());
+            assert!(
+                server
+                    .cache
+                    .exact(&uri, line(0), Output::Document)
+                    .is_none()
+            );
         } else {
             assert_eq!(opened(&messages), [TAB_TEXT]);
             assert_eq!(ready(&messages), 0);
-            assert!(server.cache.exact(&uri, line(0), false).is_none());
-            assert!(server.cache.exact(&uri, line(0), true).is_some());
+            assert!(server.cache.exact(&uri, line(0), Output::Range).is_none());
+            assert!(
+                server
+                    .cache
+                    .exact(&uri, line(0), Output::Document)
+                    .is_some()
+            );
         }
         assert!(server.scheduler.translations.is_empty());
     }
