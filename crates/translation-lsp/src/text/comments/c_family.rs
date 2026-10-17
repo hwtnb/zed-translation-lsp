@@ -1,9 +1,10 @@
 use std::{borrow::Cow, time::Instant};
 
 use super::{Comment, Kind, LineKind, syntax};
+use crate::language::Language;
 
-pub(super) fn parse(language_id: &str, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
-    let language = if language_id == "c" {
+pub(super) fn parse(language: Language, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
+    let language = if language == Language::C {
         tree_sitter_c::LANGUAGE
     } else {
         tree_sitter_cpp::LANGUAGE

@@ -23,10 +23,10 @@ impl<P: TranslationProvider> Server<P> {
                 if !self
                     .settings
                     .features
-                    .enables(Feature::AutomaticSelection, &document.language_id)
+                    .enables(Feature::AutomaticSelection, document.language)
                     || !P::capabilities().automatic_selection
                     || state != AuthUiState::Ready
-                    || !document.language_id.eq_ignore_ascii_case("markdown")
+                    || document.language != Some(Language::Markdown)
                 {
                     return None;
                 }

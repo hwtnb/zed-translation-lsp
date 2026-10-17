@@ -1,13 +1,14 @@
 use granit_parser::{Scanner, StrInput, TokenType};
 
 use super::{Comment, Kind};
+use crate::language::Language;
 
 /// Comments in these formats are decided by tokens alone, so read tokens and
 /// leave the structure unchecked. Errors in the structure then hide nothing.
-pub(super) fn parse(language_id: &str, text: &str) -> Vec<Comment> {
-    match language_id {
-        "yaml" | "dockercompose" => yaml(text),
-        "toml" => toml(text),
+pub(super) fn parse(language: Language, text: &str) -> Vec<Comment> {
+    match language {
+        Language::Yaml | Language::DockerCompose => yaml(text),
+        Language::Toml => toml(text),
         _ => json(text),
     }
 }

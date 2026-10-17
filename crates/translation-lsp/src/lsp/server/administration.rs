@@ -219,12 +219,11 @@ impl<P: TranslationProvider> Server<P> {
     /// The actions of a feature turned off are not listed, so its command can
     /// only come from a client that did not take it from the list.
     fn check_feature(&self, feature: Feature, target: &TranslationTarget) -> RequestResult<()> {
-        if self.documents.get(&target.uri).is_some_and(|document| {
-            !self
-                .settings
-                .features
-                .enables(feature, &document.language_id)
-        }) {
+        if self
+            .documents
+            .get(&target.uri)
+            .is_some_and(|document| !self.settings.features.enables(feature, document.language))
+        {
             return Err(failure(
                 ErrorCode::InvalidParams,
                 &format!("The features setting turns off {feature} for this language"),

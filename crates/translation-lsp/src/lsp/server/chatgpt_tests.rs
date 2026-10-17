@@ -2450,7 +2450,7 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     let source = "First sentence.\nSecond sentence.";
     server.documents.insert(
         uri.clone(),
-        Document::new(1, 1, "Markdown".into(), source.into()),
+        Document::new(1, 1, "markdown".into(), source.into()),
     );
     let first = Range::new(Position::new(0, 0), Position::new(0, 15));
     let second = Range::new(Position::new(1, 0), Position::new(1, 16));

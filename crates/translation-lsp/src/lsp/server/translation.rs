@@ -82,7 +82,7 @@ impl<P: TranslationProvider> Server<P> {
                     self.preview_files.open(
                         &self.ui,
                         &preview,
-                        document.language_id == "markdown",
+                        document.language == Some(Language::Markdown),
                     )?;
                     Ok(None)
                 }
@@ -325,7 +325,8 @@ impl<P: TranslationProvider> Server<P> {
                         ticket,
                         Stored::Translation(Output::Document, preview.clone()),
                     );
-                    let markdown = self.documents[&work.target.uri].language_id == "markdown";
+                    let markdown =
+                        self.documents[&work.target.uri].language == Some(Language::Markdown);
                     if let Err(error) = self.preview_files.open(&self.ui, preview, markdown) {
                         self.command_failure(&failure(
                             ErrorCode::RequestFailed,

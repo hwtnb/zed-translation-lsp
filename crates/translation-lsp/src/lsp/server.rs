@@ -47,6 +47,7 @@ use crate::{
         ProviderSettings, ReasoningEffort, Settings, anthropic_thinking, features::Feature,
         language,
     },
+    language::Language,
     providers::{
         AccountChange, AuthUiState, Context, Interaction, Output, OutputOptions, Translated,
         TranslationProvider,
@@ -681,11 +682,7 @@ impl<P: TranslationProvider> Server<P> {
                 ),
             )?;
         }
-        let enabled = |feature| {
-            self.settings
-                .features
-                .enables(feature, &document.language_id)
-        };
+        let enabled = |feature| self.settings.features.enables(feature, document.language);
         if enabled(Feature::SelectionAction)
             && document.selection(params.range).is_ok_and(|text| {
                 text.len() <= self.settings.translation_limits.input_kib.hover.bytes()
@@ -779,7 +776,7 @@ impl<P: TranslationProvider> Server<P> {
         let Some(range) = range.filter(|_| {
             self.settings
                 .features
-                .enables(Feature::CommentHover, &document.language_id)
+                .enables(Feature::CommentHover, document.language)
         }) else {
             return Ok(Some(Value::Null));
         };
@@ -891,7 +888,8 @@ fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> Reques
         return Ok(());
     };
     let name = file_name(uri);
-    let language = &document.language_id;
+    // Comments are read only in registered languages.
+    let language = document.language.map_or("", Language::id);
     let message = match cause {
         Failure::TimedOut => {
             eprintln!("translation-lsp: reading comments timed out (language {language:?})");

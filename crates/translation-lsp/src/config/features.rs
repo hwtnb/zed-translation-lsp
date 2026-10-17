@@ -4,28 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::error::ConfigError;
-
-/// The language IDs that `extension.toml` registers, in its order.
-pub(super) const LANGUAGE_IDS: [&str; 18] = [
-    "rust",
-    "javascript",
-    "typescript",
-    "typescriptreact",
-    "csharp",
-    "c",
-    "cpp",
-    "python",
-    "json",
-    "jsonc",
-    "yaml",
-    "toml",
-    "shellscript",
-    "powershell",
-    "dockerfile",
-    "dockercompose",
-    "markdown",
-    "plaintext",
-];
+use crate::language::Language;
 
 /// What starts a translation.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
@@ -39,20 +18,20 @@ pub(crate) enum Feature {
 
 impl Feature {
     /// Whether the feature runs in a registered language.
-    fn applies_to(self, language_id: &str) -> bool {
-        let prose = matches!(language_id, "markdown" | "plaintext");
+    fn applies_to(self, language: Language) -> bool {
         match self {
-            Self::CommentHover => !prose,
-            Self::AutomaticSelection => language_id == "markdown",
+            Self::CommentHover => !language.is_prose(),
+            Self::AutomaticSelection => language == Language::Markdown,
             Self::SelectionAction => true,
-            Self::DocumentAction => prose,
+            Self::DocumentAction => language.is_prose(),
         }
     }
 
     pub(super) fn language_ids(self) -> Vec<&'static str> {
-        LANGUAGE_IDS
+        Language::ALL
             .into_iter()
-            .filter(|language_id| self.applies_to(language_id))
+            .filter(|language| self.applies_to(*language))
+            .map(Language::id)
             .collect()
     }
 }
@@ -82,9 +61,11 @@ pub(crate) struct Features {
 }
 
 impl Features {
-    pub fn enables(&self, feature: Feature, language_id: &str) -> bool {
-        self.languages
-            .get(language_id)
+    /// `language` is `None` for a language ID that `extension.toml` does not
+    /// register, which only the switches for every language apply to.
+    pub fn enables(&self, feature: Feature, language: Option<Language>) -> bool {
+        language
+            .and_then(|language| self.languages.get(language.id()))
             .and_then(|switches| switches.get(&feature))
             .or_else(|| self.switches.get(&feature))
             .copied()
@@ -99,7 +80,7 @@ impl Features {
             return Ok(());
         };
         for (language_id, switches) in languages {
-            let Some(language) = LANGUAGE_IDS.into_iter().find(|known| known == language_id) else {
+            let Some(language) = Language::from_id(language_id) else {
                 return Err(ConfigError::FeatureLanguage);
             };
             let Value::Object(switches) = switches else {
@@ -109,7 +90,10 @@ impl Features {
                 if let Ok(feature) = Feature::deserialize(Value::String(name.clone()))
                     && !feature.applies_to(language)
                 {
-                    return Err(ConfigError::FeatureUnavailable { language, feature });
+                    return Err(ConfigError::FeatureUnavailable {
+                        language: language.id(),
+                        feature,
+                    });
                 }
             }
         }
@@ -122,6 +106,27 @@ mod tests {
     use serde_json::json;
 
     use super::{super::Settings, *};
+
+    const LANGUAGE_IDS: [&str; 18] = [
+        "rust",
+        "javascript",
+        "typescript",
+        "typescriptreact",
+        "csharp",
+        "c",
+        "cpp",
+        "python",
+        "json",
+        "jsonc",
+        "yaml",
+        "toml",
+        "shellscript",
+        "powershell",
+        "dockerfile",
+        "dockercompose",
+        "markdown",
+        "plaintext",
+    ];
 
     const GENERIC: &str = "Invalid translation settings: check field names and value types";
     const FEATURES: [(Feature, &str); 4] = [
@@ -155,6 +160,7 @@ mod tests {
             .map(|(_, language_id)| language_id.trim_matches('"'))
             .collect();
         assert_eq!(registered, LANGUAGE_IDS);
+        assert_eq!(Language::ALL.map(Language::id), LANGUAGE_IDS);
     }
 
     #[test]
@@ -170,7 +176,7 @@ mod tests {
             for (feature, name) in FEATURES {
                 for language_id in LANGUAGE_IDS {
                     assert!(
-                        features.enables(feature, language_id),
+                        features.enables(feature, Language::from_id(language_id)),
                         "{name} {language_id}"
                     );
                 }
@@ -181,7 +187,7 @@ mod tests {
             for (feature, _) in FEATURES {
                 for language_id in LANGUAGE_IDS {
                     assert_eq!(
-                        features.enables(feature, language_id),
+                        features.enables(feature, Language::from_id(language_id)),
                         feature != off,
                         "{name} {language_id}"
                     );
@@ -196,11 +202,11 @@ mod tests {
             "languages": {"yaml": {"comment_hover": false}, "toml": {"comment_hover": false}}
         }))
         .unwrap();
-        assert!(written.enables(Feature::CommentHover, "rust"));
-        assert!(!written.enables(Feature::CommentHover, "yaml"));
-        assert!(!written.enables(Feature::CommentHover, "toml"));
-        assert!(written.enables(Feature::SelectionAction, "yaml"));
-        assert!(!written.enables(Feature::DocumentAction, "markdown"));
+        assert!(written.enables(Feature::CommentHover, Language::from_id("rust")));
+        assert!(!written.enables(Feature::CommentHover, Language::from_id("yaml")));
+        assert!(!written.enables(Feature::CommentHover, Language::from_id("toml")));
+        assert!(written.enables(Feature::SelectionAction, Language::from_id("yaml")));
+        assert!(!written.enables(Feature::DocumentAction, Language::from_id("markdown")));
     }
 
     #[test]
@@ -216,7 +222,7 @@ mod tests {
                 let features = features(written).unwrap();
                 for language_id in LANGUAGE_IDS {
                     assert_eq!(
-                        features.enables(feature, language_id),
+                        features.enables(feature, Language::from_id(language_id)),
                         if language_id == language { own } else { !own },
                         "{name} {language_id}"
                     );
@@ -224,7 +230,7 @@ mod tests {
                 // The other features keep their own switches.
                 for (other, _) in FEATURES {
                     if other != feature {
-                        assert!(features.enables(other, language));
+                        assert!(features.enables(other, Language::from_id(language)));
                     }
                 }
             }
@@ -235,8 +241,11 @@ mod tests {
             "languages": {"javascript": {"selection_action": true}}
         }))
         .unwrap();
-        assert!(features.enables(Feature::SelectionAction, "javascript"));
-        assert!(!features.enables(Feature::SelectionAction, "javascriptreact"));
+        assert!(features.enables(Feature::SelectionAction, Language::from_id("javascript")));
+        assert!(!features.enables(
+            Feature::SelectionAction,
+            Language::from_id("javascriptreact")
+        ));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod config;
+mod language;
 mod lsp;
 mod providers;
 mod text;

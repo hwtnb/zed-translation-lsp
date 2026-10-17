@@ -2,9 +2,12 @@ use std::{ops::Range as ByteRange, time::Duration};
 
 use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
 
-use crate::text::{
-    comments::{Comments, Failure},
-    markdown::prose_ranges,
+use crate::{
+    language::Language,
+    text::{
+        comments::{Comments, Failure},
+        markdown::prose_ranges,
+    },
 };
 
 mod indexed_text;
@@ -28,7 +31,8 @@ pub(crate) struct Document {
     pub version: i32,
     /// Versions can repeat after didClose/didOpen. This identifies an open lifetime.
     pub session: u64,
-    pub language_id: String,
+    /// `None` for a language ID that `extension.toml` does not register.
+    pub language: Option<Language>,
     text: Option<IndexedText>,
     comments: Reading,
     unreported: Option<Failure>,
@@ -40,7 +44,7 @@ impl Document {
         Self {
             version,
             session,
-            language_id,
+            language: Language::from_id(&language_id),
             text: Some(IndexedText::new(text)),
             comments: Reading::Pending,
             unreported: None,
@@ -80,7 +84,7 @@ impl Document {
     }
 
     pub fn supports_document_preview(&self) -> bool {
-        matches!(self.language_id.as_str(), "markdown" | "plaintext")
+        self.language.is_some_and(Language::is_prose)
     }
 
     pub fn full_range(&self) -> Option<Range> {
@@ -147,7 +151,11 @@ impl Document {
         let Some(text) = self.text.as_ref() else {
             return;
         };
-        let read = Comments::parse(&self.language_id, uri, text.as_str(), limit);
+        let Some(language) = self.language else {
+            self.comments = Reading::Done(Comments::default());
+            return;
+        };
+        let read = Comments::parse(language, uri, text.as_str(), limit);
         self.comments = match read {
             Ok(comments) => Reading::Done(comments),
             Err(failure) => {

@@ -4,8 +4,10 @@ use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 
-pub(super) fn parse(language_id: &str, uri: &Uri, text: &str) -> Vec<Comment> {
-    let Some(source_type) = source_type(language_id, uri) else {
+use crate::language::Language;
+
+pub(super) fn parse(language: Language, uri: &Uri, text: &str) -> Vec<Comment> {
+    let Some(source_type) = source_type(language, uri) else {
         return Vec::new();
     };
     let allocator = Allocator::default();
@@ -30,11 +32,11 @@ pub(super) fn parse(language_id: &str, uri: &Uri, text: &str) -> Vec<Comment> {
         .collect()
 }
 
-pub(super) fn source_type(language_id: &str, uri: &Uri) -> Option<SourceType> {
-    let (typescript, jsx) = match language_id {
-        "javascript" | "javascriptreact" => (false, true),
-        "typescript" => (true, false),
-        "typescriptreact" => (true, true),
+pub(super) fn source_type(language: Language, uri: &Uri) -> Option<SourceType> {
+    let (typescript, jsx) = match language {
+        Language::JavaScript => (false, true),
+        Language::TypeScript => (true, false),
+        Language::TypeScriptReact => (true, true),
         _ => return None,
     };
     // Zed's JavaScript grammar accepts JSX, including in .js files. Oxc supplies

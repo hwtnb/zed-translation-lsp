@@ -13,6 +13,8 @@ use std::{
 use lsp_types::Uri;
 use rust_lexer::DocStyle;
 
+use crate::language::Language;
+
 mod c_family;
 mod csharp;
 mod data;
@@ -55,6 +57,7 @@ impl Comment {
 
 /// Store only source byte spans and syntax kinds. Bodies and LSP coordinates are
 /// produced for the requested group, rather than for every comment in a document.
+#[derive(Default)]
 pub(crate) struct Comments(Vec<Comment>);
 
 /// Why reading a document gave no comments.
@@ -94,7 +97,7 @@ impl Comments {
     /// The limit starts here. It stops the Tree-sitter languages; no other
     /// reader can be stopped part way.
     pub fn parse(
-        language_id: &str,
+        language: Language,
         uri: &Uri,
         text: &str,
         limit: Duration,
@@ -103,7 +106,7 @@ impl Comments {
         keep_reading_panics_quiet();
         READING.set(true);
         let read = panic::catch_unwind(AssertUnwindSafe(|| {
-            Self::read(language_id, uri, text, deadline)
+            Self::read(language, uri, text, deadline)
         }));
         READING.set(false);
         match read {
@@ -113,41 +116,36 @@ impl Comments {
         }
     }
 
-    fn read(language_id: &str, uri: &Uri, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
-        if language_id == "python" {
-            return python::parse(text, deadline);
-        }
-        if matches!(language_id, "c" | "cpp") {
-            return c_family::parse(language_id, text, deadline);
-        }
-        if language_id == "csharp" {
-            return csharp::parse(text, deadline);
-        }
-        if language_id == "rust" {
-            return Some(rust::parse(text));
-        }
-        if matches!(
-            language_id,
-            "json" | "jsonc" | "yaml" | "toml" | "dockercompose"
-        ) {
-            return Some(data::parse(language_id, text));
-        }
-        if matches!(language_id, "shellscript" | "powershell" | "dockerfile") {
-            // Read these as if a byte order mark were not there.
-            let mark = if text.starts_with('\u{feff}') { 3 } else { 0 };
-            let text = &text[mark..];
-            let mut comments = match language_id {
-                "shellscript" => shell::parse(text),
-                "powershell" => powershell::parse(text),
-                _ => dockerfile::parse(text),
-            };
-            for comment in &mut comments {
-                comment.range = comment.range.start + mark..comment.range.end + mark;
+    fn read(language: Language, uri: &Uri, text: &str, deadline: Instant) -> Option<Vec<Comment>> {
+        match language {
+            Language::Python => python::parse(text, deadline),
+            Language::C | Language::Cpp => c_family::parse(language, text, deadline),
+            Language::CSharp => csharp::parse(text, deadline),
+            Language::Rust => Some(rust::parse(text)),
+            Language::Json
+            | Language::Jsonc
+            | Language::Yaml
+            | Language::Toml
+            | Language::DockerCompose => Some(data::parse(language, text)),
+            Language::ShellScript | Language::PowerShell | Language::Dockerfile => {
+                // Read these as if a byte order mark were not there.
+                let mark = if text.starts_with('\u{feff}') { 3 } else { 0 };
+                let text = &text[mark..];
+                let mut comments = match language {
+                    Language::ShellScript => shell::parse(text),
+                    Language::PowerShell => powershell::parse(text),
+                    _ => dockerfile::parse(text),
+                };
+                for comment in &mut comments {
+                    comment.range = comment.range.start + mark..comment.range.end + mark;
+                }
+                Some(comments)
             }
-            return Some(comments);
+            Language::JavaScript | Language::TypeScript | Language::TypeScriptReact => {
+                Some(javascript::parse(language, uri, text))
+            }
+            Language::Markdown | Language::PlainText => Some(Vec::new()),
         }
-
-        Some(javascript::parse(language_id, uri, text))
     }
 
     /// A group is a range of comment indices, not a copy of the source or body.
@@ -278,7 +276,13 @@ mod tests {
     use super::*;
 
     fn parsed(language: &str, uri: &Uri, text: &str) -> Comments {
-        Comments::parse(language, uri, text, Duration::from_secs(60)).unwrap()
+        Comments::parse(
+            Language::from_id(language).unwrap(),
+            uri,
+            text,
+            Duration::from_secs(60),
+        )
+        .unwrap()
     }
 
     fn body_at(language: &str, text: &str, marker: &str) -> (String, String) {
@@ -2296,7 +2300,6 @@ mod tests {
         for (language, path, typescript, jsx) in [
             ("javascript", "file:///a.js", false, true),
             ("javascript", "file:///a.jsx", false, true),
-            ("javascriptreact", "untitled:a", false, true),
             ("typescript", "file:///a.ts", true, false),
             ("typescriptreact", "file:///a.tsx", true, true),
         ] {
@@ -2374,12 +2377,13 @@ mod tests {
             ),
             ("typescriptreact", "untitled:a", true, true, false),
         ] {
-            let source = source_type(id, &path.parse().unwrap()).unwrap();
+            let source =
+                source_type(Language::from_id(id).unwrap(), &path.parse().unwrap()).unwrap();
             assert_eq!(source.is_typescript(), ts);
             assert_eq!(source.is_jsx(), jsx);
             assert_eq!(source.is_typescript_definition(), definition);
         }
-        assert!(source_type("markdown", &"file:///a.jsx".parse().unwrap()).is_none());
+        assert!(source_type(Language::Markdown, &"file:///a.jsx".parse().unwrap()).is_none());
     }
 
     #[test]
@@ -2388,7 +2392,13 @@ mod tests {
         let text = "// c\n# c\n";
         for language in ["c", "cpp", "csharp", "python"] {
             assert_eq!(
-                Comments::parse(language, &uri, text, Duration::ZERO).err(),
+                Comments::parse(
+                    Language::from_id(language).unwrap(),
+                    &uri,
+                    text,
+                    Duration::ZERO
+                )
+                .err(),
                 Some(Failure::TimedOut),
                 "{language}"
             );
@@ -2408,7 +2418,13 @@ mod tests {
             "markdown",
         ] {
             assert!(
-                Comments::parse(language, &uri, text, Duration::ZERO).is_ok(),
+                Comments::parse(
+                    Language::from_id(language).unwrap(),
+                    &uri,
+                    text,
+                    Duration::ZERO
+                )
+                .is_ok(),
                 "{language}"
             );
         }
@@ -2439,7 +2455,7 @@ mod tests {
         // On this many continued lines a step can take seconds on a slow
         // machine, so only the result is checked here.
         let continued = "\\\n".repeat(40 * 1024);
-        let read = Comments::parse("python", &uri, &continued, limit);
+        let read = Comments::parse(Language::Python, &uri, &continued, limit);
         assert_eq!(read.err(), Some(Failure::TimedOut));
 
         // This text is parsed at once. Each of its hundreds of nodes is made
@@ -2467,7 +2483,7 @@ mod tests {
         // ra-ap-rustc_lexer 0.177 panics on an opening of more than 65,535 dashes.
         let text = format!("{}\n// Secret.\n", "-".repeat(65_536));
         let Err(Failure::Panicked(Some(place))) =
-            Comments::parse("rust", &uri, &text, Duration::from_secs(60))
+            Comments::parse(Language::Rust, &uri, &text, Duration::from_secs(60))
         else {
             panic!("Expected a panic");
         };
