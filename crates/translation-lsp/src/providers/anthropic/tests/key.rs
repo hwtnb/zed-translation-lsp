@@ -460,7 +460,7 @@ async fn key_saved_replaced_or_removed_is_followed_without_a_restart() {
     // The context shows a count, and nothing of the key.
     for context in [first, second, third] {
         let shown = format!("{context:?}");
-        assert!(shown.starts_with("Anthropic(KeyId("), "{shown}");
+        assert!(shown.starts_with("KeyId("), "{shown}");
         assert!(!shown.contains("sk-ant"));
     }
 }

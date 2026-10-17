@@ -1,5 +1,8 @@
 use super::*;
-use crate::providers::chatgpt::test_support::{Fixture, StreamTailGate};
+use crate::providers::chatgpt::{
+    auth::AccountKey,
+    test_support::{Fixture, StreamTailGate},
+};
 use serde_json::json;
 
 #[tokio::test(flavor = "current_thread")]
@@ -842,7 +845,9 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
     assert!(fixture.state.lock().unwrap().records.is_empty());
 }
 
-async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
+async fn next(
+    receiver: &crossbeam_channel::Receiver<WorkerEvent<AccountKey>>,
+) -> Finished<AccountKey> {
     let receiver = receiver.clone();
     tokio::task::spawn_blocking(move || {
         loop {
@@ -3102,10 +3107,11 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
             Stored::Translation(
                 Output::Range,
                 Preview::new(
-                    Context::Mock,
+                    AccountKey::synthetic(),
                     Range::new(Position::new(0, 0), Position::new(0, 11)),
                     "cached".into(),
                     true,
+                    None,
                 ),
             ),
         );
@@ -3845,7 +3851,7 @@ async fn range_server(
     Server<ChatGptProvider>,
     Connection,
     Connection,
-    crossbeam_channel::Receiver<WorkerEvent>,
+    crossbeam_channel::Receiver<WorkerEvent<AccountKey>>,
     Uri,
 ) {
     let fixture = Fixture::new().await;
@@ -4321,6 +4327,7 @@ async fn retry_action_refreshes_failed_range_without_discarding_readable_transla
                 target.range,
                 "Previous translation".into(),
                 false,
+                None,
             ),
         ),
     );

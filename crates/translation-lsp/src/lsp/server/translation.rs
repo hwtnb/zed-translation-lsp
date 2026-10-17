@@ -76,7 +76,7 @@ impl<P: TranslationProvider> Server<P> {
         &mut self,
         target: &TranslationTarget,
         request: &TranslationRequest,
-    ) -> Option<Preview> {
+    ) -> Option<Preview<P::Context>> {
         let output = request.output();
         self.cache
             .exact(&target.uri, target.range, output)
@@ -98,7 +98,7 @@ impl<P: TranslationProvider> Server<P> {
         &mut self,
         target: TranslationTarget,
         request: TranslationRequest,
-        preview: Preview,
+        preview: Preview<P::Context>,
     ) -> RequestResult<Option<Value>> {
         self.next_ticket += 1;
         self.cache.insert(
@@ -130,7 +130,7 @@ impl<P: TranslationProvider> Server<P> {
         &mut self,
         ticket: u64,
         request: TranslationRequest,
-        context: &Context,
+        context: &P::Context,
     ) -> RequestResult<()> {
         let generation = if request.explicit() {
             Some(
@@ -154,7 +154,7 @@ impl<P: TranslationProvider> Server<P> {
         &mut self,
         target: TranslationTarget,
         request: TranslationRequest,
-        context: Context,
+        context: P::Context,
     ) -> RequestResult<()> {
         if !self
             .scheduler
@@ -216,7 +216,7 @@ impl<P: TranslationProvider> Server<P> {
     pub(super) fn finish(
         &mut self,
         connection: &Connection,
-        completion: Finished,
+        completion: Finished<P::Context>,
     ) -> ServerResult<()> {
         self.scheduler.terminated(completion.ticket());
         self.expire(connection)?;
@@ -231,7 +231,7 @@ impl<P: TranslationProvider> Server<P> {
     fn finish_translation(
         &mut self,
         connection: &Connection,
-        completion: Completion<Translated>,
+        completion: Completion<Translated<P::Context>>,
     ) -> ServerResult<()> {
         let Some(work) = self.scheduler.remove(completion.ticket) else {
             return Ok(());
@@ -265,6 +265,7 @@ impl<P: TranslationProvider> Server<P> {
                 work.target.range,
                 translation.text,
                 work.is_comment,
+                P::capabilities().hover_note,
             ))
         })();
         self.complete(connection, completion.ticket, &work, result, silent)?;
@@ -276,8 +277,8 @@ impl<P: TranslationProvider> Server<P> {
         &mut self,
         connection: &Connection,
         ticket: u64,
-        work: &Translation,
-        result: RequestResult<Preview>,
+        work: &Translation<P::Context>,
+        result: RequestResult<Preview<P::Context>>,
         silent: bool,
     ) -> ServerResult<()> {
         match &result {

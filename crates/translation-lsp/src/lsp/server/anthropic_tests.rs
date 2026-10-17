@@ -1,7 +1,10 @@
 use super::*;
 use crate::providers::{
     Intent,
-    anthropic::test_support::{Fixture, Reply, started, text_block},
+    anthropic::{
+        key::KeyId,
+        test_support::{Fixture, Reply, started, text_block},
+    },
 };
 use serde_json::json;
 
@@ -9,7 +12,7 @@ mod document;
 mod key;
 mod startup;
 
-async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent>) -> Finished {
+async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent<KeyId>>) -> Finished<KeyId> {
     let receiver = receiver.clone();
     tokio::task::spawn_blocking(move || {
         loop {
@@ -31,7 +34,7 @@ fn server(
     Server<AnthropicProvider>,
     Connection,
     Connection,
-    crossbeam_channel::Receiver<WorkerEvent>,
+    crossbeam_channel::Receiver<WorkerEvent<KeyId>>,
 ) {
     let (connection, client) = Connection::memory();
     let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);

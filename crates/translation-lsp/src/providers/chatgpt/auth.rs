@@ -76,6 +76,17 @@ pub(crate) struct AccountKey {
 }
 
 impl AccountKey {
+    #[cfg(test)]
+    pub fn synthetic() -> Self {
+        Self {
+            registration: Uuid::nil(),
+            authorization_id: Uuid::nil(),
+            issuer: "https://issuer.invalid".into(),
+            subject: "synthetic".into(),
+            client_id: "synthetic".into(),
+        }
+    }
+
     fn for_registration(id: Uuid, registration: &Registration) -> Self {
         Self {
             registration: id,

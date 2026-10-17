@@ -47,11 +47,11 @@ impl TranslationRequest {
     }
 }
 
-pub(super) struct PreparedTranslation {
+pub(super) struct PreparedTranslation<C> {
     pub target: TranslationTarget,
-    pub context: Context,
+    pub context: C,
     pub is_comment: bool,
-    pub task: Task,
+    pub task: Task<C>,
 }
 
 /// The requests that keep a translation going besides Hover waiters.
@@ -109,8 +109,8 @@ impl Owners {
     }
 }
 
-pub(super) struct Translation {
-    pub context: Context,
+pub(super) struct Translation<C> {
+    pub context: C,
     pub target: TranslationTarget,
     pub is_comment: bool,
     pub deadline: watch::Sender<Option<Instant>>,
@@ -118,10 +118,10 @@ pub(super) struct Translation {
     pub phase: Phase,
     pub started: Option<Instant>,
     pub limit: Duration,
-    pub task: Option<Task>,
+    pub task: Option<Task<C>>,
 }
 
-impl Translation {
+impl<C> Translation<C> {
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
     }
@@ -134,18 +134,27 @@ impl Translation {
     }
 }
 
-#[derive(Default)]
-pub(super) struct Scheduler {
+pub(super) struct Scheduler<C> {
     /// Hover requests waiting for a translation.
     pending: HashMap<RequestId, Pending>,
-    translations: HashMap<u64, Translation>,
+    translations: HashMap<u64, Translation<C>>,
     /// Slots keep their dispatch category; adding another output does not start another operation.
     /// A canceled job occupies its slot until the worker acknowledges termination.
     dispatched: HashMap<u64, bool>,
 }
 
-impl Scheduler {
-    pub fn translations(&self) -> &HashMap<u64, Translation> {
+impl<C> Default for Scheduler<C> {
+    fn default() -> Self {
+        Self {
+            pending: HashMap::new(),
+            translations: HashMap::new(),
+            dispatched: HashMap::new(),
+        }
+    }
+}
+
+impl<C> Scheduler<C> {
+    pub fn translations(&self) -> &HashMap<u64, Translation<C>> {
         &self.translations
     }
 
@@ -234,7 +243,7 @@ impl Scheduler {
     }
 
     /// Stops and removes the translations whose execution deadline passed.
-    pub fn take_expired(&mut self, now: Instant) -> Vec<(u64, Translation)> {
+    pub fn take_expired(&mut self, now: Instant) -> Vec<(u64, Translation<C>)> {
         let tickets: Vec<_> = self
             .translations
             .iter()
@@ -377,7 +386,7 @@ impl Scheduler {
     pub fn insert(
         &mut self,
         ticket: u64,
-        prepared: PreparedTranslation,
+        prepared: PreparedTranslation<C>,
         request: TranslationRequest,
         settings: &Settings,
         now: Instant,
@@ -410,7 +419,7 @@ impl Scheduler {
         Ok(())
     }
 
-    pub fn remove(&mut self, ticket: u64) -> Option<Translation> {
+    pub fn remove(&mut self, ticket: u64) -> Option<Translation<C>> {
         let work = self.translations.remove(&ticket)?;
         work.deadline.send_replace(None);
         Some(work)
@@ -449,7 +458,7 @@ impl Scheduler {
 
     pub fn dispatch(
         &mut self,
-        jobs: &JobSender,
+        jobs: &JobSender<C>,
         settings: &Settings,
         now: Instant,
     ) -> RequestResult<()> {
@@ -497,9 +506,10 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::mock::MockContext;
 
     fn add(
-        s: &mut Scheduler,
+        s: &mut Scheduler<MockContext>,
         ticket: u64,
         request: TranslationRequest,
         settings: &Settings,
@@ -521,13 +531,13 @@ mod tests {
             generation: 0,
             text: "source".into(),
             target_language: "ja".into(),
-            context: Context::Mock,
+            context: MockContext,
         };
         s.insert(
             ticket,
             PreparedTranslation {
                 target,
-                context: Context::Mock,
+                context: MockContext,
                 is_comment: false,
                 task,
             },
@@ -670,6 +680,7 @@ mod tests {
 #[cfg(test)]
 mod shared_outputs_tests {
     use super::*;
+    use crate::providers::mock::MockContext;
 
     #[test]
     fn a_tab_subscriber_shares_a_running_range_without_another_slot() {
@@ -691,7 +702,7 @@ mod shared_outputs_tests {
                 generation: 0,
                 text: "source".into(),
                 target_language: "ja".into(),
-                context: Context::Mock,
+                context: MockContext,
             };
             let request = if ticket == 1 {
                 TranslationRequest::Document
@@ -703,7 +714,7 @@ mod shared_outputs_tests {
                     ticket as u64,
                     PreparedTranslation {
                         target,
-                        context: Context::Mock,
+                        context: MockContext,
                         is_comment: false,
                         task,
                     },
@@ -736,6 +747,7 @@ mod shared_outputs_tests {
 #[cfg(test)]
 mod separate_outputs_tests {
     use super::*;
+    use crate::providers::anthropic::key::KeyId;
 
     fn settings(separate: bool) -> Settings {
         let mut provider = serde_json::json!({"name": "anthropic"});
@@ -760,7 +772,7 @@ mod separate_outputs_tests {
     }
 
     fn add(
-        scheduler: &mut Scheduler,
+        scheduler: &mut Scheduler<KeyId>,
         ticket: u64,
         line: u32,
         request: TranslationRequest,
@@ -773,14 +785,14 @@ mod separate_outputs_tests {
             generation: 0,
             text: "source".into(),
             target_language: "ja".into(),
-            context: Context::Anthropic(crate::providers::anthropic::key::KeyId::SYNTHETIC),
+            context: KeyId::SYNTHETIC,
         };
         scheduler
             .insert(
                 ticket,
                 PreparedTranslation {
                     target: target(line),
-                    context: Context::Anthropic(crate::providers::anthropic::key::KeyId::SYNTHETIC),
+                    context: KeyId::SYNTHETIC,
                     is_comment: false,
                     task,
                 },

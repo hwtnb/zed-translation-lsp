@@ -602,11 +602,7 @@ async fn dropping_the_translation_closes_its_request() {
 }
 
 #[test]
-fn foreign_contexts_are_rejected_before_any_work() {
-    let keys = KeyDirectory::with_key(KEY);
-    let provider = AnthropicProvider::synthetic("http://127.0.0.1:9/v1".into(), &keys.path);
-    assert!(provider.admit(&Context::Mock, Intent::Explicit).is_err());
-    provider.check_admission(&Context::Mock, 0).unwrap();
+fn capabilities_name_the_anthropic_server() {
     assert_eq!(
         AnthropicProvider::capabilities().server_name,
         "Translation LSP (Anthropic)"

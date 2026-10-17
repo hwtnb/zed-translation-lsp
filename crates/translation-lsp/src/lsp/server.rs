@@ -7,8 +7,8 @@ mod translation;
 mod worker;
 
 use tokio::sync::mpsc as queue;
-type JobSender = queue::Sender<Job>;
-type JobReceiver = queue::Receiver<Job>;
+type JobSender<C> = queue::Sender<Job<C>>;
+type JobReceiver<C> = queue::Receiver<Job<C>>;
 use commands::ServerCommand;
 use scheduler::{PendingReply, Scheduler, Translation, TranslationRequest};
 use selection::Selection;
@@ -51,7 +51,7 @@ use crate::{
     },
     language::Language,
     providers::{
-        AccountChange, AuthUiState, Context, Interaction, Output, OutputOptions, Translated,
+        AccountChange, AuthUiState, Interaction, Output, OutputOptions, Translated,
         TranslationProvider,
         anthropic::{self, AnthropicProvider},
         chatgpt::{self, ChatGptProvider},
@@ -96,22 +96,22 @@ struct TranslationTarget {
     target_language: String,
 }
 
-struct Administration {
+struct Administration<C> {
     command: String,
     ticket: u64,
     stop: watch::Sender<Option<Instant>>,
     deadline: Instant,
     /// The context when a command that asks before it changes the account was
     /// taken, to tell afterwards whether it did.
-    context: Option<Context>,
+    context: Option<C>,
 }
 
 /// The problem shown in the status, with the translation it came from, so that
 /// it is cleared when that translation's document or account changes.
-struct ShownProblem {
+struct ShownProblem<C> {
     problem: Problem,
     target: TranslationTarget,
-    context: Option<Context>,
+    context: Option<C>,
 }
 
 struct Server<P: TranslationProvider> {
@@ -120,19 +120,19 @@ struct Server<P: TranslationProvider> {
     ui: Ui,
     activity: Activity,
     preview_files: PreviewFiles,
-    cache: Cache,
-    problem: Option<ShownProblem>,
-    administrations: HashMap<RequestId, Administration>,
+    cache: Cache<P::Context>,
+    problem: Option<ShownProblem<P::Context>>,
+    administrations: HashMap<RequestId, Administration<P::Context>>,
     documents: HashMap<Uri, Document>,
-    scheduler: Scheduler,
-    selection: Option<Selection>,
+    scheduler: Scheduler<P::Context>,
+    selection: Option<Selection<P::Context>>,
     previous_selection: Option<TranslationTarget>,
     adjusting_ticket: Option<u64>,
     next_session: u64,
     next_ticket: u64,
-    jobs: Option<JobSender>,
+    jobs: Option<JobSender<P::Context>>,
     worker: Option<thread::JoinHandle<()>>,
-    admin_jobs: Option<JobSender>,
+    admin_jobs: Option<JobSender<P::Context>>,
 }
 
 pub fn run_stdio() -> ServerResult<()> {
@@ -383,7 +383,10 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
 
 impl Server<MockProvider> {
     #[cfg(test)]
-    fn new(options: MockOptions, finished: Sender<WorkerEvent>) -> ServerResult<Self> {
+    fn new(
+        options: MockOptions,
+        finished: Sender<WorkerEvent<crate::providers::mock::MockContext>>,
+    ) -> ServerResult<Self> {
         let mut settings = Settings::default();
         options.apply_timeouts(&mut settings);
         let (sender, _) = bounded(1);
@@ -398,7 +401,10 @@ impl Server<MockProvider> {
 
 impl<P: TranslationProvider> Server<P> {
     #[cfg(test)]
-    fn new_with_provider(finished: Sender<WorkerEvent>, provider: P) -> ServerResult<Self> {
+    fn new_with_provider(
+        finished: Sender<WorkerEvent<P::Context>>,
+        provider: P,
+    ) -> ServerResult<Self> {
         let (sender, _) = bounded(1);
         Self::configured(
             finished,
@@ -409,7 +415,7 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn configured(
-        finished: Sender<WorkerEvent>,
+        finished: Sender<WorkerEvent<P::Context>>,
         provider: P,
         settings: Settings,
         ui: Ui,
@@ -479,13 +485,7 @@ impl<P: TranslationProvider> Server<P> {
              }| {
                 !self.target_is_current(target)
                     || self.provider.context().map_or_else(
-                        |_| {
-                            P::capabilities().account_menu.is_some()
-                                && matches!(
-                                    self.provider.auth_ui_state(),
-                                    AuthUiState::SignedOut | AuthUiState::PlanDisabled
-                                )
-                        },
+                        |_| self.provider.auth_ui_state().needs_account(),
                         |current| previous.as_ref() != Some(&current),
                     )
             },
@@ -509,7 +509,7 @@ impl<P: TranslationProvider> Server<P> {
         self.activity.publish(activity, problem, Instant::now());
     }
 
-    fn record_problem(&mut self, work: &Translation, problem: Problem) {
+    fn record_problem(&mut self, work: &Translation<P::Context>, problem: Problem) {
         if !self.ui.capabilities.server_status {
             return;
         }
@@ -532,7 +532,7 @@ impl<P: TranslationProvider> Server<P> {
         self.cache.clear();
     }
 
-    fn check_cache(&mut self) -> RequestResult<Context> {
+    fn check_cache(&mut self) -> RequestResult<P::Context> {
         if !self.administrations.is_empty() {
             return Err(failure(
                 ErrorCode::RequestFailed,
@@ -614,9 +614,7 @@ impl<P: TranslationProvider> Server<P> {
             return Ok(Vec::new());
         }
         let state = self.provider.auth_ui_state();
-        if P::capabilities().account_menu.is_some()
-            && matches!(state, AuthUiState::SignedOut | AuthUiState::PlanDisabled)
-        {
+        if state.needs_account() {
             self.clear_problem();
         }
         self.observe_selection(&params, state);
@@ -627,7 +625,7 @@ impl<P: TranslationProvider> Server<P> {
         if let Some(title) = P::capabilities().account_menu {
             actions.push(ServerCommand::Account(SETTINGS_COMMAND.into()).action(title.into())?);
         }
-        if P::capabilities().account_menu.is_some() && state != AuthUiState::Ready {
+        if state != AuthUiState::Ready {
             return Ok(actions);
         }
         let retry_range = if params.range.start == params.range.end && self.check_cache().is_ok() {
@@ -739,7 +737,7 @@ impl<P: TranslationProvider> Server<P> {
             Duration::from_millis(self.settings.comment_parse_timeout_ms),
         );
         report_comment_failure(&self.ui, &position.text_document.uri, document)?;
-        let eligible = |preview: &Preview| {
+        let eligible = |preview: &Preview<P::Context>| {
             !preview.is_comment
                 || preview.range.end != position.position
                 || (end_is_clear && !range.is_some_and(|range| range.start == position.position))

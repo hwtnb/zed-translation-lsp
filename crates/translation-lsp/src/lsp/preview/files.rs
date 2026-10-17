@@ -22,10 +22,10 @@ pub(in crate::lsp) struct PreviewFiles {
 }
 
 impl PreviewFiles {
-    pub fn open(
+    pub fn open<C>(
         &mut self,
         ui: &Ui,
-        preview: &Preview,
+        preview: &Preview<C>,
         markdown: bool,
     ) -> Result<(), ResponseError> {
         let key = (preview.id, markdown);
@@ -165,13 +165,8 @@ mod tests {
 
     use super::*;
 
-    fn preview(text: &str) -> Preview {
-        Preview::new(
-            crate::providers::Context::Mock,
-            lsp_types::Range::default(),
-            text.into(),
-            false,
-        )
+    fn preview(text: &str) -> Preview<()> {
+        Preview::new((), lsp_types::Range::default(), text.into(), false, None)
     }
 
     fn shown_path(client: &Connection) -> PathBuf {

@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::config::{ChatgptSpeed, ReasoningEffort, limits::SizeLimit};
 
 use super::{
-    AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     error::Error,
@@ -142,7 +142,7 @@ impl ChatGptProvider {
         expected: &AccountKey,
         intent: Intent,
         output: Output,
-    ) -> Result<Translated, Error> {
+    ) -> Result<Translated<AccountKey>, Error> {
         let generation = self.admission.admit(expected, intent)?;
         let access = match self.auth.access(expected).await {
             Ok(access) => access,
@@ -208,28 +208,24 @@ impl ChatGptProvider {
         self.admission.settle(key, intent, generation, &mut result);
         Ok(Translated {
             text: result?,
-            context: Context::ChatGpt(access.key),
+            context: access.key,
         })
     }
 }
 
 impl TranslationProvider for ChatGptProvider {
-    fn check_admission(&self, context: &Context, generation: u64) -> Result<(), Error> {
-        let Context::ChatGpt(key) = context else {
-            return Ok(());
-        };
+    /// The selected account and its authorization.
+    type Context = AccountKey;
+
+    fn check_admission(&self, key: &AccountKey, generation: u64) -> Result<(), Error> {
         self.admission.check(key, generation)
     }
 
-    fn context(&self) -> Result<Context, Error> {
-        let key = self.auth.key()?;
-        Ok(Context::ChatGpt(key))
+    fn context(&self) -> Result<AccountKey, Error> {
+        self.auth.key()
     }
 
-    fn admit(&self, context: &Context, intent: Intent) -> Result<u64, Error> {
-        let Context::ChatGpt(key) = context else {
-            return Err(account_changed());
-        };
+    fn admit(&self, key: &AccountKey, intent: Intent) -> Result<u64, Error> {
         self.admission.admit(key, intent)
     }
 
@@ -242,6 +238,7 @@ impl TranslationProvider for ChatGptProvider {
             automatic_selection: true,
             account_menu: Some("ChatGPT account…"),
             commands: &COMMANDS,
+            hover_note: None,
         }
     }
 
@@ -255,11 +252,8 @@ impl TranslationProvider for ChatGptProvider {
         output: Output,
         text: &str,
         target: &str,
-        context: Context,
-    ) -> Result<Translated, Error> {
-        let Context::ChatGpt(key) = context else {
-            return Err(account_changed());
-        };
+        key: AccountKey,
+    ) -> Result<Translated<AccountKey>, Error> {
         self.request(text, target, &key, intent, output).await
     }
 

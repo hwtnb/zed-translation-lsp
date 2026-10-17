@@ -4,7 +4,10 @@ use serde_json::{Value, json};
 use super::{actions, next, target};
 use crate::{
     lsp::server::*,
-    providers::anthropic::test_support::{Fixture, Reply, completed},
+    providers::anthropic::{
+        key::KeyId,
+        test_support::{Fixture, Reply, completed},
+    },
 };
 
 const TAB_MODEL: &str = "claude-sonnet-5-5";
@@ -15,7 +18,7 @@ type Editor = (
     Server<AnthropicProvider>,
     Connection,
     Connection,
-    crossbeam_channel::Receiver<WorkerEvent>,
+    crossbeam_channel::Receiver<WorkerEvent<KeyId>>,
 );
 
 fn settings(separate: bool, work: Value) -> Settings {
@@ -116,9 +119,9 @@ fn translate(
 /// Dispatched jobs wait here until the test hands them to the worker, so an
 /// operation stays in flight for as long as the test needs it.
 struct Held {
-    worker: JobSender,
-    jobs: JobReceiver,
-    waiting: Vec<Job>,
+    worker: JobSender<KeyId>,
+    jobs: JobReceiver<KeyId>,
+    waiting: Vec<Job<KeyId>>,
 }
 
 impl Held {

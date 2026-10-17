@@ -1,25 +1,22 @@
 use super::{Preview, fenced_text};
-use crate::{
-    config::limits::TranslationLimits,
-    providers::{Context, Output},
-};
+use crate::{config::limits::TranslationLimits, providers::Output};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range, Uri};
 
 /// What a cache entry holds.
-pub(crate) enum Stored {
+pub(crate) enum Stored<C> {
     /// A completed translation, kept for the output it was made for.
-    Translation(Output, Preview),
+    Translation(Output, Preview<C>),
     /// A failed range translation. Its Hover shows the message.
     Failure {
-        context: Context,
+        context: C,
         range: Range,
         message: String,
     },
 }
 
-impl Stored {
+impl<C: PartialEq> Stored<C> {
     /// A failure whose message is cut to a size that a Hover can show.
-    pub fn failure(context: Context, range: Range, message: &str) -> Self {
+    pub fn failure(context: C, range: Range, message: &str) -> Self {
         Self::Failure {
             context,
             range,
@@ -41,7 +38,7 @@ impl Stored {
         }
     }
 
-    fn context(&self) -> &Context {
+    fn context(&self) -> &C {
         match self {
             Self::Translation(_, preview) => &preview.context,
             Self::Failure { context, .. } => context,
@@ -55,7 +52,7 @@ impl Stored {
         }
     }
 
-    fn translation(&self, output: Output) -> Option<&Preview> {
+    fn translation(&self, output: Output) -> Option<&Preview<C>> {
         match self {
             Self::Translation(stored, preview) if *stored == output => Some(preview),
             _ => None,
@@ -67,15 +64,15 @@ impl Stored {
     }
 }
 
-struct Entry {
+struct Entry<C> {
     uri: Uri,
     ticket: u64,
-    stored: Stored,
+    stored: Stored<C>,
     used: u64,
 }
 
-pub(crate) struct Cache {
-    entries: Vec<Entry>,
+pub(crate) struct Cache<C> {
+    entries: Vec<Entry<C>>,
     clock: u64,
     count_limit: usize,
     byte_limit: usize,
@@ -95,9 +92,9 @@ pub(crate) fn overlaps(a: Range, b: Range) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-impl Cache {
+impl<C: Clone + PartialEq> Cache<C> {
     #[cfg(test)]
-    pub fn latest(&self, uri: &Uri) -> Option<&Preview> {
+    pub fn latest(&self, uri: &Uri) -> Option<&Preview<C>> {
         self.entries
             .iter()
             .filter(|e| &e.uri == uri)
@@ -135,12 +132,12 @@ impl Cache {
     pub fn remove_document(&mut self, uri: &Uri) {
         self.entries.retain(|e| &e.uri != uri);
     }
-    pub fn retain_context(&mut self, context: &Context) {
+    pub fn retain_context(&mut self, context: &C) {
         self.entries.retain(|e| e.stored.context() == context);
     }
 
     /// Marks the newest entry of `uri` that `select` accepts as used.
-    fn use_newest(&mut self, uri: &Uri, select: impl Fn(&Stored) -> bool) -> Option<&Stored> {
+    fn use_newest(&mut self, uri: &Uri, select: impl Fn(&Stored<C>) -> bool) -> Option<&Stored<C>> {
         let index = self
             .entries
             .iter()
@@ -153,7 +150,7 @@ impl Cache {
         Some(&self.entries[index].stored)
     }
 
-    pub fn exact(&mut self, uri: &Uri, range: Range, output: Output) -> Option<Preview> {
+    pub fn exact(&mut self, uri: &Uri, range: Range, output: Output) -> Option<Preview<C>> {
         self.use_newest(uri, |stored| {
             stored
                 .translation(output)
@@ -181,7 +178,7 @@ impl Cache {
         &mut self,
         uri: &Uri,
         position: Position,
-        eligible: impl Fn(&Preview) -> bool,
+        eligible: impl Fn(&Preview<C>) -> bool,
     ) -> Option<Hover> {
         self.use_newest(uri, |stored| {
             stored.translation(Output::Range).is_some_and(|preview| {
@@ -216,7 +213,7 @@ impl Cache {
         })
     }
 
-    pub fn insert(&mut self, uri: Uri, ticket: u64, stored: Stored) {
+    pub fn insert(&mut self, uri: Uri, ticket: u64, stored: Stored<C>) {
         let output = stored.output();
         let tab = output == Output::Document;
         let range = stored.range();
@@ -269,13 +266,14 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::mock::MockContext;
 
     fn range(start: u32, end: u32) -> Range {
         Range::new(Position::new(0, start), Position::new(0, end))
     }
 
-    fn preview(range: Range, text: &str) -> Preview {
-        Preview::new(Context::Mock, range, text.into(), false)
+    fn preview(range: Range, text: &str) -> Preview<MockContext> {
+        Preview::new(MockContext, range, text.into(), false, None)
     }
 
     fn value(hover: Hover) -> String {
@@ -308,7 +306,7 @@ mod tests {
         cache.insert(
             uri.clone(),
             4,
-            Stored::failure(Context::Mock, range(0, 10), "failure"),
+            Stored::failure(MockContext, range(0, 10), "failure"),
         );
         cache.insert(
             uri.clone(),

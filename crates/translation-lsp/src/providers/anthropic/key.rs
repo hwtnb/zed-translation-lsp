@@ -167,8 +167,8 @@ impl std::fmt::Debug for ApiKey {
     }
 }
 
-/// Stands for one key in `Context`. It is a count of the keys the provider has
-/// read, so it tells nothing of the key.
+/// Stands for one key as the provider's context. It is a count of the keys the
+/// provider has read, so it tells nothing of the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KeyId(u64);
 

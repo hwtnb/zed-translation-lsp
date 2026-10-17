@@ -2,13 +2,13 @@ use super::*;
 
 const ADMIN_CONCURRENCY: usize = 1;
 
-pub(super) struct Job {
+pub(super) struct Job<C> {
     pub(super) ticket: u64,
     pub(super) deadline: watch::Receiver<Option<Instant>>,
-    pub(super) task: Task,
+    pub(super) task: Task<C>,
 }
 
-pub(super) enum Task {
+pub(super) enum Task<C> {
     AccountMenu {
         ui: Ui,
     },
@@ -18,7 +18,7 @@ pub(super) enum Task {
         generation: u64,
         text: String,
         target_language: String,
-        context: Context,
+        context: C,
     },
     Administration {
         command: String,
@@ -27,8 +27,8 @@ pub(super) enum Task {
 }
 
 /// A job that ended, with the result of its kind of work.
-pub(super) enum Finished {
-    Translation(Completion<Translated>),
+pub(super) enum Finished<C> {
+    Translation(Completion<Translated<C>>),
     Administration(Completion<Administered>),
 }
 
@@ -45,7 +45,7 @@ pub(super) enum Administered {
     Message(String),
 }
 
-impl Finished {
+impl<C> Finished<C> {
     pub(super) fn ticket(&self) -> u64 {
         match self {
             Self::Translation(completion) => completion.ticket,
@@ -67,15 +67,15 @@ impl Finished {
     }
 }
 
-pub(super) enum WorkerEvent {
+pub(super) enum WorkerEvent<C> {
     Started(u64),
-    Finished(Finished),
+    Finished(Finished<C>),
 }
 
 pub(super) async fn worker<P: TranslationProvider>(
-    jobs: JobReceiver,
-    administrations: JobReceiver,
-    finished: Sender<WorkerEvent>,
+    jobs: JobReceiver<P::Context>,
+    administrations: JobReceiver<P::Context>,
+    finished: Sender<WorkerEvent<P::Context>>,
     provider: P,
     concurrency: usize,
 ) {
@@ -91,8 +91,8 @@ pub(super) async fn worker<P: TranslationProvider>(
 }
 
 async fn run_jobs<P: TranslationProvider>(
-    jobs: JobReceiver,
-    finished: Sender<WorkerEvent>,
+    jobs: JobReceiver<P::Context>,
+    finished: Sender<WorkerEvent<P::Context>>,
     provider: P,
     concurrency: usize,
 ) {
@@ -104,8 +104,8 @@ async fn run_jobs<P: TranslationProvider>(
 }
 
 pub(super) async fn run_job<P: TranslationProvider>(
-    job: Job,
-    finished: &Sender<WorkerEvent>,
+    job: Job<P::Context>,
+    finished: &Sender<WorkerEvent<P::Context>>,
     provider: &P,
 ) {
     let Job {

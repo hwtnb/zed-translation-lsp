@@ -1,10 +1,10 @@
 use serde_json::{Value, json};
 
-use super::{ChatGptProvider, ModelOptions, test_support::Fixture};
+use super::{ChatGptProvider, ModelOptions, auth::AccountKey, test_support::Fixture};
 use crate::{
     config::{ChatgptSpeed, ReasoningEffort},
     providers::{
-        Context, Intent, Output, OutputOptions, TranslationProvider,
+        Intent, Output, OutputOptions, TranslationProvider,
         error::{Error, ErrorKind},
     },
 };
@@ -24,7 +24,7 @@ async fn provider(
     fixture: &Fixture,
     range: ModelOptions,
     document: Option<ModelOptions>,
-) -> (ChatGptProvider, Context) {
+) -> (ChatGptProvider, AccountKey) {
     let auth = fixture.auth();
     fixture.connected(&auth, 3600).await;
     let provider =
@@ -36,7 +36,7 @@ async fn provider(
 
 async fn translate(
     provider: &ChatGptProvider,
-    context: &Context,
+    context: &AccountKey,
     intent: Intent,
     output: Output,
 ) -> Result<String, Error> {

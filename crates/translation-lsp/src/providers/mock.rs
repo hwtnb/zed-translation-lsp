@@ -1,4 +1,4 @@
-use super::{Capabilities, Context, Translated, TranslationProvider, error::Error};
+use super::{Capabilities, Translated, TranslationProvider, error::Error};
 
 use std::time::Duration;
 
@@ -47,6 +47,10 @@ impl MockOptions {
     }
 }
 
+/// The context of every mock translation: the mock provider has no account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MockContext;
+
 #[derive(Clone, Default)]
 pub(crate) struct MockProvider {
     options: MockOptions,
@@ -68,12 +72,19 @@ const PARAGRAPH: &str =
     "The `retry_count` value is preserved.\nRetry only after a temporary failure. 🚀";
 
 impl TranslationProvider for MockProvider {
+    type Context = MockContext;
+
+    fn context(&self) -> Result<MockContext, Error> {
+        Ok(MockContext)
+    }
+
     fn capabilities() -> Capabilities {
         Capabilities {
             server_name: "Translation LSP (Mock)",
             automatic_selection: false,
             account_menu: None,
             commands: &[],
+            hover_note: Some("Mock translation (fixed sample)"),
         }
     }
 
@@ -83,8 +94,8 @@ impl TranslationProvider for MockProvider {
         _output: crate::providers::Output,
         text: &str,
         target_language: &str,
-        context: Context,
-    ) -> Result<Translated, Error> {
+        context: MockContext,
+    ) -> Result<Translated<MockContext>, Error> {
         tokio::time::sleep(self.options.delay).await;
         if self.options.fail {
             return Err(Error::failed("Simulated mock translation failure"));
@@ -130,7 +141,7 @@ mod tests {
                     crate::providers::Output::Range,
                     "Any text",
                     "ja",
-                    Context::Mock
+                    MockContext
                 )
                 .await
                 .is_err()
@@ -143,7 +154,7 @@ mod tests {
                         crate::providers::Output::Range,
                         &text.replace('\n', "\r\n"),
                         "ja",
-                        Context::Mock
+                        MockContext
                     )
                     .await
                     .is_ok()
@@ -156,7 +167,7 @@ mod tests {
                     crate::providers::Output::Range,
                     COMMENT_BODY,
                     "en",
-                    Context::Mock
+                    MockContext
                 )
                 .await
                 .is_err()

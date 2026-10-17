@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::providers::mock::MockContext;
 
 #[tokio::test(flavor = "current_thread")]
 async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
@@ -11,14 +12,19 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         translation: std::sync::Arc<tokio::sync::Semaphore>,
     }
     impl TranslationProvider for GatedProvider {
+        type Context = MockContext;
+
+        fn context(&self) -> Result<MockContext, ProviderError> {
+            Ok(MockContext)
+        }
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
             _output: Output,
             text: &str,
             _: &str,
-            context: Context,
-        ) -> Result<Translated, ProviderError> {
+            context: MockContext,
+        ) -> Result<Translated<MockContext>, ProviderError> {
             let text = std::rc::Rc::new(text.to_owned());
             self.started.send("translation").unwrap();
             self.translation.acquire().await.unwrap().forget();
@@ -58,7 +64,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
                 generation: 0,
                 text: format!("source {ticket}"),
                 target_language: "ja".into(),
-                context: Context::Mock,
+                context: MockContext,
             }
         } else {
             Task::Administration {
@@ -122,14 +128,19 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
     #[derive(Clone)]
     struct RecordingProvider(Sender<(String, String)>);
     impl TranslationProvider for RecordingProvider {
+        type Context = MockContext;
+
+        fn context(&self) -> Result<MockContext, ProviderError> {
+            Ok(MockContext)
+        }
         async fn translate(
             &self,
             _intent: crate::providers::Intent,
             _output: Output,
             text: &str,
             target: &str,
-            context: Context,
-        ) -> Result<Translated, ProviderError> {
+            context: MockContext,
+        ) -> Result<Translated<MockContext>, ProviderError> {
             self.0.send((text.into(), target.into())).unwrap();
             Ok(Translated {
                 text: format!("fake: {text}"),
@@ -269,7 +280,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 ticket: old_ticket,
                 result: Ok(Translated {
                     text: "stale result".into(),
-                    context: Context::Mock,
+                    context: MockContext,
                 }),
             }),
         )
@@ -284,7 +295,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 ticket: new_ticket,
                 result: Ok(Translated {
                     text: "current result".into(),
-                    context: Context::Mock,
+                    context: MockContext,
                 }),
             }),
         )
@@ -311,6 +322,11 @@ fn provider_capabilities_drive_commands_and_account_actions() {
     #[derive(Clone)]
     struct OtherProvider;
     impl TranslationProvider for OtherProvider {
+        type Context = MockContext;
+
+        fn context(&self) -> Result<MockContext, ProviderError> {
+            Ok(MockContext)
+        }
         fn capabilities() -> Capabilities {
             Capabilities {
                 server_name: "Synthetic provider",
@@ -321,6 +337,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
                     title: "Inspect synthetic account",
                     changes_account: crate::providers::AccountChange::Never,
                 }],
+                hover_note: None,
             }
         }
         async fn translate(
@@ -329,8 +346,8 @@ fn provider_capabilities_drive_commands_and_account_actions() {
             _output: Output,
             text: &str,
             _: &str,
-            context: Context,
-        ) -> Result<Translated, ProviderError> {
+            context: MockContext,
+        ) -> Result<Translated<MockContext>, ProviderError> {
             Ok(Translated {
                 text: text.into(),
                 context,

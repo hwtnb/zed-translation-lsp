@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct Selection {
+pub(super) struct Selection<C> {
     pub target: TranslationTarget,
-    pub context: Option<Context>,
+    pub context: Option<C>,
     pub start: Option<Instant>,
 }
 
@@ -79,7 +79,7 @@ impl<P: TranslationProvider> Server<P> {
         self.scheduler.ticket(target, Output::Range, &self.settings)
     }
 
-    pub(super) fn can_start_selection(&self, selection: &Selection) -> bool {
+    pub(super) fn can_start_selection(&self, selection: &Selection<P::Context>) -> bool {
         if !self.administrations.is_empty() {
             return false;
         }

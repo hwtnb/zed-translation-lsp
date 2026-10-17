@@ -4,20 +4,23 @@ pub(super) mod cache;
 pub(super) mod files;
 
 #[derive(Clone)]
-pub(crate) struct Preview {
+pub(crate) struct Preview<C> {
     id: uuid::Uuid,
-    pub context: crate::providers::Context,
+    pub context: C,
     pub range: Range,
     pub translation: String,
     pub is_comment: bool,
+    /// The provider's line under the Hover title.
+    pub note: Option<&'static str>,
 }
 
-impl Preview {
+impl<C> Preview<C> {
     pub fn new(
-        context: crate::providers::Context,
+        context: C,
         range: Range,
         translation: String,
         is_comment: bool,
+        note: Option<&'static str>,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
@@ -25,6 +28,7 @@ impl Preview {
             range,
             translation,
             is_comment,
+            note,
         }
     }
 
@@ -34,10 +38,9 @@ impl Preview {
         if position < self.range.start || position > self.range.end {
             return None;
         }
-        let header = if matches!(self.context, crate::providers::Context::Mock) {
-            "> **Translation LSP**\n>\n> Mock translation (fixed sample)"
-        } else {
-            "> **Translation LSP**"
+        let header = match self.note {
+            Some(note) => format!("> **Translation LSP**\n>\n> {note}"),
+            None => "> **Translation LSP**".into(),
         };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -77,16 +80,13 @@ mod tests {
         fixture.connected(&auth, 3600).await;
         let source =
             "\t`id` 🚀\r\n````\r\n<script>**text**</script> ![image](https://example.invalid/)";
-        for context in [
-            crate::providers::Context::Mock,
-            crate::providers::Context::ChatGpt(auth.key().unwrap()),
-        ] {
-            let is_mock = matches!(context, crate::providers::Context::Mock);
+        for note in [Some("Mock translation (fixed sample)"), None] {
             let preview = Preview::new(
-                context,
+                auth.key().unwrap(),
                 Range::new(Position::new(0, 0), Position::new(0, 1)),
                 source.into(),
                 false,
+                note,
             );
             let HoverContents::Markup(content) =
                 preview.hover(preview.range.start).unwrap().contents
@@ -97,7 +97,7 @@ mod tests {
             assert!(!content.value.contains("ChatGPT 翻訳"));
             assert_eq!(
                 content.value.contains("Mock translation (fixed sample)"),
-                is_mock
+                note.is_some()
             );
             assert!(content.value.ends_with(&fenced_text(source)));
             let events: Vec<_> = pulldown_cmark::Parser::new(&content.value).collect();
@@ -141,12 +141,7 @@ mod tests {
     #[test]
     fn hover_includes_only_its_own_range_and_exact_end() {
         let range = Range::new(Position::new(1, 4), Position::new(2, 35));
-        let preview = Preview::new(
-            crate::providers::Context::Mock,
-            range,
-            "模擬訳".into(),
-            false,
-        );
+        let preview = Preview::new((), range, "模擬訳".into(), false, None);
         for position in [range.start, Position::new(2, 10), range.end] {
             assert_eq!(preview.hover(position).unwrap().range, Some(range));
         }

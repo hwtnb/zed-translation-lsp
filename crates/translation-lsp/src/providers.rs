@@ -8,9 +8,8 @@ pub(crate) mod prompt;
 pub(crate) mod sse;
 pub(crate) mod transport;
 
-use std::future::Future;
+use std::{fmt::Debug, future::Future};
 
-use chatgpt::auth::AccountKey;
 use error::Error;
 
 pub(crate) trait Interaction {
@@ -44,8 +43,12 @@ pub(crate) struct ProviderCommand {
 pub(crate) struct Capabilities {
     pub server_name: &'static str,
     pub automatic_selection: bool,
+    /// The title of the account menu. A provider without one has no account,
+    /// and its authentication state is always `Ready`.
     pub account_menu: Option<&'static str>,
     pub commands: &'static [ProviderCommand],
+    /// A line that the Hover header adds under the title.
+    pub hover_note: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,11 +59,12 @@ pub(crate) enum AuthUiState {
     Unavailable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Context {
-    Mock,
-    ChatGpt(AccountKey),
-    Anthropic(anthropic::key::KeyId),
+impl AuthUiState {
+    /// Whether the user has to connect an account or save a key before
+    /// translating.
+    pub fn needs_account(self) -> bool {
+        matches!(self, Self::SignedOut | Self::PlanDisabled)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,19 +110,21 @@ impl<T> OutputOptions<T> {
     }
 }
 
-pub(crate) struct Translated {
+pub(crate) struct Translated<C> {
     pub text: String,
-    pub context: Context,
+    pub context: C,
 }
 
 pub(crate) trait TranslationProvider: Clone + Send + 'static {
-    fn context(&self) -> Result<Context, Error> {
-        Ok(Context::Mock)
-    }
-    fn admit(&self, _context: &Context, _intent: Intent) -> Result<u64, Error> {
+    /// What a translation is made with, such as an account or a key. Results
+    /// made with one context are not shown for another.
+    type Context: Clone + Debug + PartialEq + Send + Sync + 'static;
+
+    fn context(&self) -> Result<Self::Context, Error>;
+    fn admit(&self, _context: &Self::Context, _intent: Intent) -> Result<u64, Error> {
         Ok(0)
     }
-    fn check_admission(&self, _context: &Context, _generation: u64) -> Result<(), Error> {
+    fn check_admission(&self, _context: &Self::Context, _generation: u64) -> Result<(), Error> {
         Ok(())
     }
     fn auth_ui_state(&self) -> AuthUiState {
@@ -130,6 +136,7 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
             automatic_selection: false,
             account_menu: None,
             commands: &[],
+            hover_note: None,
         }
     }
     fn account_commands(&self) -> Vec<ProviderCommand> {
@@ -141,8 +148,8 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
         output: Output,
         text: &str,
         target_language: &str,
-        context: Context,
-    ) -> impl Future<Output = Result<Translated, Error>>;
+        context: Self::Context,
+    ) -> impl Future<Output = Result<Translated<Self::Context>, Error>>;
     fn administer(
         &self,
         _command: &str,

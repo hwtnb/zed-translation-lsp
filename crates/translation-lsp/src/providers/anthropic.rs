@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::config::{AnthropicEffort, AnthropicSpeed, limits::SizeLimit};
 
 use super::{
-    AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     error::{Cause, Error, Service, credentials::CredentialError},
@@ -205,32 +205,21 @@ impl AnthropicProvider {
     }
 }
 
-fn key_of(context: &Context) -> Result<KeyId, Error> {
-    if let Context::Anthropic(key) = context {
-        Ok(*key)
-    } else {
-        Err(Error::failed(
-            "Translation was prepared for a different provider",
-        ))
-    }
-}
-
 impl TranslationProvider for AnthropicProvider {
-    /// The key in use is part of the context: what was translated or refused
-    /// with one key is not kept for another.
-    fn context(&self) -> Result<Context, Error> {
+    /// The key in use: what was translated or refused with one key is not kept
+    /// for another.
+    type Context = KeyId;
+
+    fn context(&self) -> Result<KeyId, Error> {
         let (_, key) = self.key.read()?;
-        Ok(Context::Anthropic(key))
+        Ok(key)
     }
 
-    fn admit(&self, context: &Context, intent: Intent) -> Result<u64, Error> {
-        self.admission.admit(&key_of(context)?, intent)
+    fn admit(&self, key: &KeyId, intent: Intent) -> Result<u64, Error> {
+        self.admission.admit(key, intent)
     }
 
-    fn check_admission(&self, context: &Context, generation: u64) -> Result<(), Error> {
-        let Context::Anthropic(key) = context else {
-            return Ok(());
-        };
+    fn check_admission(&self, key: &KeyId, generation: u64) -> Result<(), Error> {
         self.admission.check(key, generation)
     }
 
@@ -248,6 +237,7 @@ impl TranslationProvider for AnthropicProvider {
             automatic_selection: true,
             account_menu: Some(key::MENU),
             commands: &COMMANDS,
+            hover_note: None,
         }
     }
 
@@ -261,9 +251,8 @@ impl TranslationProvider for AnthropicProvider {
         output: Output,
         text: &str,
         target_language: &str,
-        context: Context,
-    ) -> Result<Translated, Error> {
-        let expected = key_of(&context)?;
+        expected: KeyId,
+    ) -> Result<Translated<KeyId>, Error> {
         let key = self.key_in_use(expected)?;
         let generation = self.admission.admit(&expected, intent)?;
         let secrets = [&*key.text, text];
@@ -335,7 +324,7 @@ impl TranslationProvider for AnthropicProvider {
         }
         Ok(Translated {
             text: completed.text,
-            context,
+            context: expected,
         })
     }
 
