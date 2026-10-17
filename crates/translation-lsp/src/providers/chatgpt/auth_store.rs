@@ -34,7 +34,6 @@ pub(crate) struct AuthState {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Registration {
-    #[serde(default)]
     pub authorization_id: Uuid,
     pub issuer: String,
     pub subject: String,
@@ -81,7 +80,7 @@ impl Credentials {
 impl AuthState {
     fn new() -> Self {
         Self {
-            version: 2,
+            version: 1,
             ext_agent_host_id: Uuid::new_v4().urn().to_string(),
             active_registration: None,
             registrations: BTreeMap::new(),
@@ -89,7 +88,7 @@ impl AuthState {
     }
 
     fn validate(&self) -> Result<(), CredentialError> {
-        if !matches!(self.version, 1 | 2)
+        if self.version != 1
             || !self.ext_agent_host_id.starts_with("urn:uuid:")
             || Uuid::parse_str(&self.ext_agent_host_id).is_err()
             || self
@@ -99,7 +98,7 @@ impl AuthState {
             return Err(CredentialError::Invalid);
         }
         for registration in self.registrations.values() {
-            if (self.version == 2 && registration.authorization_id.is_nil())
+            if registration.authorization_id.is_nil()
                 || registration.issuer.is_empty()
                 || registration.subject.is_empty()
                 || registration.client_id.is_empty()
@@ -143,32 +142,7 @@ impl AuthStore {
             return Ok(None);
         };
         match lock.try_lock_shared() {
-            Ok(()) => {
-                let snapshot = self.read()?;
-                if snapshot
-                    .as_ref()
-                    .is_none_or(|snapshot| snapshot.state.version == 2)
-                {
-                    return Ok(snapshot);
-                }
-                lock.unlock()
-                    .map_err(|source| CredentialError::io("unlock", source))?;
-                match lock.try_lock() {
-                    Ok(()) => (),
-                    Err(TryLockError::WouldBlock) => return Err(CredentialError::Busy),
-                    Err(TryLockError::Error(source)) => {
-                        return Err(CredentialError::io("lock", source));
-                    }
-                }
-                let state = self.read()?.ok_or(CredentialError::Invalid)?.state;
-                let mut locked = LockedStore {
-                    lock,
-                    store: self.clone(),
-                    state,
-                };
-                locked.migrate()?;
-                self.read()
-            }
+            Ok(()) => self.read(),
             Err(TryLockError::WouldBlock) => Err(CredentialError::Busy),
             Err(TryLockError::Error(source)) => Err(CredentialError::io("lock", source)),
         }
@@ -197,13 +171,11 @@ impl AuthStore {
         let state = self
             .read()?
             .map_or_else(AuthState::new, |snapshot| snapshot.state);
-        let mut locked = LockedStore {
+        Ok(Some(LockedStore {
             lock,
             store: self.clone(),
             state,
-        };
-        locked.migrate()?;
-        Ok(Some(locked))
+        }))
     }
 
     fn open_lock(&self, create: bool) -> Result<Option<File>, CredentialError> {
@@ -252,18 +224,6 @@ impl AuthStore {
 }
 
 impl LockedStore {
-    fn migrate(&mut self) -> Result<(), CredentialError> {
-        if self.state.version == 2 {
-            return Ok(());
-        }
-        for registration in self.state.registrations.values_mut() {
-            registration.authorization_id = Uuid::new_v4();
-        }
-        self.state.version = 2;
-        self.save()?;
-        Ok(())
-    }
-
     pub fn revision(&self) -> Result<Option<Revision>, CredentialError> {
         self.store
             .read()
@@ -271,9 +231,6 @@ impl LockedStore {
     }
     pub fn save(&self) -> Result<Revision, CredentialError> {
         self.state.validate()?;
-        if self.state.version != 2 {
-            return Err(CredentialError::Invalid);
-        }
         let bytes = serde_json::to_vec(&self.state).map_err(CredentialError::Json)?;
         if bytes.len() as u64 > MAX_AUTH_BYTES {
             return Err(CredentialError::Invalid);
@@ -409,10 +366,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_store_migrates_once_under_lock_and_preserves_credentials() {
+    async fn store_rejects_records_other_than_version_1() {
         use super::super::{auth::Auth, http::Http, test_support::Fixture};
         let fixture = Fixture::new().await;
-        let directory = std::env::temp_dir().join(format!("zed-auth-migrate-{}", Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("zed-auth-version-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         let auth = Auth::synthetic(
             store.clone(),
@@ -420,10 +377,20 @@ mod tests {
             fixture.base.clone(),
         );
         fixture.connected(&auth, 3600).await;
-        let writer = store.lock(false).await.unwrap().unwrap();
-        let mut legacy = serde_json::to_value(&writer.state).unwrap();
-        legacy["version"] = 1.into();
-        for registration in legacy["registrations"]
+        let state = store.snapshot().unwrap().unwrap().state;
+        let current = serde_json::to_value(&state).unwrap();
+
+        let mut version_2 = current.clone();
+        version_2["version"] = 2.into();
+        fs::write(
+            directory.join("auth.json"),
+            serde_json::to_vec(&version_2).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(store.snapshot(), Err(CredentialError::Invalid)));
+
+        let mut without_authorization = current.clone();
+        for registration in without_authorization["registrations"]
             .as_object_mut()
             .unwrap()
             .values_mut()
@@ -433,40 +400,35 @@ mod tests {
                 .unwrap()
                 .remove("authorization_id");
         }
-        let bytes = serde_json::to_vec(&legacy).unwrap();
-        fs::write(directory.join("auth.json"), &bytes).unwrap();
-        assert!(matches!(store.snapshot(), Err(CredentialError::Busy)));
-        drop(writer);
-        let snapshot = store.snapshot().unwrap().unwrap();
-        assert_eq!(snapshot.state.version, 2);
-        let key = auth.key().unwrap();
-        assert!(!key.authorization_id.is_nil());
-        let mut migrated = serde_json::to_value(&snapshot.state).unwrap();
-        migrated["version"] = 1.into();
-        for registration in migrated["registrations"]
-            .as_object_mut()
-            .unwrap()
+        fs::write(
+            directory.join("auth.json"),
+            serde_json::to_vec(&without_authorization).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(store.snapshot(), Err(CredentialError::Json(_))));
+
+        let mut nil = state;
+        nil.registrations
             .values_mut()
-        {
-            registration
-                .as_object_mut()
-                .unwrap()
-                .remove("authorization_id");
-        }
-        assert!(
-            migrated == legacy,
-            "Migration preserves all existing fields"
+            .next()
+            .unwrap()
+            .authorization_id = Uuid::nil();
+        assert!(matches!(nil.validate(), Err(CredentialError::Invalid)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sign_out_clears_credentials_when_revocation_fails() {
+        use super::super::{auth::Auth, http::Http, test_support::Fixture};
+        let fixture = Fixture::new().await;
+        let directory = std::env::temp_dir().join(format!("zed-auth-signout-{}", Uuid::new_v4()));
+        let store = AuthStore::synthetic(directory.clone());
+        let auth = Auth::synthetic(
+            store.clone(),
+            Http::synthetic_revocation(&fixture.base),
+            fixture.base.clone(),
         );
-        let writer = store.lock(false).await.unwrap().unwrap();
-        assert_eq!(writer.state.version, 2);
-        drop(writer);
-        assert_eq!(auth.key().unwrap(), key);
-        let mut files: Vec<_> = fs::read_dir(&directory)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        files.sort();
-        assert_eq!(files, ["auth.json", "auth.lock"]);
+        fixture.connected(&auth, 3600).await;
         fixture.state.lock().unwrap().revoke_failure = true;
         auth.sign_out().await.unwrap();
         let signed_out = store.snapshot().unwrap().unwrap();
@@ -477,15 +439,12 @@ mod tests {
                 .values()
                 .all(|registration| registration.credentials.is_none())
         );
-        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
-        let mut invalid = snapshot.state;
-        invalid
-            .registrations
-            .values_mut()
-            .next()
+        let mut files: Vec<_> = fs::read_dir(&directory)
             .unwrap()
-            .authorization_id = Uuid::nil();
-        assert!(matches!(invalid.validate(), Err(CredentialError::Invalid)));
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["auth.json", "auth.lock"]);
         fs::remove_dir_all(directory).unwrap();
     }
 

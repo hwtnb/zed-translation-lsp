@@ -106,6 +106,4 @@ Credentials are stored locally in this extension's OS-specific configuration dir
 
 The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration.
 
-Authentication data uses `auth.json` version 2. On first access, the server migrates version 1 under the credential-store lock without creating a credential backup. Migration preserves tokens, registrations, and the selected account. Each registration receives an authorization ID: token refresh preserves it, while reconnecting replaces it. Refresh and temporary store locks preserve cached translations; the server checks authorization again before displaying them.
-
-Older binaries cannot read version 2. To downgrade, convert the current credentials to version 1 or sign in again.
+Authentication data is saved in `auth.json`. Each registration has an authorization ID: token refresh preserves it, while reconnecting replaces it. Refresh and temporary store locks preserve cached translations; the server checks authorization again before displaying them.
