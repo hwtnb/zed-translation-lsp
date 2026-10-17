@@ -485,7 +485,7 @@ async fn translation_prepared_under_another_key_is_refused_without_a_request() {
     assert_eq!(error.kind(), ErrorKind::Modified);
     assert_eq!(
         error.to_string(),
-        "Anthropic API key changed; retry the preview"
+        "Anthropic API key changed; retry the translation"
     );
     assert_eq!(fixture.calls(), 0);
 }
@@ -683,7 +683,7 @@ async fn waiting_resend_is_not_sent_once_the_key_is_replaced_or_removed() {
             fixture.keys.replace(FILE_KEY);
         } else {
             assert_eq!(error.kind(), ErrorKind::Modified);
-            assert_eq!(message, "Anthropic API key changed; retry the preview");
+            assert_eq!(message, "Anthropic API key changed; retry the translation");
         }
         assert!(!message.contains(PAUSED), "{message}");
 

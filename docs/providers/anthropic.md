@@ -45,7 +45,7 @@ With `thinking` set to `false`, the model answers without a reasoning step. With
 
 `speed` set to `fast` runs the model with faster output at a higher price. According to [Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode), it is a research preview on the Claude API only, for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8, and access is requested from your account manager or through the waitlist. With another model, the API returns an error for `fast` or processes the request at the standard speed. Exceeding the Fast mode rate limits returns HTTP 429 or 529, which is handled like any rate limit or overload.
 
-When a translation with `speed` completes, the server writes the requested value and the `usage.speed` the response reports to the language server log, for example `translation preview: Anthropic speed requested fast, served fast`. In Zed, run `dev: open language server logs` from the Command Palette to read it. When the response reports no value, the line says `(not reported)`. The source text, the translation, and the key are not written.
+When a translation with `speed` completes, the server writes the requested value and the `usage.speed` the response reports to the language server log, for example `translation-lsp: Anthropic speed requested fast, served fast`. In Zed, run `dev: open language server logs` from the Command Palette to read it. When the response reports no value, the line says `(not reported)`. The source text, the translation, and the key are not written.
 
 Unknown fields are rejected: there is no setting for the API key or the API endpoint. Restart the language server after changing these settings.
 

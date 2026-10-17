@@ -90,7 +90,7 @@ impl TranslationProvider for MockProvider {
             return Err(Error::failed("Simulated mock translation failure"));
         }
         if target_language != "ja" {
-            return Err(Error::failed("The mock preview only targets Japanese"));
+            return Err(Error::failed("The mock provider only targets Japanese"));
         }
         let translation = match text.replace("\r\n", "\n").replace('\r', "\n").trim() {
             COMMENT | COMMENT_BODY | DOCSTRING_BODY => {

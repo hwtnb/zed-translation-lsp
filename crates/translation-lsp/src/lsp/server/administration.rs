@@ -167,7 +167,10 @@ impl<P: TranslationProvider> Server<P> {
             params.command.as_str(),
             COMMAND | RETRY_COMMAND | DOCUMENT_COMMAND
         ) {
-            return Err(failure(ErrorCode::InvalidParams, "Unknown preview command"));
+            return Err(failure(
+                ErrorCode::InvalidParams,
+                "Unknown translation command",
+            ));
         }
         if params.arguments.len() != 1 {
             return Err(failure(
@@ -196,7 +199,7 @@ impl<P: TranslationProvider> Server<P> {
             {
                 return Err(failure(
                     ErrorCode::InvalidParams,
-                    "Document previews support Markdown and Plain Text",
+                    "Tab translations support Markdown and Plain Text",
                 ));
             }
             self.check_feature(Feature::DocumentAction, &target)?;

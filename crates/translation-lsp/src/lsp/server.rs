@@ -73,11 +73,11 @@ use super::{
 type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 type RequestResult<T> = Result<T, ResponseError>;
 
-const COMMAND: &str = "translation-lsp.preview";
+const COMMAND: &str = "translation-lsp.translate-selection";
 const RETRY_COMMAND: &str = "translation-lsp.retry";
 const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
 const SETTINGS_COMMAND: &str = "translation-lsp.settings";
-const ACTION_KIND: &str = "translation.preview";
+const ACTION_KIND: &str = "translation";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
 const WORKER_EVENT_CHANNEL_CAPACITY: usize = 8;
 const CANCEL_COMMAND: &str = "translation-lsp.cancel-range";
@@ -854,7 +854,7 @@ impl<P: TranslationProvider> Server<P> {
         })();
         if let Err(error) = result {
             // Notifications have no response. Do not log their text or document contents.
-            eprintln!("translation preview: {}", error.message);
+            eprintln!("translation-lsp: {}", error.message);
         }
         Ok(())
     }
@@ -898,7 +898,7 @@ fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> Reques
     let language = &document.language_id;
     let message = match cause {
         Failure::TimedOut => {
-            eprintln!("translation preview: reading comments timed out (language {language:?})");
+            eprintln!("translation-lsp: reading comments timed out (language {language:?})");
             format!(
                 "Reading comments in {name} timed out. Comments in this file are not recognized until you reopen it. To allow more time, adjust comment_parse_timeout_ms in Zed settings."
             )
@@ -906,7 +906,7 @@ fn report_comment_failure(ui: &Ui, uri: &Uri, document: &mut Document) -> Reques
         Failure::Panicked(place) => {
             let place = place.as_deref().unwrap_or("an unknown place");
             eprintln!(
-                "translation preview: reading comments panicked (language {language:?}, at {place})"
+                "translation-lsp: reading comments panicked (language {language:?}, at {place})"
             );
             format!(
                 "Reading comments in {name} failed. Comments in this file are not recognized until you reopen it."

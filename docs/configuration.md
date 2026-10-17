@@ -177,7 +177,7 @@ Translation size limits belong to `initialization_options.translation_limits`. V
 
 | Setting inside `translation_limits` | Default | Applies to |
 | --- | --- | --- |
-| `input_kib.hover` | `16` | New comment Hover requests, Markdown background translation, and manual selection Hover previews. |
+| `input_kib.hover` | `16` | New comment Hover requests, Markdown background translation, and manual selection translations shown in Hover. |
 | `input_kib.document` | `1024` | Whole documents and selections translated into a separate tab. |
 | `output_kib` | `4096` | Completed translations, regardless of display destination. |
 
@@ -217,7 +217,7 @@ The following are **maximum configurable values**, separate from the defaults ab
 
 Two combined limits also apply: `max(input_kib.hover, input_kib.document) × work.admitted` must not exceed `262144` KiB (256 MiB), and `output_kib × work.concurrent` must not exceed `65536` KiB (64 MiB). For example, 16 MiB document input with 64 accepted jobs is rejected; use at most 16 accepted jobs at that input limit. A 16 MiB output limit permits at most four simultaneous translations. These checks apply to configured worst cases, even when the queue is currently empty.
 
-These ceilings are a local resource policy, not measured hardware limits or provider guarantees. The input budget bounds accepted source payloads; the smaller output budget leaves room for escaped SSE events and multiple decoded output snapshots. The individual input caps allow larger documents while keeping automatic/selection Hover input more restricted. Job and cache-entry caps also bound scheduler and cache scans when texts are tiny. Cache text has a separate 256 MiB ceiling. Source documents, parser state, allocator overhead, transport buffers, and preview files are additional costs, so these figures are **not a process-memory guarantee**. Raising a limit beyond these ceilings requires reviewing this policy in the server, rather than overriding it in Zed.
+These ceilings are a local resource policy, not measured hardware limits or provider guarantees. The input budget bounds accepted source payloads; the smaller output budget leaves room for escaped SSE events and multiple decoded output snapshots. The individual input caps allow larger documents while keeping automatic/selection Hover input more restricted. Job and cache-entry caps also bound scheduler and cache scans when texts are tiny. Cache text has a separate 256 MiB ceiling. Source documents, parser state, allocator overhead, transport buffers, and temporary translation files are additional costs, so these figures are **not a process-memory guarantee**. Raising a limit beyond these ceilings requires reviewing this policy in the server, rather than overriding it in Zed.
 
 Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`. They bound transport processing separately from the decoded translation; they do not allocate the maximum up front.
 

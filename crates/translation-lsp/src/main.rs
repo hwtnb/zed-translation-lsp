@@ -5,7 +5,7 @@ fn main() -> ExitCode {
         return code;
     }
     if let Err(error) = translation_lsp::run_stdio() {
-        eprintln!("translation preview: {error}");
+        eprintln!("translation-lsp: {error}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

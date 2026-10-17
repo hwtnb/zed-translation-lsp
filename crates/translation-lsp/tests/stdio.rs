@@ -156,7 +156,7 @@ impl Client {
                         "textDocument": {
                             "hover": { "contentFormat": ["markdown"] },
                             "codeAction": { "codeActionLiteralSupport": {
-                                "codeActionKind": { "valueSet": ["translation.preview"] }
+                                "codeActionKind": { "valueSet": ["translation"] }
                             }}
                         }
                     }
@@ -168,7 +168,7 @@ impl Client {
         assert_eq!(
             initialized["capabilities"]["executeCommandProvider"]["commands"],
             json!([
-                "translation-lsp.preview",
+                "translation-lsp.translate-selection",
                 "translation-lsp.retry",
                 "translation-lsp.open-translation",
                 "translation-lsp.cancel-range",
@@ -352,7 +352,7 @@ impl Client {
             .as_array()
             .unwrap()
             .iter()
-            .find(|a| a["command"]["command"] == "translation-lsp.preview")
+            .find(|a| a["command"]["command"] == "translation-lsp.translate-selection")
             .unwrap();
         assert!(action.get("edit").is_none());
         assert_eq!(action["title"], "Translate selection to Japanese (ja)");
@@ -2278,7 +2278,7 @@ fn document_execution_deadline_starts_after_queue_waiting() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|action| action["command"]["command"] == "translation-lsp.preview")
+            .find(|action| action["command"]["command"] == "translation-lsp.translate-selection")
             .unwrap()["command"]
             .clone();
         blockers.push(client.execute(command));
@@ -2800,7 +2800,7 @@ fn comment_hover_switch_stops_new_hover_work_and_keeps_manual_results() {
         assert!(client.hover(uri, range["start"].clone()).is_null());
         // Work started by that Hover would still be running, and offer its cancellation.
         let actions = client.actions(uri, range.clone());
-        assert_eq!(commands(&actions), ["translation-lsp.preview"]);
+        assert_eq!(commands(&actions), ["translation-lsp.translate-selection"]);
         // A Hover during the manual translation joins it, and later ones read its result.
         let command = client.execute(actions[0]["command"].clone());
         let joined = client.request_hover(uri, range["start"].clone());
@@ -2861,7 +2861,7 @@ fn selection_action_switch_hides_the_action_and_refuses_its_command() {
         assert_eq!(commands(&actions), ["translation-lsp.open-translation"]);
         // The tab action carries the target that the hidden action would.
         let mut command = actions[0]["command"].clone();
-        command["command"] = json!("translation-lsp.preview");
+        command["command"] = json!("translation-lsp.translate-selection");
         refuse(&mut client, command.clone(), "selection_action");
         assert!(client.hover(uri, range["start"].clone()).is_null());
         // The tab action and the retry command of the same language are unchanged.
@@ -2882,7 +2882,7 @@ fn selection_action_switch_hides_the_action_and_refuses_its_command() {
         assert_eq!(
             commands(&actions),
             [
-                "translation-lsp.preview",
+                "translation-lsp.translate-selection",
                 "translation-lsp.open-translation"
             ]
         );
@@ -2922,7 +2922,7 @@ fn document_action_switch_hides_both_tab_actions_and_refuses_their_command() {
         client.open(uri, "markdown", PARAGRAPH, 1);
         assert_eq!(client.actions(uri, cursor.clone()), json!([]));
         let actions = client.actions(uri, range.clone());
-        assert_eq!(commands(&actions), ["translation-lsp.preview"]);
+        assert_eq!(commands(&actions), ["translation-lsp.translate-selection"]);
         // The selection action carries the target that the hidden action would.
         let mut command = actions[0]["command"].clone();
         command["command"] = json!("translation-lsp.open-translation");
@@ -3076,7 +3076,7 @@ fn a_reading_past_its_limit_leaves_the_document_without_comments_until_it_is_reo
         assert!(client.notifications.is_empty());
         assert_eq!(
             client.finish(false),
-            "translation preview: reading comments timed out (language \"python\")\n"
+            "translation-lsp: reading comments timed out (language \"python\")\n"
         );
     }
 }
@@ -3139,7 +3139,7 @@ fn a_panic_while_reading_comments_keeps_the_server_running_and_the_text_out_of_t
 
     let stderr = client.finish(false);
     let place = stderr
-        .strip_prefix("translation preview: reading comments panicked (language \"rust\", at ")
+        .strip_prefix("translation-lsp: reading comments panicked (language \"rust\", at ")
         .and_then(|rest| rest.strip_suffix(")\n"))
         .unwrap_or_else(|| panic!("Unexpected stderr: {stderr}"));
     assert!(!place.contains('\n') && !place.contains("--"), "{place}");

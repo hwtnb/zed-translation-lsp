@@ -189,10 +189,7 @@ impl<P: TranslationProvider> Server<P> {
             self.scheduler.update_deadline(pending.ticket);
             let response = Response {
                 id: id.clone(),
-                response_result: Err(failure(
-                    code,
-                    "Translation preview canceled or document changed",
-                )),
+                response_result: Err(failure(code, "Translation canceled or document changed")),
             };
             connection
                 .sender

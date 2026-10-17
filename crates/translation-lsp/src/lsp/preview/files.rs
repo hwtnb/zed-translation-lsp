@@ -54,20 +54,20 @@ impl PreviewFiles {
         };
         #[cfg(not(unix))]
         let created = fs::create_dir(&directory);
-        created.map_err(|_| failed("Could not create the translation preview directory"))?;
+        created.map_err(|_| failed("Could not create the translation directory"))?;
         let path = directory.join(format!("Translation.{extension}"));
         self.files.push(path.clone());
         let mut file = options
             .open(&path)
-            .map_err(|_| failed("Could not create the translation preview file"))?;
+            .map_err(|_| failed("Could not create the translation file"))?;
         file.write_all(text.as_bytes())
-            .map_err(|_| failed("Could not write the translation preview file"))?;
+            .map_err(|_| failed("Could not write the translation file"))?;
         Ok(path)
     }
 
     fn show(&mut self, ui: &Ui, path: &Path) -> Result<(), ResponseError> {
         let uri = reqwest::Url::from_file_path(path)
-            .map_err(|_| failed("Could not open the translation preview path"))?;
+            .map_err(|_| failed("Could not open the translation path"))?;
         let id = RequestId::from(format!("translation-document-{}", uuid::Uuid::new_v4()));
         ui.sender
             .send(
@@ -98,7 +98,7 @@ impl PreviewFiles {
             return false;
         }
         if !matches!(&response.response_result, Ok(value) if value["success"] == true) {
-            let _ = ui.error("The editor could not open the translation preview");
+            let _ = ui.error("The editor could not open the translation");
         }
         true
     }
@@ -114,7 +114,7 @@ impl PreviewFiles {
                 return true;
             }
             cancel_open(ui, id);
-            let _ = ui.error("Opening the translation preview timed out");
+            let _ = ui.error("Opening the translation timed out");
             false
         });
     }

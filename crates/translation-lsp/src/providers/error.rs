@@ -98,7 +98,7 @@ pub(crate) enum Cause {
     #[error("Translation canceled")]
     Cancelled,
     /// What the translation was authorized with, which is no longer in use.
-    #[error("{0} changed; retry the preview")]
+    #[error("{0} changed; retry the translation")]
     Modified(&'static str),
     #[error("No terminal window could be opened. To {purpose}, run this in a terminal: {command}")]
     Terminal {

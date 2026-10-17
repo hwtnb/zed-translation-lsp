@@ -36,7 +36,7 @@ Relative links and images resolve from the temporary file location. To use the o
 
 A translation is model output. Text in the source that addresses the model can make the translation contain links and images that the source does not have. `markdown: open preview` loads images from their `http` and `https` URLs as it renders them, so the server named in such a URL can receive any text of the translation placed in the URL. When someone else wrote the source, read the translation tab as text before opening the preview.
 
-Reopening the same cached tab translation reuses its temporary file and focuses that document. If the file was deleted or its saved contents changed, the server creates a fresh preview without overwriting it. A newly translated result gets a separate file. Temporary previews are still removed on server exit; copies saved with Save As are preserved.
+Reopening the same cached tab translation reuses its temporary file and focuses that document. If the file was deleted or its saved contents changed, the server creates a fresh file without overwriting it. A newly translated result gets a separate file. Temporary files are still removed on server exit; copies saved with Save As are preserved.
 
 ## Status and notifications
 

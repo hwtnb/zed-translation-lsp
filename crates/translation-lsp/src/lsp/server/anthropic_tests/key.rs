@@ -434,7 +434,7 @@ async fn work_queued_under_one_key_is_dropped_when_it_starts_under_another() {
     assert_eq!(error.code, ErrorCode::ContentModified as i32);
     assert_eq!(
         error.message,
-        "Anthropic API key changed; retry the preview"
+        "Anthropic API key changed; retry the translation"
     );
     assert!(client.receiver.try_recv().is_err());
     assert_eq!(fixture.calls(), 0);

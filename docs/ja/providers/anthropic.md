@@ -45,7 +45,7 @@
 
 `speed` を `fast` にすると、モデルは出力を速く返し、料金は高くなります。[Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode)によると、research previewで、使えるのはClaude APIだけです。対象はClaude Opus 5.5、Claude Opus 5、Claude Opus 4.8で、営業担当かwaitlistから利用を申し込む必要があります。ほかのモデルでは、APIが `fast` にエラーを返すか、標準の速度で処理します。Fast modeの上限を超えるとHTTP 429か529になり、ほかのレート制限や過負荷と同じように扱います。
 
-`speed` を書いた翻訳が完了すると、頼んだ値と、応答が報告した `usage.speed` を言語サーバーのログに書きます。例: `translation preview: Anthropic speed requested fast, served fast`。Zedでは、コマンドパレットから `dev: open language server logs` を実行すると読めます。応答が値を報告しなかったときは `(not reported)` と書きます。原文、訳文、キーは書きません。
+`speed` を書いた翻訳が完了すると、頼んだ値と、応答が報告した `usage.speed` を言語サーバーのログに書きます。例: `translation-lsp: Anthropic speed requested fast, served fast`。Zedでは、コマンドパレットから `dev: open language server logs` を実行すると読めます。応答が値を報告しなかったときは `(not reported)` と書きます。原文、訳文、キーは書きません。
 
 未知の項目は拒否します。APIキーや接続先を指定する設定項目はありません。設定を変更したら言語サーバーを再起動してください。
 

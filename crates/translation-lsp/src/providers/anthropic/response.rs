@@ -192,7 +192,7 @@ fn speed_line(requested: AnthropicSpeed, served: Option<&str>) -> String {
         AnthropicSpeed::Fast => "fast",
     };
     format!(
-        "translation preview: Anthropic speed requested {requested}, served {}",
+        "translation-lsp: Anthropic speed requested {requested}, served {}",
         served.unwrap_or("(not reported)")
     )
 }
@@ -504,11 +504,11 @@ mod tests {
     fn speed_line_names_both_values_or_that_none_was_reported() {
         assert_eq!(
             speed_line(AnthropicSpeed::Fast, Some("fast")),
-            "translation preview: Anthropic speed requested fast, served fast"
+            "translation-lsp: Anthropic speed requested fast, served fast"
         );
         assert_eq!(
             speed_line(AnthropicSpeed::Standard, None),
-            "translation preview: Anthropic speed requested standard, served (not reported)"
+            "translation-lsp: Anthropic speed requested standard, served (not reported)"
         );
     }
 
