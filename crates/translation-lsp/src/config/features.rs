@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use serde_json::Value;
 
-use super::error::ConfigError;
 use crate::language::Language;
 
 /// What starts a translation.
@@ -18,7 +16,7 @@ pub(crate) enum Feature {
 
 impl Feature {
     /// Whether the feature runs in a registered language.
-    fn applies_to(self, language: Language) -> bool {
+    pub(super) fn applies_to(self, language: Language) -> bool {
         match self {
             Self::CommentHover => !language.is_prose(),
             Self::AutomaticSelection => language == Language::Markdown,
@@ -71,41 +69,16 @@ impl Features {
             .copied()
             .unwrap_or(true)
     }
-
-    /// Decoding reports every mismatch as the same generic error. Name a
-    /// language ID outside the registered ones, and a feature written for a
-    /// language it does not run in.
-    pub(super) fn check_languages(options: &Value) -> Result<(), ConfigError> {
-        let Value::Object(languages) = &options["features"]["languages"] else {
-            return Ok(());
-        };
-        for (language_id, switches) in languages {
-            let Some(language) = Language::from_id(language_id) else {
-                return Err(ConfigError::FeatureLanguage);
-            };
-            let Value::Object(switches) = switches else {
-                continue;
-            };
-            for name in switches.keys() {
-                if let Ok(feature) = Feature::deserialize(Value::String(name.clone()))
-                    && !feature.applies_to(language)
-                {
-                    return Err(ConfigError::FeatureUnavailable {
-                        language: language.id(),
-                        feature,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{super::Settings, *};
+    use super::{
+        super::{Settings, error::ConfigError},
+        *,
+    };
 
     const LANGUAGE_IDS: [&str; 18] = [
         "rust",

@@ -2,8 +2,9 @@ pub(crate) mod error;
 pub(crate) mod features;
 pub(crate) mod language;
 pub(crate) mod limits;
+mod validation;
 
-use error::{ConfigError, bounded_number};
+use error::ConfigError;
 
 use features::Features;
 use limits::TranslationLimits;
@@ -90,86 +91,6 @@ impl ProviderSettings {
             Self::Chatgpt { document, .. } => document.is_some(),
             Self::Anthropic { document, .. } => document.is_some(),
         }
-    }
-
-    /// Decoding reports a missing field as the same generic error as any other
-    /// mismatch. Name the one field that `provider.document` requires.
-    fn check_document_model(options: &Value) -> Result<(), ConfigError> {
-        let provider = &options["provider"];
-        if (provider["name"] == "chatgpt" || provider["name"] == "anthropic")
-            && let Value::Object(document) = &provider["document"]
-            && !document.contains_key("model")
-        {
-            return Err(ConfigError::Required {
-                setting: "provider.document.model",
-            });
-        }
-        Ok(())
-    }
-
-    /// Decoding reports every mismatch as the same generic error. Name the
-    /// setting when its value is a string outside its list: the providers take
-    /// different values under the same names, such as `none` for ChatGPT effort
-    /// and `standard` for Anthropic speed.
-    fn check_choices(options: &Value) -> Result<(), ConfigError> {
-        let provider = &options["provider"];
-        match provider["name"].as_str() {
-            Some("chatgpt") => {
-                EFFORT.check::<ReasoningEffort>(provider, ReasoningEffort::CHOICES)?;
-                SPEED.check::<ChatgptSpeed>(provider, ChatgptSpeed::CHOICES)
-            }
-            Some("anthropic") => {
-                EFFORT.check::<AnthropicEffort>(provider, AnthropicEffort::CHOICES)?;
-                SPEED.check::<AnthropicSpeed>(provider, AnthropicSpeed::CHOICES)
-            }
-            _ => Ok(()),
-        }
-    }
-}
-
-/// A field of both `provider` and `provider.document`.
-struct Choice {
-    field: &'static str,
-    settings: [&'static str; 2],
-    named_null: bool,
-}
-
-const EFFORT: Choice = Choice {
-    field: "effort",
-    settings: ["provider.effort", "provider.document.effort"],
-    named_null: false,
-};
-
-/// A `null` speed may be meant as no speed, which is written by omitting it.
-const SPEED: Choice = Choice {
-    field: "speed",
-    settings: ["provider.speed", "provider.document.speed"],
-    named_null: true,
-};
-
-impl Choice {
-    fn check<T: serde::de::DeserializeOwned>(
-        &self,
-        provider: &Value,
-        choices: &'static str,
-    ) -> Result<(), ConfigError> {
-        let document = provider
-            .get("document")
-            .and_then(|document| document.get(self.field));
-        for (value, setting) in [provider.get(self.field), document]
-            .into_iter()
-            .zip(self.settings)
-        {
-            let rejected = match value {
-                Some(value @ Value::String(_)) => T::deserialize(value).is_err(),
-                Some(Value::Null) => self.named_null,
-                _ => false,
-            };
-            if rejected {
-                return Err(ConfigError::Choice { setting, choices });
-            }
-        }
-        Ok(())
     }
 }
 
@@ -298,129 +219,13 @@ impl Settings {
         let settings = match options {
             None | Some(Value::Null) => Self::default(),
             Some(options) => {
-                ProviderSettings::check_document_model(&options)?;
-                ProviderSettings::check_choices(&options)?;
-                Features::check_languages(&options)?;
-                reject_arrays(&options)?;
+                validation::before_decoding(&options)?;
                 serde_json::from_value(options)?
             }
         };
-        settings.translation_limits.validate()?;
-        for (name, value, minimum, maximum) in [
-            (
-                "hover_timeout_ms",
-                settings.hover_timeout_ms,
-                1_000,
-                120_000,
-            ),
-            (
-                "selection_timeout_ms",
-                settings.selection_timeout_ms,
-                1_000,
-                120_000,
-            ),
-            (
-                "document_timeout_ms",
-                settings.document_timeout_ms,
-                1_000,
-                600_000,
-            ),
-            (
-                "selection_debounce_ms",
-                settings.selection_debounce_ms,
-                100,
-                2_000,
-            ),
-            (
-                "comment_parse_timeout_ms",
-                settings.comment_parse_timeout_ms,
-                100,
-                60_000,
-            ),
-        ] {
-            bounded_number(name, value, minimum, maximum)?;
-        }
-        for (setting, value) in [
-            ("source_language", &settings.source_language),
-            ("target_language", &settings.target_language),
-        ] {
-            if !bounded(value, 128) {
-                return Err(ConfigError::Text {
-                    setting,
-                    maximum_bytes: 128,
-                });
-            }
-        }
-        match &settings.provider {
-            ProviderSettings::Mock {} => (),
-            ProviderSettings::Chatgpt {
-                model, document, ..
-            } => {
-                check_model("provider.model", model)?;
-                if let Some(document) = document {
-                    check_model("provider.document.model", &document.model)?;
-                }
-            }
-            ProviderSettings::Anthropic {
-                model,
-                effort,
-                thinking,
-                document,
-                ..
-            } => {
-                check_model("provider.model", model)?;
-                check_thinking("provider", *effort, *thinking)?;
-                if let Some(document) = document {
-                    check_model("provider.document.model", &document.model)?;
-                    check_thinking("provider.document", document.effort, document.thinking)?;
-                }
-            }
-        }
+        validation::after_decoding(&settings)?;
         Ok(settings)
     }
-}
-
-/// No setting takes an array. Derived decoding would read one as the fields of
-/// a table in declaration order, which would turn that order into a settings
-/// format. Reject arrays before decoding, wherever they appear.
-fn reject_arrays(options: &Value) -> Result<(), ConfigError> {
-    match options {
-        Value::Array(_) => Err(ConfigError::Decode(serde::de::Error::custom(
-            "settings do not take arrays",
-        ))),
-        Value::Object(fields) => fields.values().try_for_each(reject_arrays),
-        _ => Ok(()),
-    }
-}
-
-fn check_model(setting: &'static str, model: &str) -> Result<(), ConfigError> {
-    if !bounded(model, 256) {
-        return Err(ConfigError::Text {
-            setting,
-            maximum_bytes: 256,
-        });
-    }
-    if model.chars().any(char::is_whitespace) {
-        return Err(ConfigError::ModelWhitespace { setting });
-    }
-    Ok(())
-}
-
-fn check_thinking(
-    scope: &'static str,
-    effort: AnthropicEffort,
-    thinking: Option<bool>,
-) -> Result<(), ConfigError> {
-    if thinking == Some(false)
-        && let Some(effort) = effort.requires_thinking()
-    {
-        return Err(ConfigError::ThinkingRequired { scope, effort });
-    }
-    Ok(())
-}
-
-fn bounded(value: &str, maximum: usize) -> bool {
-    !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
 
 #[cfg(test)]
