@@ -25,6 +25,29 @@ impl<P: TranslationProvider> Server<P> {
         request: TranslationRequest,
     ) -> RequestResult<Option<Value>> {
         let context = self.check_cache()?;
+        self.check_input(&target, request.output())?;
+        if request.reuses_completed()
+            && let Some(preview) = self.completed(&target, &request)
+        {
+            return self.reuse_completed(target, request, preview);
+        }
+        let immediate = matches!(
+            request,
+            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry)
+        );
+        match self
+            .scheduler
+            .ticket(&target, request.output(), &self.settings)
+        {
+            Some(ticket) => self.join_running(ticket, request, &context)?,
+            None => self.admit_new(target, request, context)?,
+        }
+        Ok(immediate.then_some(Value::Null))
+    }
+
+    /// Checks that the target still belongs to the open document and that its
+    /// text fits the input limit of the output.
+    fn check_input(&mut self, target: &TranslationTarget, output: Output) -> RequestResult<()> {
         let document = self
             .documents
             .get_mut(&target.uri)
@@ -38,84 +61,101 @@ impl<P: TranslationProvider> Server<P> {
         let original = document
             .selection(target.range)
             .map_err(|m| failure(ErrorCode::InvalidParams, m))?;
-        let output = request.output();
-        let tab = output == Output::Document;
-        let (limit, setting) = if tab {
-            (
-                self.settings.translation_limits.input_kib.document,
-                SizeSetting::DocumentInput,
-            )
-        } else {
-            (
-                self.settings.translation_limits.input_kib.hover,
-                SizeSetting::HoverInput,
-            )
+        let limits = &self.settings.translation_limits.input_kib;
+        let (limit, setting) = match output {
+            Output::Document => (limits.document, SizeSetting::DocumentInput),
+            Output::Range => (limits.hover, SizeSetting::HoverInput),
         };
         limit
             .check(original.len(), setting)
-            .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))?;
-        if request.reuses_completed()
-            && let Some(preview) =
-                self.cache
-                    .exact(&target.uri, target.range, output)
-                    .or_else(|| {
-                        // Each output keeps its own results when tabs have their own settings.
-                        if request.explicit() && !self.settings.provider.separates_documents() {
-                            let other = if tab { Output::Range } else { Output::Document };
-                            self.cache.exact(&target.uri, target.range, other)
-                        } else {
-                            None
-                        }
-                    })
-        {
-            self.next_ticket += 1;
-            self.cache.insert(
-                target.uri.clone(),
-                self.next_ticket,
-                Stored::Translation(output, preview.clone()),
-            );
-            return match request {
-                TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
-                    to_value(preview.hover(position)).map(Some)
+            .map_err(|m| failure(ErrorCode::InvalidParams, &m.to_string()))
+    }
+
+    /// A completed translation of the target that the request can use.
+    fn completed(
+        &mut self,
+        target: &TranslationTarget,
+        request: &TranslationRequest,
+    ) -> Option<Preview> {
+        let output = request.output();
+        self.cache
+            .exact(&target.uri, target.range, output)
+            .or_else(|| {
+                // Each output keeps its own results when tabs have their own settings.
+                if request.explicit() && !self.settings.provider.separates_documents() {
+                    let other = match output {
+                        Output::Document => Output::Range,
+                        Output::Range => Output::Document,
+                    };
+                    self.cache.exact(&target.uri, target.range, other)
+                } else {
+                    None
                 }
-                TranslationRequest::Document => {
-                    self.preview_files.open(
-                        &self.ui,
-                        &preview,
-                        document.language == Some(Language::Markdown),
-                    )?;
-                    Ok(None)
-                }
-                TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
-                    self.ui
-                        .inform(&format!("{}: {TRANSLATION_READY}", location(&target)))
-                        .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
-                    Ok(Some(Value::Null))
-                }
-                _ => Ok(None),
-            };
-        }
-        let immediate = matches!(
-            request,
-            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry)
+            })
+    }
+
+    fn reuse_completed(
+        &mut self,
+        target: TranslationTarget,
+        request: TranslationRequest,
+        preview: Preview,
+    ) -> RequestResult<Option<Value>> {
+        self.next_ticket += 1;
+        self.cache.insert(
+            target.uri.clone(),
+            self.next_ticket,
+            Stored::Translation(request.output(), preview.clone()),
         );
-        if let Some(ticket) = self.scheduler.ticket(&target, output, &self.settings) {
-            let generation = if request.explicit() {
-                Some(
-                    self.provider
-                        .admit(&context, crate::providers::Intent::Explicit)
-                        .map_err(provider_failure)?,
-                )
-            } else {
-                None
-            };
-            self.scheduler
-                .join(ticket, request, &self.settings, Instant::now())?;
-            if let Some(fresh) = generation {
-                self.scheduler.set_generation(ticket, fresh);
+        match request {
+            TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
+                to_value(preview.hover(position)).map(Some)
             }
-            return Ok(immediate.then_some(Value::Null));
+            TranslationRequest::Document => {
+                let markdown = self.documents[&target.uri].language == Some(Language::Markdown);
+                self.preview_files.open(&self.ui, &preview, markdown)?;
+                Ok(None)
+            }
+            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
+                self.ui
+                    .inform(&format!("{}: {TRANSLATION_READY}", location(&target)))
+                    .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
+                Ok(Some(Value::Null))
+            }
+            TranslationRequest::Selection => Ok(None),
         }
+    }
+
+    /// Adds the request to the translation already running for its target.
+    fn join_running(
+        &mut self,
+        ticket: u64,
+        request: TranslationRequest,
+        context: &Context,
+    ) -> RequestResult<()> {
+        let generation = if request.explicit() {
+            Some(
+                self.provider
+                    .admit(context, crate::providers::Intent::Explicit)
+                    .map_err(provider_failure)?,
+            )
+        } else {
+            None
+        };
+        self.scheduler
+            .join(ticket, request, &self.settings, Instant::now())?;
+        if let Some(fresh) = generation {
+            self.scheduler.set_generation(ticket, fresh);
+        }
+        Ok(())
+    }
+
+    /// Accepts a new translation of the target and queues it.
+    fn admit_new(
+        &mut self,
+        target: TranslationTarget,
+        request: TranslationRequest,
+        context: Context,
+    ) -> RequestResult<()> {
         if !self
             .scheduler
             .available(&self.settings, !request.explicit())
@@ -137,6 +177,10 @@ impl<P: TranslationProvider> Server<P> {
             .provider
             .admit(&context, intent)
             .map_err(provider_failure)?;
+        let document = self
+            .documents
+            .get_mut(&target.uri)
+            .expect("check_input found the document");
         let input = document.translation_input(
             &target.uri,
             target.range,
@@ -146,7 +190,7 @@ impl<P: TranslationProvider> Server<P> {
         let input = input.map_err(|m| failure(ErrorCode::InvalidParams, m))?;
         let task = Task::Translation {
             intent,
-            output,
+            output: request.output(),
             text: input.text,
             target_language: target.target_language.clone(),
             context: context.clone(),
@@ -166,8 +210,7 @@ impl<P: TranslationProvider> Server<P> {
             Instant::now(),
         )?;
         self.clear_problem();
-        self.dispatch()?;
-        Ok(immediate.then_some(Value::Null))
+        self.dispatch()
     }
 
     pub(super) fn finish(
