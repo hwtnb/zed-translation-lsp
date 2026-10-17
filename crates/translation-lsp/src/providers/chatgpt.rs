@@ -6,7 +6,6 @@ pub(crate) mod http;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
@@ -20,7 +19,7 @@ use super::{
     AccountChange, AuthUiState, Capabilities, Context, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
-    error::{Error, ErrorKind},
+    error::Error,
     prompt, transport,
 };
 use auth::{AccountKey, Auth, account_changed};
@@ -136,33 +135,6 @@ impl ChatGptProvider {
         self
     }
 
-    async fn unchanged<T>(
-        &self,
-        key: &AccountKey,
-        future: impl std::future::Future<Output = Result<T, Error>>,
-    ) -> Result<T, Error> {
-        tokio::pin!(future);
-        let mut completed = None;
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                result = &mut future, if completed.is_none() => completed = Some(result),
-                _ = interval.tick() => (),
-            }
-            match self.auth.key() {
-                Ok(current) if &current == key => {
-                    if let Some(result) = completed.take() {
-                        return result;
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::Unavailable => (),
-                Err(error) if error.kind() == ErrorKind::Storage => return Err(error),
-                _ => return Err(account_changed()),
-            }
-        }
-    }
-
     async fn request(
         &self,
         body: &str,
@@ -181,53 +153,56 @@ impl ChatGptProvider {
             }
         };
         let key = &access.key;
+        let secrets = [
+            access.credentials.access_token.as_str(),
+            access.credentials.refresh_token.as_str(),
+            access.credentials.id_token.as_str(),
+            body,
+        ];
+        let options = self.options.get(output);
+        let mut request = json!({
+            "model": options.model,
+            "store": false,
+            "stream": true,
+            "instructions": prompt::instructions(target, &self.source_language),
+            "input": [{"role": "user", "content": body}],
+            "reasoning": {"effort": options.effort},
+        });
+        if let Some(speed) = options.speed {
+            request["service_tier"] = json!(speed);
+        }
+        let mut sent = false;
         let mut result = self
-            .unchanged(key, async {
-                let secrets = [
-                    access.credentials.access_token.as_str(),
-                    access.credentials.refresh_token.as_str(),
-                    access.credentials.id_token.as_str(),
-                    body,
-                ];
-                let options = self.options.get(output);
-                let mut request = json!({
-                    "model": options.model,
-                    "store": false,
-                    "stream": true,
-                    "instructions": prompt::instructions(target, &self.source_language),
-                    "input": [{"role": "user", "content": body}],
-                    "reasoning": {"effort": options.effort},
-                });
-                if let Some(speed) = options.speed {
-                    request["service_tier"] = json!(speed);
+            .admission
+            .retrying(key, intent, async || {
+                // The account may have changed during the wait.
+                if std::mem::replace(&mut sent, true) && self.auth.key().ok().as_ref() != Some(key)
+                {
+                    return Attempt::without_response(account_changed());
                 }
-                self.admission
-                    .retrying(key, intent, async || {
-                        let response = self
-                            .responses
-                            .post(format!("{}/responses", self.api))
-                            .bearer_auth(&access.credentials.access_token)
-                            .json(&request)
-                            .send()
-                            .await;
-                        let response = match response {
-                            Ok(response) => response,
-                            Err(error) => {
-                                return Attempt::without_response(temporary_network(error));
-                            }
-                        };
-                        let retry_after = transport::retry_delay(response.headers());
-                        let result = if response.status().is_success() {
-                            response_text(response, &secrets, self.output_limit).await
-                        } else {
-                            Err(self.auth.http.failure(response, &secrets).await)
-                        };
-                        Attempt {
-                            result,
-                            retry_after,
-                        }
-                    })
-                    .await
+                let response = self
+                    .responses
+                    .post(format!("{}/responses", self.api))
+                    .bearer_auth(&access.credentials.access_token)
+                    .json(&request)
+                    .send()
+                    .await;
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return Attempt::without_response(temporary_network(error));
+                    }
+                };
+                let retry_after = transport::retry_delay(response.headers());
+                let result = if response.status().is_success() {
+                    response_text(response, &secrets, self.output_limit).await
+                } else {
+                    Err(self.auth.http.failure(response, &secrets).await)
+                };
+                Attempt {
+                    result,
+                    retry_after,
+                }
             })
             .await;
         self.admission.settle(key, intent, generation, &mut result);
@@ -307,61 +282,11 @@ mod document_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::test_support::Fixture;
     use super::*;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn invalid_store_aborts_inflight_work_with_its_original_diagnostic() {
-        use super::{auth_store::AuthStore, http::Http};
-        for permissions in [false, true] {
-            if permissions && !cfg!(unix) {
-                continue;
-            }
-            let fixture = Fixture::new().await;
-            let directory = std::env::temp_dir().join(format!(
-                "translation-store-failure-{}",
-                uuid::Uuid::new_v4()
-            ));
-            let auth = Auth::synthetic(
-                AuthStore::synthetic(directory.clone()),
-                Http::synthetic_revocation(&fixture.base),
-                fixture.base.clone(),
-            );
-            fixture.connected(&auth, 3600).await;
-            let key = auth.key().unwrap();
-            let provider = ChatGptProvider::synthetic(
-                auth,
-                format!("{}/v1", fixture.base),
-                "synthetic-model".into(),
-            );
-            let operation = async {
-                let path = directory.join("auth.json");
-                if permissions {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
-                            .unwrap();
-                    }
-                } else {
-                    std::fs::write(path, b"{}").unwrap();
-                }
-                std::future::pending::<Result<(), Error>>().await
-            };
-            let error =
-                tokio::time::timeout(Duration::from_secs(1), provider.unchanged(&key, operation))
-                    .await
-                    .expect("Storage errors must release work without waiting for its deadline")
-                    .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Storage);
-            assert!(error.to_string().contains(if permissions {
-                "private directory"
-            } else {
-                "storage is invalid"
-            }));
-            std::fs::remove_dir_all(directory).unwrap();
-        }
-    }
+    use crate::providers::error::ErrorKind;
 
     fn response_calls(fixture: &Fixture) -> usize {
         fixture
@@ -534,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn retry_wait_is_cancellable_and_account_changes_stop_it() {
+    async fn retry_wait_is_cancellable_and_account_changes_skip_the_retry() {
         for account_change in [false, true] {
             let fixture = Fixture::new().await;
             fixture.state.lock().unwrap().response_failures.push_back((
@@ -564,7 +489,8 @@ mod tests {
             assert_eq!(response_calls(&fixture), 1);
             if account_change {
                 fixture.connected(&auth, 3600).await;
-                let result = tokio::time::timeout(Duration::from_secs(1), &mut request)
+                // The retry waits 2 seconds before it checks the account.
+                let result = tokio::time::timeout(Duration::from_secs(5), &mut request)
                     .await
                     .unwrap();
                 assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
@@ -1317,7 +1243,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn manual_selections_reach_http_and_account_changes_drop_http_future() {
+    async fn manual_selections_reach_http() {
         let fixture = Fixture::new().await;
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
@@ -1353,31 +1279,5 @@ mod tests {
             assert_eq!(request["input"][0]["content"], body);
             state.records.clear();
         }
-        fixture.state.lock().unwrap().delay = Duration::from_secs(5);
-        let key = provider.context().unwrap();
-        let translation = provider.translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
-            "Translate this.",
-            "ja",
-            key,
-        );
-        let switch = async {
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            fixture.connected(&auth, 3600).await;
-        };
-        let (result, ()) = tokio::join!(translation, switch);
-        assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
-        assert_eq!(
-            fixture
-                .state
-                .lock()
-                .unwrap()
-                .records
-                .iter()
-                .filter(|record| record.path == "/v1/responses")
-                .count(),
-            1
-        );
     }
 }

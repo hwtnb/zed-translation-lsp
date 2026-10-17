@@ -1282,10 +1282,12 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
                 .unwrap();
         }
         if operation == "account-change" {
+            // Another process changes the account: running requests complete and
+            // their results are discarded, and queued ones are not sent.
             fixture.connected(&auth, 3600).await;
+            tail.release.notify_waiters();
             for _ in 0..4 {
                 let completion = next(&completions).await;
-                assert!(completion.result.is_err());
                 server.finish(&connection, completion).unwrap();
             }
         } else {
