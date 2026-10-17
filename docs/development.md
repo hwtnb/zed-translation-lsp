@@ -2,7 +2,7 @@
 
 [日本語](ja/development.md)
 
-This page describes the required Rust versions, the checks to run, the mock provider, CI, the dependency policy, and the dependency notices.
+This page describes the required Rust versions, the checks to run, the mock provider, CI, the size limit ceilings, the dependency policy, and the dependency notices.
 
 ## Checks
 
@@ -44,6 +44,10 @@ cargo run -p xtask --locked -- check-notices
 `check-source` checks that the versions, licenses, and release targets agree. `check-notices` generates the dependency notices described under [Dependency notices](#dependency-notices). `cargo run -p xtask --locked -- --help` lists the packaging commands.
 
 The extension downloads the server from the GitHub release of its own version. The [release assets workflow](../.github/workflows/release-assets.yml) runs the packaging commands for every release target and, when started with `draft-release` enabled, creates a draft release that holds the six archives and `SHA256SUMS`. Publish that release before registering the version with Zed.
+
+## Size limit ceilings
+
+The ceilings of `translation_limits`, listed under [Size limits](configuration.md#size-limits), bound the memory that configured worst cases can take. The input budget bounds accepted source payloads. The output budget is smaller, because receiving a translation also holds escaped SSE events and several decoded snapshots of the output. The separate input limits allow large documents while keeping Hover and selection input small. The job and cache-entry limits also bound the scans of the scheduler and the cache when texts are tiny. Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`; they bound transport processing apart from the decoded translation and do not allocate the maximum up front.
 
 ## Dependencies
 

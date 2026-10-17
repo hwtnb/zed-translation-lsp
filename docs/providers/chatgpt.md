@@ -104,6 +104,6 @@ Credentials are stored locally in this extension's OS-specific configuration dir
 | macOS | `~/Library/Application Support/translation-lsp/` |
 | Linux | `$XDG_CONFIG_HOME/translation-lsp/`, or `~/.config/translation-lsp/` when unset |
 
-The server resolves this location through the OS using `dirs::config_local_dir()`. Registrations use separate UUIDs even when they share an email address; reconnect through the original registration.
+Registrations use separate UUIDs even when they share an email address; reconnect through the original registration.
 
 Authentication data is saved in `auth.json`. Each registration has an authorization ID: token refresh preserves it, while reconnecting replaces it. Refresh and temporary store locks preserve cached translations; the server checks authorization again before displaying them.

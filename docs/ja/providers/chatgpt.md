@@ -102,6 +102,6 @@ ChatGPTプロバイダーではAPIキーを使えません。拡張が別の課�
 | macOS | `~/Library/Application Support/translation-lsp/` |
 | Linux | `$XDG_CONFIG_HOME/translation-lsp/`。未設定の場合は `~/.config/translation-lsp/` |
 
-保存先は `dirs::config_local_dir()` を通じてOSから取得します。同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。
+同じメールアドレスでも登録ごとのUUIDで区別し、再認証には元の登録を使います。
 
 認証データは `auth.json` に保存します。登録ごとに認可IDを持ち、トークン更新では保持、再認証では更新します。トークン更新や一時的なストアのロックでキャッシュ済みの訳は破棄せず、表示前に認可を再確認します。

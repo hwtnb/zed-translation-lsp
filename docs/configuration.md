@@ -217,9 +217,7 @@ The following are **maximum configurable values**, separate from the defaults ab
 
 Two combined limits also apply: `max(input_kib.hover, input_kib.document) × work.admitted` must not exceed `262144` KiB (256 MiB), and `output_kib × work.concurrent` must not exceed `65536` KiB (64 MiB). For example, 16 MiB document input with 64 accepted jobs is rejected; use at most 16 accepted jobs at that input limit. A 16 MiB output limit permits at most four simultaneous translations. These checks apply to configured worst cases, even when the queue is currently empty.
 
-These ceilings are a local resource policy, not measured hardware limits or provider guarantees. The input budget bounds accepted source payloads; the smaller output budget leaves room for escaped SSE events and multiple decoded output snapshots. The individual input caps allow larger documents while keeping automatic/selection Hover input more restricted. Job and cache-entry caps also bound scheduler and cache scans when texts are tiny. Cache text has a separate 256 MiB ceiling. Source documents, parser state, allocator overhead, transport buffers, and temporary translation files are additional costs, so these figures are **not a process-memory guarantee**. Raising a limit beyond these ceilings requires reviewing this policy in the server, rather than overriding it in Zed.
-
-Receive limits account for JSON escaping, repeated output snapshots, and SSE event overhead and scale with `output_kib`. They bound transport processing separately from the decoded translation; they do not allocate the maximum up front.
+These ceilings are a local resource policy, not measured hardware limits or provider guarantees. Source documents, parser state, allocator overhead, transport buffers, and temporary translation files are additional costs, so these figures are **not a process-memory guarantee**. A limit beyond these ceilings needs a change in the server; Zed settings cannot raise them. The reasons for the ceilings are described under [Size limit ceilings](development.md#size-limit-ceilings).
 
 Increasing a local limit does not increase the model's context or output capacity or extend the request deadline. Long documents are sent in one request, without automatic splitting. Failed, incomplete, and oversized results are not displayed or saved as completed translations.
 
@@ -236,7 +234,7 @@ Restart the language server after changing these settings. Settings changes do n
 3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings) and [Anthropic API](providers/anthropic.md#settings) pages.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
-The extension sends the configured model slug to the translation API without substituting another model, and does not send a failed request again without `speed`. The API determines whether that model, effort, and speed are available to your account.
+The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model, effort, and speed are available to your account.
 
 Translation requests use ordinary text output. Choose a model available to your ChatGPT account or Anthropic API key; the extension does not switch to another model when a request fails.
 
