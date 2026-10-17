@@ -308,7 +308,7 @@ async fn worker_cancellation_and_deadline_close_the_open_request() {
         // The worker drops the translation on its own at the execution deadline.
         fixture.open.wait(0).await;
         let completion = next(&completions).await;
-        assert!(completion.result.is_err());
+        assert!(completion.error().is_some());
         server.finish(&connection, completion).unwrap();
         server.expire(&connection).unwrap();
         let Message::Response(response) = client.receiver.try_recv().unwrap() else {

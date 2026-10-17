@@ -68,6 +68,71 @@ impl<P: TranslationProvider> Server<P> {
             .map_or(AccountChange::Never, |entry| entry.changes_account)
     }
 
+    pub(super) fn finish_administration(
+        &mut self,
+        connection: &Connection,
+        completion: Completion<Administered>,
+    ) -> ServerResult<()> {
+        let Some(id) = self
+            .administrations
+            .iter()
+            .find(|(_, work)| work.ticket == completion.ticket)
+            .map(|(id, _)| id.clone())
+        else {
+            return Ok(());
+        };
+        let operation = self.administrations.remove(&id).unwrap();
+        match Self::account_change(&operation.command) {
+            AccountChange::AtOnce => self.clear_previews(),
+            // The user agreed, and the command changed what translations
+            // are made with.
+            AccountChange::IfConfirmed if self.provider.context().ok() != operation.context => {
+                self.cancel_all(connection)?;
+                self.clear_previews();
+            }
+            _ => (),
+        }
+        let result = match completion.result {
+            _ if operation.deadline <= Instant::now() => Err(failure(
+                ErrorCode::RequestFailed,
+                "Account operation timed out",
+            )),
+            Ok(Administered::AccountChoice(choice)) => {
+                let result = match choice {
+                    None => Ok(Some(Value::Null)),
+                    Some(command) => self.execute_command(
+                        connection,
+                        id.clone(),
+                        ExecuteCommandParams {
+                            command,
+                            arguments: Vec::new(),
+                            work_done_progress_params: Default::default(),
+                        },
+                    ),
+                };
+                // The chosen command answers the menu's request within its deadline.
+                if let Some(work) = self.administrations.get_mut(&id) {
+                    work.deadline = operation.deadline;
+                    work.stop.send_replace(Some(operation.deadline));
+                }
+                match result {
+                    Ok(None) => return Ok(()),
+                    Ok(Some(value)) => Ok(value),
+                    Err(error) => Err(error),
+                }
+            }
+            Ok(Administered::Message(message)) => {
+                self.ui.inform(&message)?;
+                Ok(Value::Null)
+            }
+            Err(error) => Err(provider_failure(error)),
+        };
+        if let Err(error) = &result {
+            self.command_failure(error)?;
+        }
+        respond(connection, id, result)
+    }
+
     pub(super) fn execute_command(
         &mut self,
         connection: &Connection,

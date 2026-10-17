@@ -335,7 +335,7 @@ async fn removing_the_key_cancels_work_and_discards_previews_only_once_confirmed
     assert!(server.scheduler.translations.is_empty());
     // The worker drops the request it had open.
     let dropped = next(&completions).await;
-    assert!(dropped.result.is_err());
+    assert!(dropped.error().is_some());
     server.finish(&connection, dropped).unwrap();
     gate.add_permits(1);
 
@@ -367,10 +367,7 @@ async fn translation_finished_after_the_key_was_replaced_is_not_published() {
     fixture.keys.replace(NEW_KEY);
     gate.add_permits(1);
     let completion = next(&completions).await;
-    assert!(
-        completion.result.is_ok(),
-        "The API answered the request it had"
-    );
+    assert!(completion.is_ok(), "The API answered the request it had");
     server.finish(&connection, completion).unwrap();
     let Message::Response(response) = message(&client).await else {
         panic!("Expected the Hover response")

@@ -12,7 +12,7 @@ use scheduler::{PendingReply, Scheduler, Translation, TranslationRequest};
 use selection::Selection;
 #[cfg(test)]
 use worker::run_job;
-use worker::{Finished, Job, Outcome, Task, WorkerEvent, worker};
+use worker::{Administered, Completion, Finished, Job, Task, WorkerEvent, worker};
 
 use std::{
     collections::HashMap,

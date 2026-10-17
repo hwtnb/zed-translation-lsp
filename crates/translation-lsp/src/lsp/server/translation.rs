@@ -181,75 +181,21 @@ impl<P: TranslationProvider> Server<P> {
         connection: &Connection,
         completion: Finished,
     ) -> ServerResult<()> {
-        self.scheduler.terminated(completion.ticket);
+        self.scheduler.terminated(completion.ticket());
         self.expire(connection)?;
-        if let Some(id) = self
-            .administrations
-            .iter()
-            .find(|(_, work)| work.ticket == completion.ticket)
-            .map(|(id, _)| id.clone())
-        {
-            let operation = self.administrations.remove(&id).unwrap();
-            match Self::account_change(&operation.command) {
-                AccountChange::AtOnce => self.clear_previews(),
-                // The user agreed, and the command changed what translations
-                // are made with.
-                AccountChange::IfConfirmed if self.provider.context().ok() != operation.context => {
-                    self.cancel_all(connection)?;
-                    self.clear_previews();
-                }
-                _ => (),
+        match completion {
+            Finished::Translation(completion) => self.finish_translation(connection, completion),
+            Finished::Administration(completion) => {
+                self.finish_administration(connection, completion)
             }
-            if operation.command == SETTINGS_COMMAND
-                && operation.deadline > Instant::now()
-                && let Ok(Outcome::AccountChoice(choice)) = &completion.result
-            {
-                let result = match choice {
-                    None => Ok(Some(Value::Null)),
-                    Some(command) => self.execute_command(
-                        connection,
-                        id.clone(),
-                        ExecuteCommandParams {
-                            command: command.clone(),
-                            arguments: Vec::new(),
-                            work_done_progress_params: Default::default(),
-                        },
-                    ),
-                };
-                if let Some(work) = self.administrations.get_mut(&id) {
-                    work.deadline = operation.deadline;
-                    work.stop.send_replace(Some(operation.deadline));
-                }
-                return match result {
-                    Ok(None) => Ok(()),
-                    Ok(Some(value)) => respond(connection, id, Ok(value)),
-                    Err(error) => {
-                        self.command_failure(&error)?;
-                        respond(connection, id, Err(error))
-                    }
-                };
-            }
-            let result = match completion.result {
-                _ if operation.deadline <= Instant::now() => Err(failure(
-                    ErrorCode::RequestFailed,
-                    "Account operation timed out",
-                )),
-                Ok(Outcome::Administration(message)) => {
-                    self.ui.inform(&message)?;
-                    Ok(Value::Null)
-                }
-                Err(error) => Err(provider_failure(error)),
-                _ => Err(failure(
-                    ErrorCode::InternalError,
-                    "Invalid account completion",
-                )),
-            };
-            if let Err(error) = &result {
-                self.command_failure(error)?;
-            }
-            return respond(connection, id, result);
         }
+    }
 
+    fn finish_translation(
+        &mut self,
+        connection: &Connection,
+        completion: Completion<Translated>,
+    ) -> ServerResult<()> {
         let Some(work) = self.scheduler.remove(completion.ticket) else {
             return Ok(());
         };
@@ -265,15 +211,7 @@ impl<P: TranslationProvider> Server<P> {
                     "Document changed during translation",
                 ));
             }
-            let translation = match completion.result.map_err(provider_failure)? {
-                Outcome::Translation(translation) => translation,
-                _ => {
-                    return Err(failure(
-                        ErrorCode::InternalError,
-                        "Invalid translation completion",
-                    ));
-                }
-            };
+            let translation = completion.result.map_err(provider_failure)?;
             if self.provider.context().map_err(provider_failure)? != translation.context {
                 return Err(failure(
                     ErrorCode::ContentModified,

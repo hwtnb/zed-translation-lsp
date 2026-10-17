@@ -26,20 +26,50 @@ pub(super) enum Task {
     },
 }
 
-pub(super) struct Finished {
+/// A job that ended, with the result of its kind of work.
+pub(super) enum Finished {
+    Translation(Completion<Translated>),
+    Administration(Completion<Administered>),
+}
+
+pub(super) struct Completion<T> {
     pub(super) ticket: u64,
-    pub(super) result: Result<Outcome, ProviderError>,
+    pub(super) result: Result<T, ProviderError>,
+}
+
+/// What an account operation gives.
+pub(super) enum Administered {
+    /// The command chosen from the account menu, or none.
+    AccountChoice(Option<String>),
+    /// A message for the user.
+    Message(String),
+}
+
+impl Finished {
+    pub(super) fn ticket(&self) -> u64 {
+        match self {
+            Self::Translation(completion) => completion.ticket,
+            Self::Administration(completion) => completion.ticket,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn error(&self) -> Option<&ProviderError> {
+        match self {
+            Self::Translation(completion) => completion.result.as_ref().err(),
+            Self::Administration(completion) => completion.result.as_ref().err(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_ok(&self) -> bool {
+        self.error().is_none()
+    }
 }
 
 pub(super) enum WorkerEvent {
     Started(u64),
     Finished(Finished),
-}
-
-pub(super) enum Outcome {
-    AccountChoice(Option<String>),
-    Translation(Translated),
-    Administration(String),
 }
 
 pub(super) async fn worker<P: TranslationProvider>(
@@ -78,80 +108,92 @@ pub(super) async fn run_job<P: TranslationProvider>(
     finished: &Sender<WorkerEvent>,
     provider: &P,
 ) {
-    let ticket = job.ticket;
-    let result = run_operation(job, finished, provider).await;
-    // Every dispatched job returns its slot, including cancellation before start.
-    let _ = finished.send(WorkerEvent::Finished(Finished { ticket, result }));
-}
-
-async fn run_operation<P: TranslationProvider>(
-    mut job: Job,
-    finished: &Sender<WorkerEvent>,
-    provider: &P,
-) -> Result<Outcome, ProviderError> {
-    let Some(deadline) = *job.deadline.borrow_and_update() else {
-        return Err(ProviderError::cancelled());
-    };
-    if deadline <= Instant::now() {
-        return Err(ProviderError::cancelled());
-    }
-    if matches!(job.task, Task::Translation { .. })
-        && finished.send(WorkerEvent::Started(job.ticket)).is_err()
-    {
-        return Err(ProviderError::cancelled());
-    }
-    let operation = async {
-        match &job.task {
-            Task::AccountMenu { ui } => {
+    let Job {
+        ticket,
+        mut deadline,
+        task,
+    } = job;
+    let event = match task {
+        Task::Translation {
+            intent,
+            output,
+            generation,
+            text,
+            target_language,
+            context,
+        } => {
+            let started = || finished.send(WorkerEvent::Started(ticket)).is_ok();
+            let result = until_deadline(&mut deadline, started, async {
+                provider.check_admission(&context, generation)?;
+                provider
+                    .translate(intent, output, &text, &target_language, context.clone())
+                    .await
+            })
+            .await;
+            Finished::Translation(Completion { ticket, result })
+        }
+        Task::AccountMenu { ui } => {
+            let result = until_deadline(&mut deadline, || true, async {
                 let commands = provider.account_commands();
                 let titles: Vec<_> = commands
                     .iter()
                     .map(|command| command.title.to_owned())
                     .collect();
                 ui.choose("", &titles).await.map(|choice| {
-                    Outcome::AccountChoice(choice.and_then(|title| {
+                    Administered::AccountChoice(choice.and_then(|title| {
                         commands
                             .into_iter()
                             .find(|command| command.title == title)
                             .map(|command| command.command.to_owned())
                     }))
                 })
-            }
-            Task::Administration { command, ui } => provider
-                .administer(command, ui)
-                .await
-                .map(Outcome::Administration),
-            Task::Translation {
-                intent,
-                output,
-                text,
-                target_language,
-                context,
-                generation,
-            } => {
-                provider.check_admission(context, *generation)?;
+            })
+            .await;
+            Finished::Administration(Completion { ticket, result })
+        }
+        Task::Administration { command, ui } => {
+            let result = until_deadline(&mut deadline, || true, async {
                 provider
-                    .translate(*intent, *output, text, target_language, context.clone())
+                    .administer(&command, &ui)
                     .await
-                    .map(Outcome::Translation)
-            }
+                    .map(Administered::Message)
+            })
+            .await;
+            Finished::Administration(Completion { ticket, result })
         }
     };
+    // Every dispatched job returns its slot, including cancellation before start.
+    let _ = finished.send(WorkerEvent::Finished(event));
+}
+
+/// Runs `operation` until it completes or its deadline passes. `start` runs
+/// once the deadline is known to be ahead; `false` from it cancels the job.
+async fn until_deadline<T>(
+    deadline: &mut watch::Receiver<Option<Instant>>,
+    start: impl FnOnce() -> bool,
+    operation: impl std::future::Future<Output = Result<T, ProviderError>>,
+) -> Result<T, ProviderError> {
+    let Some(current) = *deadline.borrow_and_update() else {
+        return Err(ProviderError::cancelled());
+    };
+    if current <= Instant::now() || !start() {
+        return Err(ProviderError::cancelled());
+    }
     // Keep the same operation alive when a waiter extends or shortens its deadline.
     tokio::pin!(operation);
-    let timer = tokio::time::sleep_until(deadline.into());
+    let timer = tokio::time::sleep_until(current.into());
     tokio::pin!(timer);
     loop {
         tokio::select! {
             biased;
-            changed = job.deadline.changed() => {
+            changed = deadline.changed() => {
                 if changed.is_err() {
                     return Err(ProviderError::cancelled());
                 }
-                let Some(deadline) = *job.deadline.borrow_and_update() else {
+                let Some(current) = *deadline.borrow_and_update() else {
                     return Err(ProviderError::cancelled());
                 };
-                timer.as_mut().reset(deadline.into());
+                timer.as_mut().reset(current.into());
             }
             _ = &mut timer => break Err(ProviderError::failed("Translation timed out")),
             result = &mut operation => break result,

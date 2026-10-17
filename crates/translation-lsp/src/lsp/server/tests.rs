@@ -111,7 +111,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e, WorkerEvent::Finished(f) if f.ticket == 4 && f.result.is_ok()))
+            .filter(|e| matches!(e, WorkerEvent::Finished(f) if f.ticket() == 4 && f.is_ok()))
             .count(),
         1
     );
@@ -265,13 +265,13 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     server
         .finish(
             &connection,
-            Finished {
+            Finished::Translation(Completion {
                 ticket: old_ticket,
-                result: Ok(Outcome::Translation(Translated {
+                result: Ok(Translated {
                     text: "stale result".into(),
                     context: Context::Mock,
-                })),
-            },
+                }),
+            }),
         )
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
@@ -280,13 +280,13 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
     server
         .finish(
             &connection,
-            Finished {
+            Finished::Translation(Completion {
                 ticket: new_ticket,
-                result: Ok(Outcome::Translation(Translated {
+                result: Ok(Translated {
                     text: "current result".into(),
                     context: Context::Mock,
-                })),
-            },
+                }),
+            }),
         )
         .unwrap();
     let Message::Response(response) = client.receiver.try_recv().unwrap() else {

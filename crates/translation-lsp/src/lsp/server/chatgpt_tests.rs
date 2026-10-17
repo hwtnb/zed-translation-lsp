@@ -275,13 +275,13 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             };
             assert!(
                 completion
-                    .result
-                    .is_err_and(|error| error.to_string() == "Translation timed out")
+                    .error()
+                    .is_some_and(|error| error.to_string() == "Translation timed out")
             );
         }
         if cancel {
             assert!(
-                matches!(events.try_recv().unwrap(), WorkerEvent::Finished(f) if f.result.is_err())
+                matches!(events.try_recv().unwrap(), WorkerEvent::Finished(f) if f.error().is_some())
             );
         }
         assert!(events.try_recv().is_err());
@@ -821,8 +821,12 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
     worker_jobs.try_send(job).unwrap();
     server.jobs = Some(worker_jobs);
     let canceled = next(&completions).await;
-    assert_eq!(canceled.ticket, ticket);
-    assert!(matches!(&canceled.result, Err(error) if error.kind() == ErrorKind::Cancelled));
+    assert_eq!(canceled.ticket(), ticket);
+    assert!(
+        canceled
+            .error()
+            .is_some_and(|error| error.kind() == ErrorKind::Cancelled)
+    );
     server.finish(&connection, canceled).unwrap();
     assert_eq!(server.scheduler.admitted(), 0);
     assert!(fixture.state.lock().unwrap().records.is_empty());
@@ -979,7 +983,7 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
     for _ in 0..5 {
         tail.release.notify_one();
         let completion = next(&completions).await;
-        assert!(completion.result.is_ok());
+        assert!(completion.is_ok());
         server.finish(&connection, completion).unwrap();
         if server.scheduler.translations.len() >= 2 {
             wait_held(&tail, 2).await;
@@ -1104,12 +1108,11 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
                     .deadline
                     .send_replace(Some(Instant::now()));
                 let completion = next(&completions).await;
-                assert_eq!(completion.ticket, ticket);
+                assert_eq!(completion.ticket(), ticket);
                 assert!(
                     completion
-                        .result
-                        .as_ref()
-                        .is_err_and(|error| error.to_string().contains("timed out"))
+                        .error()
+                        .is_some_and(|error| error.to_string().contains("timed out"))
                 );
                 server.finish(&connection, completion).unwrap();
                 ErrorCode::RequestFailed
@@ -1173,7 +1176,9 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             if operation != "timeout-active" {
                 let canceled = next(&completions).await;
                 assert!(
-                    matches!(&canceled.result, Err(error) if error.kind() == ErrorKind::Cancelled)
+                    canceled
+                        .error()
+                        .is_some_and(|error| error.kind() == ErrorKind::Cancelled)
                 );
                 server.finish(&connection, canceled).unwrap();
             }
@@ -1186,12 +1191,10 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         while !server.scheduler.translations.is_empty() {
             let completion = next(&completions).await;
             assert!(
-                completion.result.is_ok(),
+                completion.is_ok(),
                 "{operation}: {}",
                 completion
-                    .result
-                    .as_ref()
-                    .err()
+                    .error()
                     .map(|e| e.to_string())
                     .unwrap_or_default()
             );
@@ -1212,7 +1215,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
             fixture.state.lock().unwrap().stream_tail_gate = None;
             parallel_hover(&mut server, 5, &uris[0]);
             let completion = next(&completions).await;
-            assert!(completion.result.is_ok());
+            assert!(completion.is_ok());
             server.finish(&connection, completion).unwrap();
             assert!(
                 server
@@ -1307,12 +1310,10 @@ async fn parallel_account_change_and_shutdown_retire_all_jobs() {
             parallel_hover(&mut server, 5, &uris[0]);
             let completion = next(&completions).await;
             assert!(
-                completion.result.is_ok(),
+                completion.is_ok(),
                 "{operation}: {}",
                 completion
-                    .result
-                    .as_ref()
-                    .err()
+                    .error()
                     .map(|e| e.to_string())
                     .unwrap_or_default()
             );
@@ -1482,7 +1483,7 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         tail.release.notify_waiters();
         // Finish and admit while the worker starts and completes following HTTPs.
         let completion = next(&completions).await;
-        assert!(completion.result.is_ok());
+        assert!(completion.is_ok());
         server.finish(&connection, completion).unwrap();
         let uri: Uri = "file:///new-admission.rs".parse().unwrap();
         server
@@ -1498,7 +1499,7 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         parallel_hover(&mut server, 5, &uri);
         while !server.scheduler.translations.is_empty() {
             let completion = next(&completions).await;
-            assert!(completion.result.is_ok());
+            assert!(completion.is_ok());
             server.finish(&connection, completion).unwrap();
         }
         assert_eq!(response_calls(&fixture), (round + 1) * 5);
@@ -1557,7 +1558,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     invalid.release.notify_waiters();
     for _ in 0..2 {
         let completion = next(&completions).await;
-        assert!(completion.result.as_ref().is_err_and(|e| {
+        assert!(completion.error().is_some_and(|e| {
             e.to_string()
                 .contains("OpenAI stream ended without response.completed")
         }));
@@ -1568,7 +1569,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     following.release.notify_waiters();
     for _ in 0..2 {
         let completion = next(&completions).await;
-        assert!(completion.result.is_ok());
+        assert!(completion.is_ok());
         server.finish(&connection, completion).unwrap();
     }
     assert!(server.scheduler.pending.is_empty() && server.scheduler.translations.is_empty());
@@ -2020,10 +2021,10 @@ async fn administration_reports_admission_worker_and_deadline_failures_but_not_c
     server
         .finish(
             &connection,
-            Finished {
+            Finished::Administration(Completion {
                 ticket,
                 result: Err(ProviderError::failed("late completion")),
-            },
+            }),
         )
         .unwrap();
     assert!(client.receiver.try_recv().is_err());
