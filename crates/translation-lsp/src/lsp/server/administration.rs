@@ -8,18 +8,6 @@ impl<P: TranslationProvider> Server<P> {
         params: &CodeActionParams,
     ) -> RequestResult<Vec<CodeAction>> {
         let mut actions = Vec::new();
-        let mut add = |title: String, command: &str, arguments: Vec<Value>| {
-            actions.push(CodeAction {
-                title: title.clone(),
-                kind: Some(CodeActionKind::new(ACTION_KIND)),
-                command: Some(Command {
-                    title,
-                    command: command.into(),
-                    arguments: Some(arguments),
-                }),
-                ..Default::default()
-            });
-        };
         let mut ranges: Vec<_> = self
             .scheduler
             .translations
@@ -35,27 +23,19 @@ impl<P: TranslationProvider> Server<P> {
         // they are kept apart, so only then does the title tell them apart.
         let separate = self.settings.provider.separates_documents();
         for (&ticket, work) in ranges {
-            add(
-                format!(
-                    "Cancel {} of lines {}-{}",
-                    if separate && work.owners.tab() {
-                        "tab translation"
-                    } else {
-                        "translation"
-                    },
-                    work.target.range.start.line + 1,
-                    work.target.range.end.line + 1
-                ),
-                CANCEL_COMMAND,
-                vec![to_value(ticket)?],
-            );
+            actions.push(ServerCommand::Cancel(ticket).action(format!(
+                "Cancel {} of lines {}-{}",
+                if separate && work.owners.tab() {
+                    "tab translation"
+                } else {
+                    "translation"
+                },
+                work.target.range.start.line + 1,
+                work.target.range.end.line + 1
+            ))?);
         }
         if !self.scheduler.translations.is_empty() {
-            add(
-                "Cancel all translations".into(),
-                CANCEL_ALL_COMMAND,
-                Vec::new(),
-            );
+            actions.push(ServerCommand::CancelAll.action("Cancel all translations".into())?);
         }
         Ok(actions)
     }
@@ -133,167 +113,66 @@ impl<P: TranslationProvider> Server<P> {
         respond(connection, id, result)
     }
 
-    pub(super) fn execute_command(
+    /// Starts the account menu or an account command of the provider. Its
+    /// request is answered when the operation finishes.
+    pub(super) fn start_administration(
         &mut self,
         connection: &Connection,
         id: RequestId,
-        params: ExecuteCommandParams,
+        command: String,
     ) -> RequestResult<Option<Value>> {
-        if params.command == CANCEL_ALL_COMMAND {
-            if !params.arguments.is_empty() {
-                return Err(failure(
-                    ErrorCode::InvalidParams,
-                    "Cancel all takes no arguments",
-                ));
-            }
-            self.cancel_activity(connection)?;
-            return Ok(Some(Value::Null));
+        if !self.administrations.is_empty() {
+            return Err(failure(
+                ErrorCode::RequestFailed,
+                "An account operation is in progress",
+            ));
         }
-        if params.command == CANCEL_COMMAND {
-            if params.arguments.len() != 1 {
-                return Err(failure(
-                    ErrorCode::InvalidParams,
-                    "Expected one translation ticket",
-                ));
-            }
-            let ticket: u64 = parse(params.arguments.into_iter().next().unwrap())?;
-            self.cancel_range(connection, ticket, ErrorCode::RequestCanceled)?;
-            return Ok(Some(Value::Null));
+        let change = Self::account_change(&command);
+        if change == AccountChange::AtOnce {
+            self.cancel_all(connection)
+                .map_err(|_| failure(ErrorCode::InternalError, "Could not cancel pending work"))?;
+            self.clear_previews();
         }
-        if P::capabilities().account_menu.is_some()
-            && (params.command == SETTINGS_COMMAND
-                || P::capabilities()
-                    .commands
-                    .iter()
-                    .any(|command| command.command == params.command))
-        {
-            if !params.arguments.is_empty() {
-                return Err(failure(
-                    ErrorCode::InvalidParams,
-                    "Account commands take no arguments",
-                ));
-            }
-            if !self.administrations.is_empty() {
-                return Err(failure(
-                    ErrorCode::RequestFailed,
-                    "An account operation is in progress",
-                ));
-            }
-            let change = Self::account_change(&params.command);
-            if change == AccountChange::AtOnce {
-                self.cancel_all(connection).map_err(|_| {
-                    failure(ErrorCode::InternalError, "Could not cancel pending work")
-                })?;
-                self.clear_previews();
-            }
-            let context = (change == AccountChange::IfConfirmed)
-                .then(|| self.provider.context().ok())
-                .flatten();
-            self.next_ticket += 1;
-            let ticket = self.next_ticket;
-            let deadline = Instant::now() + ADMIN_TIMEOUT;
-            let (stop, receiver) = watch::channel(Some(deadline));
-            self.admin_jobs
-                .as_ref()
-                .unwrap()
-                .try_send(Job {
-                    ticket,
-                    deadline: receiver,
-                    task: if params.command == SETTINGS_COMMAND {
-                        Task::AccountMenu {
-                            ui: self.ui.clone(),
-                        }
-                    } else {
-                        Task::Administration {
-                            command: params.command.clone(),
-                            ui: self.ui.clone(),
-                        }
-                    },
-                })
-                .map_err(|_| {
-                    failure(
-                        ErrorCode::RequestFailed,
-                        "Translation worker is busy; retry the account command",
-                    )
-                })?;
-            self.administrations.insert(
-                id,
-                Administration {
-                    command: params.command,
-                    ticket,
-                    stop,
-                    deadline,
-                    context,
+        let context = (change == AccountChange::IfConfirmed)
+            .then(|| self.provider.context().ok())
+            .flatten();
+        self.next_ticket += 1;
+        let ticket = self.next_ticket;
+        let deadline = Instant::now() + ADMIN_TIMEOUT;
+        let (stop, receiver) = watch::channel(Some(deadline));
+        self.admin_jobs
+            .as_ref()
+            .unwrap()
+            .try_send(Job {
+                ticket,
+                deadline: receiver,
+                task: if command == SETTINGS_COMMAND {
+                    Task::AccountMenu {
+                        ui: self.ui.clone(),
+                    }
+                } else {
+                    Task::Administration {
+                        command: command.clone(),
+                        ui: self.ui.clone(),
+                    }
                 },
-            );
-            return Ok(None);
-        }
-        if !matches!(
-            params.command.as_str(),
-            COMMAND | RETRY_COMMAND | DOCUMENT_COMMAND
-        ) {
-            return Err(failure(
-                ErrorCode::InvalidParams,
-                "Unknown translation command",
-            ));
-        }
-        if params.arguments.len() != 1 {
-            return Err(failure(
-                ErrorCode::InvalidParams,
-                "Expected one selection argument",
-            ));
-        }
-        let target: TranslationTarget = parse(params.arguments.into_iter().next().unwrap())?;
-        if target.target_language != self.settings.target_language {
-            return Err(failure(
-                ErrorCode::InvalidParams,
-                "The target language must match initialization_options",
-            ));
-        }
-        if params.command == DOCUMENT_COMMAND {
-            if !self.ui.capabilities.show_document {
-                return Err(failure(
+            })
+            .map_err(|_| {
+                failure(
                     ErrorCode::RequestFailed,
-                    "The editor does not support opening translation documents",
-                ));
-            }
-            if !self
-                .documents
-                .get(&target.uri)
-                .is_some_and(Document::supports_document_preview)
-            {
-                return Err(failure(
-                    ErrorCode::InvalidParams,
-                    "Tab translations support Markdown and Plain Text",
-                ));
-            }
-            self.check_feature(Feature::DocumentAction, &target)?;
-            self.queue_translation(target, TranslationRequest::Document)?;
-            Ok(Some(Value::Null))
-        } else {
-            let reply = if params.command == RETRY_COMMAND {
-                PendingReply::Retry
-            } else {
-                self.check_feature(Feature::SelectionAction, &target)?;
-                PendingReply::Command
-            };
-            self.queue(id, target, reply)
-        }
-    }
-
-    /// The actions of a feature turned off are not listed, so its command can
-    /// only come from a client that did not take it from the list.
-    fn check_feature(&self, feature: Feature, target: &TranslationTarget) -> RequestResult<()> {
-        if self
-            .documents
-            .get(&target.uri)
-            .is_some_and(|document| !self.settings.features.enables(feature, document.language))
-        {
-            return Err(failure(
-                ErrorCode::InvalidParams,
-                &format!("The features setting turns off {feature} for this language"),
-            ));
-        }
-        Ok(())
+                    "Translation worker is busy; retry the account command",
+                )
+            })?;
+        self.administrations.insert(
+            id,
+            Administration {
+                command,
+                ticket,
+                stop,
+                deadline,
+                context,
+            },
+        );
+        Ok(None)
     }
 }

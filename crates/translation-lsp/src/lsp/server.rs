@@ -1,4 +1,5 @@
 mod administration;
+mod commands;
 mod lifecycle;
 mod scheduler;
 mod selection;
@@ -8,6 +9,7 @@ mod worker;
 use tokio::sync::mpsc as queue;
 type JobSender = queue::Sender<Job>;
 type JobReceiver = queue::Receiver<Job>;
+use commands::ServerCommand;
 use scheduler::{PendingReply, Scheduler, Translation, TranslationRequest};
 use selection::Selection;
 #[cfg(test)]
@@ -615,20 +617,9 @@ impl<P: TranslationProvider> Server<P> {
             return self.cancel_actions(&params);
         }
         let mut actions = self.cancel_actions(&params)?;
-        actions.extend(if let Some(title) = P::capabilities().account_menu {
-            vec![CodeAction {
-                title: title.into(),
-                kind: Some(CodeActionKind::new(ACTION_KIND)),
-                command: Some(Command {
-                    title: title.into(),
-                    command: SETTINGS_COMMAND.into(),
-                    arguments: None,
-                }),
-                ..Default::default()
-            }]
-        } else {
-            Vec::new()
-        });
+        if let Some(title) = P::capabilities().account_menu {
+            actions.push(ServerCommand::Account(SETTINGS_COMMAND.into()).action(title.into())?);
+        }
         if P::capabilities().account_menu.is_some() && state != AuthUiState::Ready {
             return Ok(actions);
         }
@@ -642,7 +633,10 @@ impl<P: TranslationProvider> Server<P> {
             return Ok(actions);
         };
         let mut translations = Vec::new();
-        let mut add_action = |range: Range, command: &str, title: String| -> RequestResult<()> {
+        let mut add_action = |range: Range,
+                              command: fn(TranslationTarget) -> ServerCommand,
+                              title: String|
+         -> RequestResult<()> {
             let target = TranslationTarget {
                 uri: params.text_document.uri.clone(),
                 version: document.version,
@@ -650,16 +644,7 @@ impl<P: TranslationProvider> Server<P> {
                 range,
                 target_language: self.settings.target_language.clone(),
             };
-            translations.push(CodeAction {
-                title: title.clone(),
-                kind: Some(CodeActionKind::new(ACTION_KIND)),
-                command: Some(Command {
-                    title,
-                    command: command.into(),
-                    arguments: Some(vec![to_value(target)?]),
-                }),
-                ..Default::default()
-            });
+            translations.push(command(target).action(title)?);
             Ok(())
         };
         if let Some(range) = retry_range
@@ -674,7 +659,7 @@ impl<P: TranslationProvider> Server<P> {
         {
             add_action(
                 range,
-                RETRY_COMMAND,
+                ServerCommand::Retry,
                 format!(
                     "Retry translation of lines {}-{}",
                     range.start.line + 1,
@@ -690,7 +675,7 @@ impl<P: TranslationProvider> Server<P> {
         {
             add_action(
                 params.range,
-                COMMAND,
+                ServerCommand::TranslateSelection,
                 format!(
                     "Translate selection to {}",
                     language::display(&self.settings.target_language)
@@ -711,7 +696,7 @@ impl<P: TranslationProvider> Server<P> {
             {
                 add_action(
                     range,
-                    DOCUMENT_COMMAND,
+                    ServerCommand::OpenTab,
                     format!(
                         "Translate {subject} to {} and open in tab",
                         language::display(&self.settings.target_language)
