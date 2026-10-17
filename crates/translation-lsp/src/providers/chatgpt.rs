@@ -220,9 +220,7 @@ impl ChatGptProvider {
                         let result = if response.status().is_success() {
                             response_text(response, &secrets, self.output_limit).await
                         } else {
-                            self.auth.http.json(response, &secrets).await.and_then(|_| {
-                                Err(Error::failed("OpenAI returned a non-success response"))
-                            })
+                            Err(self.auth.http.failure(response, &secrets).await)
                         };
                         Attempt {
                             result,

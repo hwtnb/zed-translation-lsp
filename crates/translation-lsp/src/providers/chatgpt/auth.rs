@@ -694,41 +694,49 @@ mod tests {
                 .unwrap();
             callback(&request, &state, returning, "127.0.0.1:3456")
         };
-        assert!(
+        assert!(matches!(
             parse(
                 "state=expected&code=c&client_id=oaiapp_new",
                 "/auth/callback",
                 None
-            )
-            .is_ok()
-        );
-        assert!(
+            ),
+            Some(Ok(_))
+        ));
+        assert!(matches!(
             parse(
                 "state=expected&code=c",
                 "/auth/callback",
                 Some("oaiapp_saved")
-            )
-            .is_ok()
-        );
+            ),
+            Some(Ok(_))
+        ));
+        // Requests that are not this sign-in's callback leave it waiting.
+        for (query, path) in [
+            ("state=wrong&code=c&client_id=oaiapp_new", "/auth/callback"),
+            (
+                "state=expected&state=expected&code=c&client_id=oaiapp_new",
+                "/auth/callback",
+            ),
+            ("state=expected&code=c&client_id=oaiapp_new", "/wrong"),
+        ] {
+            assert!(parse(query, path, None).is_none(), "{query} {path}");
+        }
         for query in [
-            "state=wrong&code=c&client_id=oaiapp_new",
-            "state=expected&state=expected&code=c&client_id=oaiapp_new",
             "state=expected&code=c&code=d&client_id=oaiapp_new",
             "state=expected&code=c",
             "state=expected&code=c&client_id=dynamic_agent_client",
             "state=expected&error=access_denied",
         ] {
-            assert!(parse(query, "/auth/callback", None).is_err());
+            assert!(matches!(parse(query, "/auth/callback", None), Some(Err(_))));
         }
-        assert!(
+        assert!(matches!(
             parse(
                 "state=expected&code=c&client_id=oaiapp_other",
                 "/auth/callback",
                 Some("oaiapp_saved")
-            )
-            .is_err()
-        );
-        assert!(parse("state=expected&code=c&client_id=oaiapp_new", "/wrong", None).is_err());
+            ),
+            Some(Err(_))
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

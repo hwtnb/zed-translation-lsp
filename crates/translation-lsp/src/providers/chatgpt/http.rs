@@ -176,35 +176,28 @@ impl Http {
         Ok(response)
     }
 
-    pub async fn json(
-        &self,
-        mut response: reqwest::Response,
-        secrets: &[&str],
-    ) -> Result<Value, Error> {
+    /// The error that a non-success response reports.
+    pub async fn failure(&self, response: reqwest::Response, secrets: &[&str]) -> Error {
         let status = response.status();
         let request_id = request_id(response.headers()).map(str::to_owned);
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(temporary_network)? {
-            if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
-                return Err(Error::failed("OpenAI JSON response exceeds 1 MiB"));
-            }
-            bytes.extend_from_slice(&chunk);
+        match error_body(response).await {
+            Ok(body) => response_error(status.as_u16(), &body, request_id.as_deref(), secrets),
+            Err(error) => error,
         }
-        let body = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
-        if !status.is_success() {
-            return Err(response_error(
-                status.as_u16(),
-                &body,
-                request_id.as_deref(),
-                secrets,
-            ));
-        }
-        if body.is_string() {
-            return Err(Error::failed("OpenAI returned invalid JSON"));
-        }
-        Ok(body)
     }
+}
+
+/// The JSON of an error response, or its text when it is not JSON.
+async fn error_body(mut response: reqwest::Response) -> Result<Value, Error> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(temporary_network)? {
+        if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
+            return Err(Error::failed("OpenAI JSON response exceeds 1 MiB"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
 }
 
 pub(super) fn temporary_network(source: reqwest::Error) -> Error {

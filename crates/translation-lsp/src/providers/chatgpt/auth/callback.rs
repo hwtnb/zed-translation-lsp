@@ -39,12 +39,9 @@ pub(super) async fn wait_callback(
                 );
                 connections.spawn(async move {
                     let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                        let result = callback(&request, &state, returning.as_deref(), &address);
-                        let status = if result.is_ok() { 200 } else { 400 };
-                        if request.uri().path() == "/auth/callback"
-                            && request.headers().get("host").and_then(|host| host.to_str().ok())
-                                == Some(address.as_str())
-                            && valid_state(request.uri().query().unwrap_or(""), &state)
+                        let received = callback(&request, &state, returning.as_deref(), &address);
+                        let status = if matches!(received, Some(Ok(_))) { 200 } else { 400 };
+                        if let Some(result) = received
                             && let Some(sender) = sender.lock().unwrap().take()
                         {
                             let _ = sender.send(result);
@@ -85,39 +82,45 @@ fn valid_state(query: &str, state: &CsrfToken) -> bool {
     matches!(values.as_slice(), [received] if CsrfToken::new(received.to_string()) == *state)
 }
 
+/// Reads a request to the callback listener. `None` means that the request is
+/// not the callback of this sign-in, which goes on waiting: only a request with
+/// the callback path, the listener's host, and one matching `state` ends it.
 pub(super) fn callback<B>(
     request: &hyper::Request<B>,
     state: &CsrfToken,
     returning: Option<&str>,
     address: &str,
-) -> Result<Callback, Error> {
-    if request.method() != hyper::Method::GET
-        || request.uri().path() != "/auth/callback"
+) -> Option<Result<Callback, Error>> {
+    let query = request.uri().query().unwrap_or("");
+    if request.uri().path() != "/auth/callback"
         || request
             .headers()
             .get("host")
             .and_then(|host| host.to_str().ok())
             != Some(address)
-        || request.uri().to_string().len() > 16 * 1024
+        || !valid_state(query, state)
     {
-        return Err(Error::failed("Invalid ChatGPT callback path or host"));
+        return None;
+    }
+    Some(parse(request, query, returning))
+}
+
+fn parse<B>(
+    request: &hyper::Request<B>,
+    query: &str,
+    returning: Option<&str>,
+) -> Result<Callback, Error> {
+    if request.method() != hyper::Method::GET || request.uri().to_string().len() > 16 * 1024 {
+        return Err(Error::failed("Invalid ChatGPT callback request"));
     }
     let mut parameters = HashMap::new();
-    for (key, value) in
-        openidconnect::url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-    {
+    for (key, value) in openidconnect::url::form_urlencoded::parse(query.as_bytes()) {
         if parameters
             .insert(key.into_owned(), value.into_owned())
             .is_some()
         {
             return Err(Error::failed("Duplicate ChatGPT callback parameter"));
         }
-    }
-    let received = parameters
-        .get("state")
-        .ok_or_else(|| Error::failed("Missing callback state"))?;
-    if CsrfToken::new(received.clone()) != *state {
-        return Err(Error::failed("ChatGPT callback state does not match"));
     }
     if parameters.contains_key("error") {
         return Err(Error::failed(
