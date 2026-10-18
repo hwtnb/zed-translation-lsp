@@ -196,6 +196,19 @@ impl Auth {
         Err(Error::failed(message))
     }
 
+    /// The selected account once no process holds the credential store for an
+    /// update, such as another request refreshing its tokens.
+    pub async fn settled_key(&self) -> Result<AccountKey, Error> {
+        loop {
+            match self.key() {
+                Err(error) if error.kind() == ErrorKind::Unavailable => {
+                    tokio::time::sleep(Duration::from_millis(25)).await
+                }
+                result => return result,
+            }
+        }
+    }
+
     async fn discovery(&self) -> Result<Metadata, Error> {
         let metadata =
             Metadata::discover_async(self.issuer.clone(), &|request| self.http.oidc(request))

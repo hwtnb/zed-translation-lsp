@@ -21,7 +21,7 @@ use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
-    error::Error,
+    error::{Error, ErrorKind},
     prompt, transport,
 };
 use auth::{AccountKey, Auth, account_changed};
@@ -129,6 +129,16 @@ impl ChatGptProvider {
         self
     }
 
+    /// Fails unless `key` is still the selected account once no update holds
+    /// the credential store. A store that cannot be read fails as itself.
+    async fn check_account(&self, key: &AccountKey) -> Result<(), Error> {
+        match self.auth.settled_key().await {
+            Ok(current) if &current == key => Ok(()),
+            Err(error) if error.kind() == ErrorKind::Storage => Err(error),
+            _ => Err(account_changed()),
+        }
+    }
+
     async fn request(
         &self,
         body: &str,
@@ -170,9 +180,10 @@ impl ChatGptProvider {
             .admission
             .retrying(key, intent, async || {
                 // The account may have changed during the wait.
-                if std::mem::replace(&mut sent, true) && self.auth.key().ok().as_ref() != Some(key)
+                if std::mem::replace(&mut sent, true)
+                    && let Err(error) = self.check_account(key).await
                 {
-                    return Attempt::without_response(account_changed());
+                    return Attempt::without_response(error);
                 }
                 let response = self
                     .responses
@@ -199,6 +210,13 @@ impl ChatGptProvider {
                 }
             })
             .await;
+        // The server compares the account again without waiting, so return
+        // only after an update of the credentials has finished.
+        if result.is_ok()
+            && let Err(error) = self.check_account(key).await
+        {
+            result = Err(error);
+        }
         self.admission.settle(key, intent, generation, &mut result);
         Ok(Translated {
             text: result?,

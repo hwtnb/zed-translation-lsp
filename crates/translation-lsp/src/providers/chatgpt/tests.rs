@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use super::test_support::Fixture;
+use super::test_support::{self, Fixture};
 use super::*;
 use crate::providers::error::ErrorKind;
 
@@ -212,6 +212,120 @@ async fn retry_wait_is_cancellable_and_account_changes_skip_the_retry() {
             assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
             assert_eq!(response_calls(&fixture), 1);
         }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_credential_update_in_progress_delays_the_retry_and_the_result() {
+    for retry in [false, true] {
+        let fixture = Fixture::new().await;
+        let tail = Arc::new(test_support::StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            if retry {
+                state.retry_after = Some("1".into());
+                state
+                    .response_failures
+                    .push_back((503, json!({"detail":"Overloaded"})));
+            } else {
+                state.response_mode = "delta_compact".into();
+                state.stream_tail_gate = Some(tail.clone());
+            }
+        }
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth.clone(),
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let request = provider.translate(
+            crate::providers::Intent::Automatic,
+            crate::providers::Output::Range,
+            "Read this.",
+            "ja",
+            provider.context().unwrap(),
+        );
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut request)
+                .await
+                .is_err()
+        );
+        let writer = auth.store.lock(false).await.unwrap().unwrap();
+        if !retry {
+            tail.release.notify_one();
+        }
+        // The retry waits 1 second before it checks the account.
+        let wait = Duration::from_millis(if retry { 1500 } else { 300 });
+        assert!(
+            tokio::time::timeout(wait, &mut request).await.is_err(),
+            "retry {retry}"
+        );
+        assert_eq!(response_calls(&fixture), 1);
+        drop(writer);
+        let result = tokio::time::timeout(Duration::from_secs(5), &mut request)
+            .await
+            .unwrap();
+        assert!(result.is_ok(), "retry {retry}: {:?}", result.err());
+        assert_eq!(response_calls(&fixture), if retry { 2 } else { 1 });
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_credential_store_that_breaks_during_a_request_fails_as_itself() {
+    for retry in [false, true] {
+        let fixture = Fixture::new().await;
+        let tail = Arc::new(test_support::StreamTailGate::default());
+        {
+            let mut state = fixture.state.lock().unwrap();
+            if retry {
+                state.retry_after = Some("1".into());
+                state
+                    .response_failures
+                    .push_back((503, json!({"detail":"Overloaded"})));
+            } else {
+                state.response_mode = "delta_compact".into();
+                state.stream_tail_gate = Some(tail.clone());
+            }
+        }
+        let directory =
+            std::env::temp_dir().join(format!("zed-auth-synthetic-{}", uuid::Uuid::new_v4()));
+        let auth = Auth::synthetic(
+            super::auth_store::AuthStore::synthetic(directory.clone()),
+            Http::synthetic_revocation(&fixture.base),
+            fixture.base.clone(),
+        );
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let request = provider.translate(
+            crate::providers::Intent::Explicit,
+            crate::providers::Output::Range,
+            "Read this.",
+            "ja",
+            provider.context().unwrap(),
+        );
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut request)
+                .await
+                .is_err()
+        );
+        std::fs::write(directory.join("auth.json"), b"{").unwrap();
+        if !retry {
+            tail.release.notify_one();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(5), &mut request)
+            .await
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), ErrorKind::Storage, "retry {retry}: {error}");
+        assert_eq!(response_calls(&fixture), 1);
     }
 }
 
