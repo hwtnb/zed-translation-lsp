@@ -125,13 +125,28 @@ impl<C> Translation<C> {
     pub fn execution_deadline(&self) -> Option<Instant> {
         self.started.map(|start| start + self.limit)
     }
-    /// With `provider.document`, tab operations and range operations never
-    /// share work, even for the same target. Without it, one operation serves
-    /// every output.
-    pub fn serves(&self, output: Output, settings: &Settings) -> bool {
-        !settings.provider.separates_documents()
-            || self.owners.tab() == (output == Output::Document)
+    pub fn serves(&self, output: Output, sharing: Sharing) -> bool {
+        match sharing {
+            Sharing::Both => true,
+            Sharing::UntilSent => {
+                output == Output::Range || self.owners.tab() || self.task.is_some()
+            }
+            Sharing::Never => self.owners.tab() == (output == Output::Document),
+        }
     }
+}
+
+/// Which operation of a target serves a request for the other output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Sharing {
+    /// One operation serves both outputs.
+    Both,
+    /// A range request asks for less output than a tab request, so a tab
+    /// shares a range operation only until it is sent.
+    UntilSent,
+    /// With `provider.document`, tab operations and range operations never
+    /// share work, even for the same target.
+    Never,
 }
 
 pub(super) struct Scheduler<C> {
@@ -290,10 +305,10 @@ impl<C> Scheduler<C> {
         &self,
         target: &TranslationTarget,
         output: Output,
-        settings: &Settings,
+        sharing: Sharing,
     ) -> Option<u64> {
         self.translations.iter().find_map(|(&ticket, work)| {
-            (&work.target == target && work.serves(output, settings)).then_some(ticket)
+            (&work.target == target && work.serves(output, sharing)).then_some(ticket)
         })
     }
 
@@ -364,10 +379,14 @@ impl<C> Scheduler<C> {
             work.limit = work.limit.max(request.timeout(settings));
         }
         work.owners.add(&request, work.is_comment);
-        if request.explicit()
-            && let Some(Task::Translation { intent, .. }) = work.task.as_mut()
-        {
-            *intent = crate::providers::Intent::Explicit;
+        if let Some(Task::Translation { intent, output, .. }) = work.task.as_mut() {
+            if request.explicit() {
+                *intent = crate::providers::Intent::Explicit;
+            }
+            // A tab that joins before sending asks for its own output.
+            if request.output() == Output::Document {
+                *output = Output::Document;
+            }
         }
         if let TranslationRequest::Reply(id, PendingReply::Hover(position)) = request {
             self.pending.insert(
@@ -822,17 +841,20 @@ mod separate_outputs_tests {
             now,
         );
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Document, &separate),
+            scheduler.ticket(&target(0), Output::Document, Sharing::Never),
             Some(1)
         );
-        assert_eq!(scheduler.ticket(&target(0), Output::Range, &separate), None);
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Range, Sharing::Never),
+            None
+        );
         add(&mut scheduler, 2, 0, manual(), &separate, now);
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Document, &separate),
+            scheduler.ticket(&target(0), Output::Document, Sharing::Never),
             Some(1)
         );
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Range, &separate),
+            scheduler.ticket(&target(0), Output::Range, Sharing::Never),
             Some(2)
         );
         assert_eq!(scheduler.admitted(), 2);
@@ -867,11 +889,11 @@ mod separate_outputs_tests {
             .join(2, TranslationRequest::Selection, &separate, now)
             .unwrap();
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Range, &separate),
+            scheduler.ticket(&target(0), Output::Range, Sharing::Never),
             Some(2)
         );
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Document, &separate),
+            scheduler.ticket(&target(0), Output::Document, Sharing::Never),
             Some(1)
         );
         assert_eq!(
@@ -884,9 +906,12 @@ mod separate_outputs_tests {
         assert!(scheduler.at(&target(0).uri, Position::new(0, 2)).is_none());
 
         // Canceling one leaves the other, and its slot returns only on termination.
-        assert_eq!(scheduler.ticket(&target(0), Output::Range, &separate), None);
         assert_eq!(
-            scheduler.ticket(&target(0), Output::Document, &separate),
+            scheduler.ticket(&target(0), Output::Range, Sharing::Never),
+            None
+        );
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, Sharing::Never),
             Some(1)
         );
         assert_eq!(scheduler.admitted(), 3);
@@ -902,9 +927,71 @@ mod separate_outputs_tests {
             let mut scheduler = Scheduler::default();
             add(&mut scheduler, 1, 0, first, &shared, now);
             for output in [Output::Range, Output::Document] {
-                assert_eq!(scheduler.ticket(&target(0), output, &shared), Some(1));
-                assert_eq!(scheduler.ticket(&target(1), output, &shared), None);
+                assert_eq!(scheduler.ticket(&target(0), output, Sharing::Both), Some(1));
+                assert_eq!(scheduler.ticket(&target(1), output, Sharing::Both), None);
             }
         }
+    }
+
+    #[test]
+    fn a_tab_shares_a_bounded_range_operation_only_until_it_is_sent() {
+        let now = Instant::now();
+        let shared = settings(false);
+        let mut scheduler = Scheduler::default();
+        let (jobs, mut received) = queue::channel(3);
+        add(&mut scheduler, 1, 0, manual(), &shared, now);
+        add(&mut scheduler, 2, 1, manual(), &shared, now);
+        scheduler.dispatch(&jobs, &shared, now).unwrap();
+        add(&mut scheduler, 3, 2, manual(), &shared, now);
+        add(
+            &mut scheduler,
+            4,
+            3,
+            TranslationRequest::Document,
+            &shared,
+            now,
+        );
+
+        // A sent range operation serves ranges only; a tab operation serves both.
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Document, Sharing::UntilSent),
+            None
+        );
+        assert_eq!(
+            scheduler.ticket(&target(0), Output::Range, Sharing::UntilSent),
+            Some(1)
+        );
+        for output in [Output::Range, Output::Document] {
+            assert_eq!(
+                scheduler.ticket(&target(3), output, Sharing::UntilSent),
+                Some(4)
+            );
+        }
+
+        // A tab joins a range operation before it is sent and asks for its own output.
+        assert_eq!(
+            scheduler.ticket(&target(2), Output::Document, Sharing::UntilSent),
+            Some(3)
+        );
+        scheduler
+            .join(3, TranslationRequest::Document, &shared, now)
+            .unwrap();
+        scheduler.terminated(1);
+        scheduler.terminated(2);
+        scheduler.dispatch(&jobs, &shared, now).unwrap();
+        let outputs: Vec<_> = std::iter::from_fn(|| received.try_recv().ok())
+            .map(|job| match job.task {
+                Task::Translation { output, .. } => (job.ticket, output),
+                _ => panic!("Expected a translation"),
+            })
+            .collect();
+        assert_eq!(
+            outputs,
+            [
+                (1, Output::Range),
+                (2, Output::Range),
+                (3, Output::Document)
+            ]
+        );
     }
 }

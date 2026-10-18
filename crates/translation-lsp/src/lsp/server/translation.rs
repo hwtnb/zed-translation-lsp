@@ -37,7 +37,7 @@ impl<P: TranslationProvider> Server<P> {
         );
         match self
             .scheduler
-            .ticket(&target, request.output(), &self.settings)
+            .ticket(&target, request.output(), self.sharing())
         {
             Some(ticket) => self.join_running(ticket, request, &context)?,
             None => self.admit_new(target, request, context)?,

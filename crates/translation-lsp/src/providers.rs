@@ -49,6 +49,9 @@ pub(crate) struct Capabilities {
     pub commands: &'static [ProviderCommand],
     /// A line that the Hover header adds under the title.
     pub hover_note: Option<&'static str>,
+    /// Whether a range request asks for less output than a tab request for
+    /// the same text.
+    pub range_output_bounded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +140,7 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
             account_menu: None,
             commands: &[],
             hover_note: None,
+            range_output_bounded: false,
         }
     }
     fn account_commands(&self) -> Vec<ProviderCommand> {

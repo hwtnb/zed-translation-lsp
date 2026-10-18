@@ -40,7 +40,7 @@ Reopening the same cached tab translation reuses its temporary file and focuses 
 
 ## Status and notifications
 
-While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation; with `provider.document`, its tab translation counts separately. Other language-server activity can take priority in this shared area.
+While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Its tab translation counts separately with `provider.document`, and with Anthropic when the range request was already sent. Other language-server activity can take priority in this shared area.
 
 The spinner disappears when work ends, including cancellation and timeout. Hover over the original text to check the result. On clients that support server status, translation failures and timeouts leave a warning that clears on retry, editing, or closing the document. Clients without these display capabilities retain Hover and explicit-operation notifications.
 

@@ -1,4 +1,4 @@
-//! `provider.document` keeps tab translations apart from range translations.
+//! How tab translations and range translations of one target share work.
 use serde_json::{Value, json};
 
 use super::{actions, next, target};
@@ -118,7 +118,7 @@ fn translate(
     };
     server
         .scheduler
-        .ticket(target, output, &server.settings)
+        .ticket(target, output, server.sharing())
         .unwrap()
 }
 
@@ -172,6 +172,19 @@ fn sent(fixture: &Fixture) -> Vec<Value> {
                 request["output_config"]["effort"],
                 request["thinking"]["type"]
             ])
+        })
+        .collect()
+}
+
+/// The `max_tokens` of each request the fixture received, in order.
+fn max_tokens(fixture: &Fixture) -> Vec<u64> {
+    let state = fixture.state.lock().unwrap();
+    state
+        .records
+        .iter()
+        .map(|record| {
+            let request: Value = serde_json::from_str(&record.body).unwrap();
+            request["max_tokens"].as_u64().unwrap()
         })
         .collect()
 }
@@ -588,5 +601,46 @@ async fn a_failed_range_can_be_retried_while_its_tab_is_in_flight() {
             !titles(&actions(&mut server, &uri, cursor))
                 .contains(&"Retry translation of lines 1-1")
         );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tab_asks_for_its_own_output_unless_the_range_was_already_sent() {
+    // Each line has 15 bytes, so a range request asks for 16,384 + 15 * 4 tokens.
+    const RANGE: u64 = 16_444;
+    const TAB: u64 = 64_000;
+    for sent in [true, false] {
+        let fixture = Fixture::new().await;
+        let (mut server, connection, client, completions) = editor(
+            &fixture,
+            settings(false, json!({"concurrent": 1, "documents": 1})),
+        );
+        let uri = open(&mut server, "plaintext", "Alpha sentence.\nBravo sentence.");
+        let mut held = Held::new(&mut server);
+        let shared = target(&server, &uri, line(0));
+        // Otherwise another range takes the only slot, so this range waits unsent.
+        let first = if sent {
+            None
+        } else {
+            let other = target(&server, &uri, line(1));
+            Some(translate(&mut server, &connection, COMMAND, &other))
+        };
+        let range = translate(&mut server, &connection, COMMAND, &shared);
+        let tab = translate(&mut server, &connection, DOCUMENT_COMMAND, &shared);
+        assert_eq!(tab == range, !sent);
+        for (ticket, text) in [
+            (first.unwrap_or(range), RANGE_TEXT),
+            (if sent { tab } else { range }, TAB_TEXT),
+        ] {
+            fixture.reply(Reply::stream(completed(text)));
+            held.release(ticket);
+            server
+                .finish(&connection, next(&completions).await)
+                .unwrap();
+        }
+        assert!(server.scheduler.translations().is_empty());
+        assert_eq!(max_tokens(&fixture), [RANGE, TAB], "sent {sent}");
+        let messages: Vec<_> = client.receiver.try_iter().collect();
+        assert_eq!(opened(&messages), [TAB_TEXT]);
     }
 }

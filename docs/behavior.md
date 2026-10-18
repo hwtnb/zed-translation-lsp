@@ -8,7 +8,7 @@ This page describes the rules the language server follows: how much work it acce
 
 By default, up to two translations run at once and eight are accepted across all open documents. Multiple ranges in the same document can be accepted. Exact duplicate targets share one operation. At most one tab translation starts at a time, leaving capacity for range translations. Accepted work keeps its queue order, except that range work may bypass a tab waiting for the tab limit.
 
-A tab request for an already-running range shares that operation and does not acquire another slot. That sharing applies without `provider.document`. With it, a tab translation and a range translation of the same range are separate operations: neither joins the other, each counts toward the accepted limit, and each takes its own slot.
+A tab request for a range already accepted shares that operation and does not acquire another slot. That sharing applies without `provider.document`. With Anthropic, a range request asks for fewer output tokens than a tab request (see [Anthropic](providers/anthropic.md)), so a tab shares a range operation only until its request is sent, and the shared request then asks for the tab's limit; a tab requested after that is a separate operation. With `provider.document`, a tab translation and a range translation of the same range are separate operations: neither joins the other, each counts toward the accepted limit, and each takes its own slot.
 
 Configure these limits below `translation_limits.work`.
 

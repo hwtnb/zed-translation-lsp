@@ -20,8 +20,8 @@ impl<P: TranslationProvider> Server<P> {
             .collect();
         ranges.sort_by_key(|(ticket, _)| *ticket);
         // A range can hold a tab operation next to a range operation only when
-        // they are kept apart, so only then does the title tell them apart.
-        let separate = self.settings.provider.separates_documents();
+        // they do not always share, so only then does the title tell them apart.
+        let separate = self.sharing() != Sharing::Both;
         for (&ticket, work) in ranges {
             actions.push(ServerCommand::Cancel(ticket).action(format!(
                 "Cancel {} of lines {}-{}",

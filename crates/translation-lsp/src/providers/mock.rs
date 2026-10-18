@@ -85,6 +85,7 @@ impl TranslationProvider for MockProvider {
             account_menu: None,
             commands: &[],
             hover_note: Some("Mock translation (fixed sample)"),
+            range_output_bounded: false,
         }
     }
 

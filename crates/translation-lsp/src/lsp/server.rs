@@ -10,7 +10,7 @@ use tokio::sync::mpsc as queue;
 type JobSender<C> = queue::Sender<Job<C>>;
 type JobReceiver<C> = queue::Receiver<Job<C>>;
 use commands::ServerCommand;
-use scheduler::{PendingReply, Scheduler, Translation, TranslationRequest};
+use scheduler::{PendingReply, Scheduler, Sharing, Translation, TranslationRequest};
 use selection::Selection;
 #[cfg(test)]
 use worker::run_job;
@@ -428,6 +428,16 @@ impl<P: TranslationProvider> Server<P> {
         self.problem = None;
     }
 
+    fn sharing(&self) -> Sharing {
+        if self.settings.provider.separates_documents() {
+            Sharing::Never
+        } else if P::capabilities().range_output_bounded {
+            Sharing::UntilSent
+        } else {
+            Sharing::Both
+        }
+    }
+
     fn target_is_current(&self, target: &TranslationTarget) -> bool {
         self.documents.get(&target.uri).is_some_and(|document| {
             document.version == target.version
@@ -622,7 +632,7 @@ impl<P: TranslationProvider> Server<P> {
             && !self.scheduler.translations().values().any(|work| {
                 work.target.uri == params.text_document.uri
                     && work.target.range == range
-                    && work.serves(Output::Range, &self.settings)
+                    && work.serves(Output::Range, self.sharing())
             })
         {
             add_action(
