@@ -2202,7 +2202,7 @@ fn reading_stops_at_the_limit_while_parsing_and_while_walking_the_tree() {
 #[test]
 fn a_panic_while_reading_is_a_failure_that_names_its_place_only() {
     let uri: Uri = "file:///sample.rs".parse().unwrap();
-    // ra-ap-rustc_lexer 0.177 panics on an opening of more than 65,535 dashes.
+    // ra-ap-rustc_lexer 0.178 panics on an opening of more than 65,535 dashes.
     let text = format!("{}\n// Secret.\n", "-".repeat(65_536));
     let Err(Failure::Panicked(Some(place))) =
         Comments::parse(Language::Rust, &uri, &text, Duration::from_secs(60))
