@@ -391,6 +391,10 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         Ui::new(connection.sender.clone(), UiCapabilities::default()),
     )
     .unwrap();
+    server.documents.insert(
+        "file:///synthetic.txt".parse().unwrap(),
+        Document::new(1, 1, "plaintext".into(), String::new()),
+    );
     let actions = server
         .code_actions(
             parse(json!({

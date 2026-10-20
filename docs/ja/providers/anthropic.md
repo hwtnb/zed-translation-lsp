@@ -75,6 +75,8 @@
 - `Replace Anthropic API key` は、同じ端末を開き、保存済みのキーを別のキーに置き換えます。
 - `Remove Anthropic API key` は、確認のあと、このコンピューターからキーのファイルを削除し、進行中の翻訳を取り消し、表示済みの訳文を破棄します。キーそのものは、Claude Consoleで削除するまで有効です。
 
+キーが保存されている間、メニューはMarkdownとPlain Textの文書に出ます。ほかの文書では、キーが拒否されたときなど、翻訳に失敗した範囲にだけ出ます。それ以外のときにキーを置き換えるか削除するには、MarkdownかPlain Textのファイルを開いてください。
+
 サーバーが開くのは、macOSでは「ターミナル」、Windowsでは新しいコンソールのウィンドウです。Linuxでは、次の順に試し、最初に起動できたものを使います。`xdg-terminal-exec`、`x-terminal-emulator`、`gnome-terminal`、`ptyxis`、`konsole`、`xfce4-terminal`、`kitty`、`alacritty`、`foot`、`wezterm`、`xterm`。
 
 `Save Anthropic API key` または `Replace Anthropic API key` のあとに出る通知には、コマンドが入っています。言語サーバーのパスに `anthropic-key` を続けたものです。ウィンドウが開かない場合は、このコマンドを自分で端末から実行してください。Linuxで上の端末がどれも起動しない場合と、リモート開発の場合がこれに当たります。リモート開発では、サーバーがリモート側で動き、手元にウィンドウを開かないため、リモート側の端末で実行します。PowerShellでは、引用符で囲まれたパスの前に `&` を付けてください。このコマンドは、実行した端末でキーを尋ね、端末がない場所では失敗します。パイプからキーを読むことはありません。

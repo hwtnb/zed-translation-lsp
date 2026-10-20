@@ -623,10 +623,12 @@ impl<P: TranslationProvider> Server<P> {
             return self.cancel_actions(&params);
         }
         let mut actions = self.cancel_actions(&params)?;
-        if let Some(title) = P::capabilities().account_menu {
-            actions.push(ServerCommand::Account(SETTINGS_COMMAND.into()).action(title.into())?);
-        }
+        let menu = P::capabilities()
+            .account_menu
+            .map(|title| ServerCommand::Account(SETTINGS_COMMAND.into()).action(title.into()))
+            .transpose()?;
         if state != AuthUiState::Ready {
+            actions.extend(menu);
             return Ok(actions);
         }
         let retry_range = if params.range.start == params.range.end && self.check_cache().is_ok() {
@@ -638,6 +640,12 @@ impl<P: TranslationProvider> Server<P> {
         let Some(document) = self.documents.get(&params.text_document.uri) else {
             return Ok(actions);
         };
+        // Zed lists the actions of the server that answers first first, which
+        // is this one. In code, the menu therefore appears only where a failed
+        // translation may need it, to stay out of the way of other servers.
+        if document.supports_document_preview() || retry_range.is_some() {
+            actions.extend(menu);
+        }
         let mut translations = Vec::new();
         let mut add_action = |range: Range,
                               command: fn(TranslationTarget) -> ServerCommand,

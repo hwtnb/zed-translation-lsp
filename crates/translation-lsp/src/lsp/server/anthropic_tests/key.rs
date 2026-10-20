@@ -119,9 +119,12 @@ async fn without_a_usable_key_the_code_actions_offer_only_the_key_menu() {
     directory.replace(NEW_KEY);
     assert_eq!(
         titles(&mut server, &comment, range),
-        ["Translate selection to Japanese (ja)", MENU]
+        ["Translate selection to Japanese (ja)"]
     );
-    titles(&mut server, &markdown, line(0));
+    assert_eq!(
+        titles(&mut server, &markdown, line(0)).last().unwrap(),
+        MENU
+    );
     assert!(server.selection.is_some());
 }
 
@@ -565,4 +568,47 @@ async fn automatic_translation_stopped_for_a_rejected_key_starts_again_with_the_
     assert_eq!(fixture.calls(), 2);
     assert_eq!(sent(&fixture), NEW_KEY);
     assert!(server.cache.exact(&uri, line(2), Output::Range).is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_code_the_key_menu_appears_only_where_a_translation_failed() {
+    let fixture = Fixture::new().await;
+    fixture.always(Some(Reply::failure(
+        401,
+        "authentication_error",
+        "invalid x-api-key",
+    )));
+    let (mut server, connection, _client, completions) =
+        server(fixture.provider(), Settings::default());
+    let uri = open(
+        &mut server,
+        "rejected.rs",
+        "rust",
+        "// Read this.\nfn main() {}\n",
+    );
+    let comment = Range::new(Position::new(0, 0), Position::new(0, 13));
+    let target = target(&server, &uri, comment);
+    server
+        .queue(1.into(), target, PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+
+    let cursor = |line, character| {
+        Range::new(
+            Position::new(line, character),
+            Position::new(line, character),
+        )
+    };
+    assert_eq!(
+        titles(&mut server, &uri, cursor(0, 4)),
+        ["Retry translation of lines 1-1", MENU]
+    );
+    assert!(!titles(&mut server, &uri, cursor(1, 4)).contains(&MENU.to_owned()));
+    let markdown = open(&mut server, "rejected.md", "markdown", SOURCE);
+    assert_eq!(
+        titles(&mut server, &markdown, line(0)).last().unwrap(),
+        MENU
+    );
 }

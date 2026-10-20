@@ -68,6 +68,8 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 
 利用可能になると接続項目は `Change ChatGPT account` に変わり、利用許可の項目は表示されません。サインアウトはサインイン中だけ表示されます。管理操作中は重複操作の候補を表示しません。接続状態を読み取れない場合は `Check ChatGPT connection…` を実行し、表示された案内を確認してください。
 
+利用可能な間、`ChatGPT account…` はMarkdownとPlain Textの文書に出ます。ほかの文書では、翻訳に失敗した範囲にだけ出ます。それ以外のときにアカウントの変更、使用量の確認、サインアウトをするには、MarkdownかPlain Textのファイルを開いてください。
+
 - `Enable ChatGPT plan use` は、サインイン済みでプラン利用が許可されていない場合に使います。
 - `ChatGPT Usage` は、[ChatGPTの使用量設定](https://chatgpt.com/settings/usage)を開きます。利用枠やクレジットの許可はこの設定に従います。
 - `Sign out of ChatGPT` は、現在の登録のセッション終了を試み、その登録の認証情報を削除します。別の登録は残ります。通信のため終了を確認できなかった場合は案内に従ってChatGPT設定からアプリを切断できます。

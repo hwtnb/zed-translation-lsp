@@ -75,6 +75,8 @@ While no usable key is saved, `Anthropic API key…` is the only code action of 
 - `Replace Anthropic API key`: open the same terminal to save another key in place of the saved one.
 - `Remove Anthropic API key`: after you confirm, delete the key file from this computer, cancel the translations in progress, and discard the translations already shown. The key stays valid until you delete it in the Claude Console.
 
+While a key is saved, the menu appears in Markdown and Plain Text documents, and in other documents only in a range whose translation failed, such as with a rejected key. To replace or remove the key at another time, open a Markdown or Plain Text file.
+
 The server opens Terminal on macOS and a new console window on Windows. On Linux it tries these in order and uses the first that starts: `xdg-terminal-exec`, `x-terminal-emulator`, `gnome-terminal`, `ptyxis`, `konsole`, `xfce4-terminal`, `kitty`, `alacritty`, `foot`, `wezterm`, `xterm`.
 
 The notice that follows `Save Anthropic API key` or `Replace Anthropic API key` shows a command: the path of the language server, then `anthropic-key`. When no window appears, run that command in a terminal yourself. That is the case on Linux when none of the terminals above starts, and in remote development, where the server runs on the remote machine and opens no window on yours; run the command in a terminal on the remote machine. In PowerShell, put `&` before a path in quotation marks. The command asks for the key in the terminal it runs in and fails where there is none; it does not read the key from a pipe.

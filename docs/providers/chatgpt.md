@@ -68,6 +68,8 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 
 When the account is ready, the connection item becomes `Change ChatGPT account` and the plan permission item is hidden. Sign-out appears only while signed in. While a management operation is running, duplicate management candidates are hidden. If the connection state cannot be read, use `Check ChatGPT connection…` and follow its message.
 
+While the account is ready, `ChatGPT account…` appears in Markdown and Plain Text documents, and in other documents only in a range whose translation failed. To change the account, open the usage page, or sign out at another time, open a Markdown or Plain Text file.
+
 The account menu includes:
 
 - `Enable ChatGPT plan use`: grant plan permission when signed in without it.
