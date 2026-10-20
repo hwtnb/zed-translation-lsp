@@ -33,7 +33,7 @@ rust_lexer = { package = "ra-ap-rustc_lexer", version = "0.178" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.53", features = ["rt", "sync", "time", "net", "macros", "signal"] }
+tokio = { version = "1.54", features = ["rt", "sync", "time", "net", "macros", "signal"] }
 tree-sitter = "0.27"
 tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"
