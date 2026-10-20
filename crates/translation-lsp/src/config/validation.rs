@@ -71,7 +71,7 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
         }
     }
     match &settings.provider {
-        ProviderSettings::Mock {} => (),
+        ProviderSettings::Unset | ProviderSettings::Mock {} => (),
         ProviderSettings::Chatgpt {
             model, document, ..
         } => {

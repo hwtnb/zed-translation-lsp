@@ -226,12 +226,20 @@ fn translation_limits_default_at_every_level_and_validate_kib_values() {
 }
 
 #[test]
-fn defaults_keep_mock_and_explicit_settings_are_validated() {
+fn an_omitted_provider_is_unset_and_explicit_settings_are_validated() {
     let settings = Settings::from_options(None).unwrap();
     assert!(matches!(
         Settings::from_options(Some(Value::Null)).unwrap().provider,
-        ProviderSettings::Mock {}
+        ProviderSettings::Unset
     ));
+    for name in ["unset", "Unset"] {
+        assert!(matches!(
+            Settings::from_options(Some(json!({"provider": {"name": name}})))
+                .err()
+                .unwrap(),
+            ConfigError::Decode(_)
+        ));
+    }
     for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
         assert!(
             Settings::from_options(Some(
@@ -242,7 +250,7 @@ fn defaults_keep_mock_and_explicit_settings_are_validated() {
     }
     assert_eq!(settings.target_language, "ja");
     assert_eq!(settings.source_language, "auto");
-    assert!(matches!(settings.provider, ProviderSettings::Mock {}));
+    assert!(matches!(settings.provider, ProviderSettings::Unset));
     for options in [None, Some(Value::Null), Some(json!({}))] {
         let settings = Settings::from_options(options).unwrap();
         assert_eq!(settings.hover_timeout_ms, 20_000);

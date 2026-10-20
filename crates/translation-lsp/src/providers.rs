@@ -7,13 +7,17 @@ pub(crate) mod mock;
 pub(crate) mod prompt;
 pub(crate) mod sse;
 pub(crate) mod transport;
+pub(crate) mod unset;
 
-use std::{fmt::Debug, future::Future};
+use std::{fmt::Debug, future::Future, path::Path};
 
 use error::Error;
 
 pub(crate) trait Interaction {
+    /// Opens a page outside the editor, such as in the browser.
     fn open(&self, uri: &str) -> impl Future<Output = Result<(), Error>>;
+    /// Opens a file in the editor.
+    fn edit(&self, path: &Path) -> impl Future<Output = Result<(), Error>>;
     fn choose(
         &self,
         message: &str,
@@ -49,6 +53,9 @@ pub(crate) struct Capabilities {
     pub commands: &'static [ProviderCommand],
     /// A line that the Hover header adds under the title.
     pub hover_note: Option<&'static str>,
+    /// The Markdown that Hover over a comment shows in place of a translation,
+    /// for a provider that translates nothing.
+    pub comment_notice: Option<&'static str>,
     /// Whether a range request asks for less output than a tab request for
     /// the same text.
     pub range_output_bounded: bool,
@@ -140,6 +147,7 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
             account_menu: None,
             commands: &[],
             hover_note: None,
+            comment_notice: None,
             range_output_bounded: false,
         }
     }

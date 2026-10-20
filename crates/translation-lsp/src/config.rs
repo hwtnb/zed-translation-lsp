@@ -26,9 +26,14 @@ pub(crate) struct Settings {
     pub features: Features,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(tag = "name", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ProviderSettings {
+    /// No provider in the settings: the server translates nothing and shows
+    /// how to choose one. Settings cannot name it.
+    #[default]
+    #[serde(skip_deserializing)]
+    Unset,
     Mock {},
     Chatgpt {
         #[serde(default = "default_chatgpt_model")]
@@ -87,7 +92,7 @@ impl ProviderSettings {
     /// `provider.document` is present, whatever its values are.
     pub fn separates_documents(&self) -> bool {
         match self {
-            Self::Mock {} => false,
+            Self::Unset | Self::Mock {} => false,
             Self::Chatgpt { document, .. } => document.is_some(),
             Self::Anthropic { document, .. } => document.is_some(),
         }
@@ -121,12 +126,6 @@ pub(crate) fn anthropic_thinking(
     thinking: Option<bool>,
 ) -> bool {
     thinking.unwrap_or(model != DEFAULT_ANTHROPIC_MODEL || effort.requires_thinking().is_some())
-}
-
-impl Default for ProviderSettings {
-    fn default() -> Self {
-        Self::Mock {}
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -203,7 +202,7 @@ impl Default for Settings {
             translation_limits: TranslationLimits::default(),
             target_language: "ja".into(),
             source_language: "auto".into(),
-            provider: ProviderSettings::Mock {},
+            provider: ProviderSettings::Unset,
             hover_timeout_ms: 20_000,
             selection_timeout_ms: 30_000,
             document_timeout_ms: 180_000,

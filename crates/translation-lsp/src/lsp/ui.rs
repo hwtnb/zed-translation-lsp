@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -155,6 +156,17 @@ impl Ui {
         self.show_message(MessageType::ERROR, message)
     }
 
+    /// Whether the editor reports that it showed `uri`.
+    async fn show_document(&self, uri: &str, external: bool) -> Result<bool, Error> {
+        let result = self
+            .request(
+                "window/showDocument",
+                json!({"uri":uri,"external":external,"takeFocus":true}),
+            )
+            .await?;
+        Ok(result["success"] == true)
+    }
+
     fn show_message(&self, kind: MessageType, message: &str) -> Result<(), Error> {
         self.sender
             .send(
@@ -181,16 +193,22 @@ impl Interaction for Ui {
                 "The editor must support window/showDocument with external URLs",
             ));
         }
-        let result = self
-            .request(
-                "window/showDocument",
-                json!({"uri":uri,"external":true,"takeFocus":true}),
-            )
-            .await?;
-        if result["success"] != true {
+        if !self.show_document(uri, true).await? {
             return Err(Error::failed(
                 "The editor could not open the requested page",
             ));
+        }
+        Ok(())
+    }
+
+    async fn edit(&self, path: &Path) -> Result<(), Error> {
+        if !self.capabilities.show_document {
+            return Err(Error::failed("The editor must support window/showDocument"));
+        }
+        let unopened = || Error::failed("The editor could not open the file");
+        let uri = reqwest::Url::from_file_path(path).map_err(|_| unopened())?;
+        if !self.show_document(uri.as_str(), false).await? {
+            return Err(unopened());
         }
         Ok(())
     }

@@ -48,6 +48,8 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
 
 ## プロバイダーの設定
 
+プロバイダーがないと、言語サーバーは何も翻訳しません。起動したときに、Zedの設定ファイルと英語版READMEのこの節を開くボタンを添えて、プロバイダーを選ぶよう求めます。その後も、対応する文書のコードアクションの `Set up Translation LSP…` から同じボタンを出せます。
+
 既存のZed設定の `lsp` に次のどちらかの項目を追加してプロバイダーを選び、Zedのコードアクションから接続します。設定を変更したら言語サーバーを再起動してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
 
 ### ChatGPT

@@ -755,6 +755,10 @@ impl Interaction for Editor {
         panic!("The key commands open no page")
     }
 
+    async fn edit(&self, _path: &std::path::Path) -> Result<(), Error> {
+        panic!("The key commands open no file")
+    }
+
     async fn choose(&self, message: &str, choices: &[String]) -> Result<Option<String>, Error> {
         self.asked
             .lock()

@@ -338,6 +338,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
                     changes_account: crate::providers::AccountChange::Never,
                 }],
                 hover_note: None,
+                comment_notice: None,
                 range_output_bounded: false,
             }
         }

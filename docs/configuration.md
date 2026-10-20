@@ -223,7 +223,7 @@ Increasing a local limit does not increase the model's context or output capacit
 
 ## Settings errors and restart
 
-Unknown fields, wrong value types, and out-of-range values prevent the language server from starting and return an English settings error. Omitting a field uses its default.
+Unknown fields, wrong value types, and out-of-range values prevent the language server from starting and return an English settings error. Omitting a field uses its default. Without `provider`, the language server translates nothing and asks you to choose a provider, as described under [Set up a provider](../README.md#set-up-a-provider).
 
 Restart the language server after changing these settings. Settings changes do not apply to a running server. See [Zed's language server settings](https://zed.dev/docs/configuring-languages#configuring-language-servers).
 

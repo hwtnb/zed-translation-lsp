@@ -66,6 +66,7 @@ struct Client {
     activity_capabilities: (bool, bool),
     creates: Vec<Request>,
     documents: Vec<Request>,
+    prompts: Vec<Request>,
     progress: Vec<Value>,
     statuses: Vec<Value>,
 }
@@ -125,6 +126,7 @@ impl Client {
             activity_capabilities: (progress, status),
             creates: Vec::new(),
             documents: Vec::new(),
+            prompts: Vec::new(),
             progress: Vec::new(),
             statuses: Vec::new(),
         }
@@ -141,6 +143,15 @@ impl Client {
         options: Value,
         documents: bool,
     ) -> Self {
+        // Without a provider the server only shows how to choose one.
+        let options = match options {
+            Value::Null => json!({"provider": {"name": "mock"}}),
+            Value::Object(mut options) => {
+                options.entry("provider").or_insert(json!({"name": "mock"}));
+                Value::Object(options)
+            }
+            options => options,
+        };
         let mut client = Self::spawn(args, progress, status);
         let initialized = client
             .call(
@@ -219,14 +230,14 @@ impl Client {
     fn record(&mut self, message: Message) {
         match message {
             Message::Response(response) => {
-                // A server started here may run only the mock provider. The
-                // others read the credentials of whoever runs the tests, and
-                // send what a test translates to the real API.
+                // A server started here may run only the mock provider, or
+                // none. The others read the credentials of whoever runs the
+                // tests, and send what a test translates to the real API.
                 if let Ok(result) = &response.response_result
                     && let Some(name) = result.pointer("/serverInfo/name")
                 {
-                    assert_eq!(
-                        name, "Translation LSP (Mock)",
+                    assert!(
+                        name == "Translation LSP (Mock)" || name == "Translation LSP",
                         "A test started a real provider"
                     );
                 }
@@ -239,6 +250,9 @@ impl Client {
             }
             Message::Request(request) if request.method == "window/showDocument" => {
                 self.documents.push(request);
+            }
+            Message::Request(request) if request.method == "window/showMessageRequest" => {
+                self.prompts.push(request);
             }
             Message::Request(request)
                 if self.activity_capabilities.0
@@ -277,6 +291,20 @@ impl Client {
             self.pump();
         }
         self.notifications.remove(0)
+    }
+
+    fn prompt(&mut self) -> Request {
+        while self.prompts.is_empty() {
+            self.pump();
+        }
+        self.prompts.remove(0)
+    }
+
+    fn document(&mut self) -> Request {
+        while self.documents.is_empty() {
+            self.pump();
+        }
+        self.documents.remove(0)
     }
 
     fn create_progress(&mut self) -> Request {
@@ -409,6 +437,7 @@ impl Client {
         );
         assert!(self.replies.is_empty(), "Unconsumed responses");
         assert!(self.documents.is_empty(), "Unexpected document opening");
+        assert!(self.prompts.is_empty(), "Unanswered prompt");
         let stderr = self.stderr.take().unwrap().join().unwrap();
         if expect_clean_stderr {
             assert!(stderr.is_empty(), "Unexpected stderr: {stderr}");
@@ -2733,6 +2762,94 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
         client.notify("exit", Value::Null);
         assert!(!client.child.wait().unwrap().success());
     }
+}
+
+#[test]
+fn without_a_provider_the_server_translates_nothing_and_shows_how_to_choose_one() {
+    let mut client = Client::spawn(&[], false, false);
+    let initialized = client
+        .call(
+            "initialize",
+            json!({
+                "capabilities": {
+                    "window": {"showDocument": {"support": true}},
+                    "textDocument": {"hover": {"contentFormat": ["markdown"]}}
+                }
+            }),
+        )
+        .unwrap();
+    assert_eq!(initialized["serverInfo"]["name"], "Translation LSP");
+    let registered = initialized["capabilities"]["executeCommandProvider"]["commands"]
+        .as_array()
+        .unwrap();
+    for command in [
+        "translation-lsp.open-settings",
+        "translation-lsp.open-setup-guide",
+        "translation-lsp.settings",
+    ] {
+        assert!(registered.contains(&json!(command)), "{command}");
+    }
+    client.notify("initialized", json!({}));
+
+    let prompt = client.prompt();
+    assert_eq!(
+        prompt.params["message"],
+        "Translation LSP has no provider and translates nothing. Choose one in Zed's settings."
+    );
+    assert_eq!(
+        prompt.params["actions"],
+        json!([{"title": "Open Zed settings file"}, {"title": "Open setup guide"}])
+    );
+    client.send(Response::new_ok(prompt.id, json!({"title": "Open setup guide"})).into());
+    let guide = client.document();
+    assert_eq!(guide.params["external"], true);
+    assert_eq!(
+        guide.params["uri"],
+        format!(
+            "https://github.com/hwtnb/zed-translation-lsp/blob/v{}/README.md#set-up-a-provider",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    client.send(Response::new_ok(guide.id, json!({"success": true})).into());
+    let next = client.notice();
+    assert_eq!(next["type"], 3);
+    assert!(
+        next["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Add lsp.translation-lsp.initialization_options.provider"),
+        "{next}"
+    );
+
+    let uri = "file:///work/comment.rs";
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    let hover = client.hover(uri, json!({"line": 1, "character": 8}));
+    assert_eq!(
+        hover["contents"]["value"],
+        "> **Translation LSP is not set up**\n\nTo choose a provider, run Set up Translation LSP… from Code Actions."
+    );
+    let line = json!({"start": {"line": 1, "character": 8}, "end": {"line": 1, "character": 8}});
+    let actions = client.actions(uri, line);
+    assert_eq!(commands(&actions), ["translation-lsp.settings"]);
+    assert_eq!(actions[0]["title"], "Set up Translation LSP…");
+
+    let id = client.execute(actions[0]["command"].clone());
+    let menu = client.prompt();
+    client.send(Response::new_ok(menu.id, json!({"title": "Open Zed settings file"})).into());
+    let settings = client.document();
+    assert_eq!(settings.params["external"], false);
+    let path = settings.params["uri"].as_str().unwrap().to_lowercase();
+    assert!(
+        path.starts_with("file:///") && path.ends_with("/zed/settings.json"),
+        "{path}"
+    );
+    client.send(Response::new_ok(settings.id, json!({"success": false})).into());
+    let message = "Could not open Zed's settings file. Run zed: open settings file from the \
+        Command Palette";
+    assert_eq!(client.receive(id, TIMEOUT).unwrap_err().message, message);
+    assert_eq!(client.notice()["message"], message);
+    assert!(client.notifications.is_empty());
+    client.finish(true);
 }
 
 fn commands(actions: &Value) -> Vec<&str> {

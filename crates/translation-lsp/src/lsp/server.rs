@@ -30,10 +30,11 @@ use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response, R
 use lsp_types::{
     CancelParams, CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams,
     CodeActionProviderCapability, Command, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, NumberOrString, Position,
-    PositionEncodingKind, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, Uri, WorkDoneProgressCancelParams,
+    DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, MarkupContent,
+    MarkupKind, NumberOrString, Position, PositionEncodingKind, Range, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    WorkDoneProgressCancelParams,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Notification,
     },
@@ -56,6 +57,7 @@ use crate::{
         credential_directory,
         error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
         mock::{MockOptions, MockProvider},
+        unset::UnsetProvider,
     },
     text::comments::Failure,
 };
@@ -167,6 +169,7 @@ fn serve(
         UiCapabilities::from(&params.capabilities),
     );
     let initialized = match settings.provider {
+        ProviderSettings::Unset => capabilities::<UnsetProvider>(),
         ProviderSettings::Mock {} => capabilities::<MockProvider>(),
         ProviderSettings::Chatgpt { .. } => capabilities::<ChatGptProvider>(),
         ProviderSettings::Anthropic { .. } => capabilities::<AnthropicProvider>(),
@@ -174,6 +177,10 @@ fn serve(
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
 
     match settings.provider.clone() {
+        ProviderSettings::Unset => {
+            prompt_setup(ui.clone())?;
+            serve_initialized(connection, settings, ui, UnsetProvider)
+        }
         ProviderSettings::Mock {} => {
             let mut settings = settings;
             options.apply_timeouts(&mut settings);
@@ -223,6 +230,27 @@ fn serve(
             serve_initialized(connection, settings, ui, provider)
         }
     }
+}
+
+/// Asks the user to choose a provider, apart from the workers, so that a
+/// prompt left open holds up no account operation. An unanswered prompt waits
+/// until the process ends.
+fn prompt_setup(ui: Ui) -> ServerResult<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    thread::Builder::new()
+        .name("setup-prompt".into())
+        .spawn(move || {
+            runtime.block_on(async {
+                let _ = match UnsetProvider.prompt(&ui).await {
+                    Ok(Some(message)) => ui.inform(&message),
+                    Ok(None) => Ok(()),
+                    Err(error) => ui.error(&error.to_string()),
+                };
+            })
+        })?;
+    Ok(())
 }
 
 pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
@@ -743,6 +771,16 @@ impl<P: TranslationProvider> Server<P> {
         }) else {
             return Ok(Some(Value::Null));
         };
+        if let Some(notice) = P::capabilities().comment_notice {
+            return to_value(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: notice.into(),
+                }),
+                range: Some(range),
+            })
+            .map(Some);
+        }
         let target = TranslationTarget {
             uri: position.text_document.uri,
             version: document.version,

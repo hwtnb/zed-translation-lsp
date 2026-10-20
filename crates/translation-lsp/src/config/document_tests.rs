@@ -167,7 +167,7 @@ fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
         ProviderSettings::Anthropic {
             speed, document, ..
         } => (value(speed), document.map(|tab| value(tab.speed))),
-        ProviderSettings::Mock {} => panic!("Expected provider settings"),
+        ProviderSettings::Unset | ProviderSettings::Mock {} => panic!("Expected provider settings"),
     }
 }
 

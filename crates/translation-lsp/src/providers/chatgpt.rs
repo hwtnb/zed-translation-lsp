@@ -251,6 +251,7 @@ impl TranslationProvider for ChatGptProvider {
             account_menu: Some("ChatGPT account…"),
             commands: &COMMANDS,
             hover_note: None,
+            comment_notice: None,
             range_output_bounded: false,
         }
     }

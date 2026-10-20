@@ -48,6 +48,8 @@ If you list language servers explicitly for C#, C, C++, Python, JSON, JSONC, YAM
 
 ## Set up a provider
 
+Without a provider, the language server translates nothing. When it starts, it asks you to choose one, with buttons that open Zed's settings file and this section. Later, `Set up Translation LSP…` in the code actions of a supported document offers the same buttons.
+
 Select one provider by adding one of the following entries to `lsp` in your existing Zed settings, then connect it from Zed's code actions. Restart the language server after changing the settings. Every setting is described under [Configuration](docs/configuration.md).
 
 ### ChatGPT

@@ -231,6 +231,7 @@ impl TranslationProvider for AnthropicProvider {
             account_menu: Some(key::MENU),
             commands: &COMMANDS,
             hover_note: None,
+            comment_notice: None,
             range_output_bounded: true,
         }
     }
