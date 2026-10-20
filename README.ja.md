@@ -50,7 +50,7 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
 
 プロバイダーがないと、言語サーバーは何も翻訳しません。起動したときに、Zedの設定ファイルと英語版READMEのこの節を開くボタンを添えて、プロバイダーを選ぶよう求めます。その後も、対応する文書のコードアクションの `Set up Translation LSP…` から同じボタンを出せます。
 
-既存のZed設定の `lsp` に次のどちらかの項目を追加してプロバイダーを選び、Zedのコードアクションから接続します。設定を変更したら言語サーバーを再起動してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
+既存のZed設定の `lsp` に次のどちらかの項目を追加してプロバイダーを選び、Zedのコードアクションから接続します。設定を変更したら言語サーバーを再起動してください。`target_language` は訳文の言語です。[ほかのよく使う設定](#ほかのよく使う設定)を参照してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
 
 ### ChatGPT
 
@@ -59,6 +59,7 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
+        "target_language": "ja",
         "provider": {
           "name": "chatgpt",
           "model": "gpt-6-luna",
@@ -79,6 +80,7 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
+        "target_language": "ja",
         "provider": {
           "name": "anthropic",
           "model": "claude-haiku-5-5",
@@ -91,6 +93,19 @@ C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell�
 ```
 
 対応する文書でZedのコマンドパレットから `editor: toggle code actions` を実行し、`Anthropic API key…` から `Save Anthropic API key` を実行します。開いた端末のウィンドウにキーを貼り付けて、Enterを押してください。キーの作り方、ほかの設定、費用は[Anthropic API](docs/ja/providers/anthropic.md)で説明します。
+
+### ほかのよく使う設定
+
+次の設定は `initialization_options` の中で `provider` と並べて書きます。どれも省略できます。
+
+| 設定 | 既定値 | 内容 |
+| --- | --- | --- |
+| `target_language` | `ja` | 訳文の言語です。`en`、`ja`、`zh-Hans` のような言語コードか、言語名を書きます。 |
+| `source_language` | `auto` | 原文の言語です。`auto` ではモデルが判別します。 |
+| `features.comment_hover` | `true` | コメントへのホバーで翻訳を始めるかどうかです。 |
+| `features.automatic_selection` | `true` | Markdownの選択が安定したときにバックグラウンドで翻訳を始めるかどうかです。 |
+
+`features` では、翻訳の始め方ごとのオンとオフを言語ごとにも切り替えられます。[翻訳する言語](docs/ja/configuration.md#翻訳する言語)と[機能の切り替え](docs/ja/configuration.md#機能の切り替え)を参照してください。
 
 ## 基本的な使い方
 

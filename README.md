@@ -50,7 +50,7 @@ If you list language servers explicitly for C#, C, C++, Python, JSON, JSONC, YAM
 
 Without a provider, the language server translates nothing. When it starts, it asks you to choose one, with buttons that open Zed's settings file and this section. Later, `Set up Translation LSP…` in the code actions of a supported document offers the same buttons.
 
-Select one provider by adding one of the following entries to `lsp` in your existing Zed settings, then connect it from Zed's code actions. Restart the language server after changing the settings. Every setting is described under [Configuration](docs/configuration.md).
+Select one provider by adding one of the following entries to `lsp` in your existing Zed settings, then connect it from Zed's code actions. Restart the language server after changing the settings. `target_language` is the language translations are written in; see [Other common settings](#other-common-settings). Every setting is described under [Configuration](docs/configuration.md).
 
 ### ChatGPT
 
@@ -59,6 +59,7 @@ Select one provider by adding one of the following entries to `lsp` in your exis
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
+        "target_language": "ja",
         "provider": {
           "name": "chatgpt",
           "model": "gpt-6-luna",
@@ -79,6 +80,7 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
   "lsp": {
     "translation-lsp": {
       "initialization_options": {
+        "target_language": "ja",
         "provider": {
           "name": "anthropic",
           "model": "claude-haiku-5-5",
@@ -91,6 +93,19 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 ```
 
 In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `Anthropic API key…`, then run `Save Anthropic API key`. Paste the key in the terminal window that opens and press Enter. See [Anthropic API](docs/providers/anthropic.md) for creating the key, the other settings, and cost.
+
+### Other common settings
+
+These settings sit next to `provider` in `initialization_options`. Each can be omitted.
+
+| Setting | Default | What it sets |
+| --- | --- | --- |
+| `target_language` | `ja` | The language translations are written in: a language code such as `en`, `ja`, or `zh-Hans`, or a language name. |
+| `source_language` | `auto` | The language of the original text. With `auto`, the model identifies it. |
+| `features.comment_hover` | `true` | Whether Hover over a comment starts a translation. |
+| `features.automatic_selection` | `true` | Whether a stable Markdown selection starts a translation in the background. |
+
+`features` can also turn each way of translating on or off for one language. See [Translation languages](docs/configuration.md#translation-languages) and [Features](docs/configuration.md#features).
 
 ## Basic usage
 
