@@ -19,4 +19,4 @@ sha2 = { version = "0.11", default-features = false }
 tar = { version = "0.4", default-features = false }
 tempfile = "3.27"
 toml = "1.1"
-zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.1", default-features = false, features = ["deflate-flate2"] }
