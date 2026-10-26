@@ -6,7 +6,7 @@ on:
       draft-release:
         description: Create a draft release that holds the assets
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
