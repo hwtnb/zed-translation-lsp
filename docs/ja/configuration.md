@@ -110,7 +110,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 
 | `features` 内の設定 | 切り替える機能 | 言語ID |
 | --- | --- | --- |
-| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose` |
+| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`ruby`、`php`、`html`、`css`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose` |
 | `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
 | `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
 | `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
@@ -146,6 +146,11 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | C | `c` |
 | C++ | `cpp` |
 | Python | `python` |
+| Go | `go` |
+| Ruby | `ruby` |
+| PHP | `php` |
+| HTML | `html` |
+| CSS | `css` |
 | JSON | `json` |
 | JSONC | `jsonc` |
 | YAML | `yaml` |

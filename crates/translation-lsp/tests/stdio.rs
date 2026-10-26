@@ -1545,6 +1545,9 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "const view = <div>// jsx text</div>;",
         ),
         ("file:///general.ts", "typescript", "const n: number = 1;"),
+        ("file:///general.go", "go", "var s = \"// string\""),
+        ("file:///general.rb", "ruby", "s = \"# string\""),
+        ("file:///general.php", "php", "<?php $s = \"// string\";"),
         ("file:///general.cs", "csharp", "var s = @\"// string\";"),
         (
             "untitled:general.tsx",
@@ -1562,7 +1565,13 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
     ] {
         let hash = matches!(
             language,
-            "yaml" | "toml" | "shellscript" | "powershell" | "dockerfile" | "dockercompose"
+            "ruby"
+                | "yaml"
+                | "toml"
+                | "shellscript"
+                | "powershell"
+                | "dockerfile"
+                | "dockercompose"
         );
         let comment = if hash {
             COMMENT.replace("//", "#")
@@ -1593,6 +1602,9 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         let literal = match language {
             "rust" => format!("let t = r#\"{comment}\"#;"),
             "csharp" => format!("var t = @\"{comment}\";"),
+            "go" => format!("var t = `{comment}`"),
+            "ruby" => format!("t = \"{comment}\""),
+            "php" => format!("<?php $t = \"{comment}\";"),
             // JSON strings cannot span lines.
             "json" | "jsonc" => format!("[\n\"{}\"]", comment.replace('\n', " ")),
             "yaml" | "dockercompose" => format!("t: \"{comment}\""),
@@ -1628,12 +1640,18 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
 #[test]
 fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
     let mut client = Client::new(&[]);
-    let first = "/* Retry only if the remote service\nreports a temporary failure. */";
-    for (uri, language) in [
-        ("file:///blocks.rs", "rust"),
-        ("file:///blocks.js", "javascript"),
+    for (uri, language, opening, closing) in [
+        ("file:///blocks.rs", "rust", "/*", "*/"),
+        ("file:///blocks.js", "javascript", "/*", "*/"),
+        ("file:///blocks.go", "go", "/*", "*/"),
+        ("file:///blocks.css", "css", "/*", "*/"),
+        ("file:///blocks.html", "html", "<!--", "-->"),
     ] {
-        let source = format!("{first}/* unknown */");
+        let first = format!(
+            "{opening} Retry only if the remote service\nreports a temporary failure. {closing}"
+        );
+        let first = first.as_str();
+        let source = format!("{first}{opening} unknown {closing}");
         let range = range_for(&source, first);
         client.open(uri, language, &source, 1);
         assert_preview(
@@ -1652,7 +1670,7 @@ fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
         client.change(
             uri,
             2,
-            json!([{"text": "/* Retry only if the remote service\nreports a temporary failure."}]),
+            json!([{"text": format!("{opening} Retry only if the remote service\nreports a temporary failure.")}]),
         );
         assert!(
             client
@@ -2531,6 +2549,9 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
         ("file:///comment.jsonc", "jsonc", sample!("comment.jsonc")),
         ("file:///comment.yaml", "yaml", sample!("comment.yaml")),
         ("file:///comment.toml", "toml", sample!("comment.toml")),
+        ("file:///comment.go", "go", sample!("comment.go")),
+        ("file:///comment.rb", "ruby", sample!("comment.rb")),
+        ("file:///comment.php", "php", sample!("comment.php")),
         ("file:///comment.sh", "shellscript", sample!("comment.sh")),
         ("file:///comment.ps1", "powershell", sample!("comment.ps1")),
         ("file:///Dockerfile", "dockerfile", sample!("Dockerfile")),
@@ -2566,6 +2587,42 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
             );
             client.close(uri);
         }
+    }
+    client.finish(true);
+}
+
+#[test]
+fn html_and_css_samples_translate_their_comments_and_those_of_scripts_and_styles() {
+    let mut client = Client::new(&[]);
+    let html = sample!("comment.html");
+    let css = sample!("comment.css");
+    let block = "/*\nRetry only if the remote service\nreports a temporary failure.\n*/";
+    for (uri, language, source, comments) in [
+        (
+            "file:///comment.html",
+            "html",
+            html,
+            &[
+                "<!--\nRetry only if the remote service\nreports a temporary failure.\n-->",
+                "// Retry only if the remote service\n  // reports a temporary failure.",
+                block,
+            ][..],
+        ),
+        ("file:///comment.css", "css", css, &[block]),
+    ] {
+        client.open(uri, language, source, 1);
+        for comment in comments {
+            let range = range_for(source, comment);
+            assert_preview(
+                &client.hover(uri, range["start"].clone()),
+                comment,
+                COMMENT_JA,
+                &range,
+            );
+        }
+        let key = source.find("retry_count").unwrap();
+        assert!(client.hover(uri, position(&source[..key])).is_null());
+        client.close(uri);
     }
     client.finish(true);
 }
@@ -2768,8 +2825,8 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
         (
             json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
             "features.languages keys must be one of rust, javascript, typescript, \
-             typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, shellscript, \
-             powershell, dockerfile, dockercompose, markdown, plaintext",
+             typescriptreact, csharp, c, cpp, python, go, ruby, php, html, css, json, jsonc, \
+             yaml, toml, shellscript, powershell, dockerfile, dockercompose, markdown, plaintext",
         ),
         (
             json!({"features": {"languages": {"rust": {"document_action": false}}}}),

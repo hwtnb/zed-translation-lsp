@@ -1669,8 +1669,70 @@ fn readers_take_time_in_proportion_to_the_text() {
     let signs = ")]}([{\"'#\\`=,:-|><&*!%@$; \na";
     let signs: Vec<_> = signs.chars().map(String::from).collect();
     let openings = [
-        "a ", "a = ", "[[", "\"\"\"", "'''", "<<E\n", "$(", "${", "$((", "@\"\n", "\"@", "<#",
-        "#>", "--% ", "$x=1 +\n", "'a", "\"a\"@", "\\\n", "${a:-", "\"${a/",
+        "a ",
+        "a = ",
+        "[[",
+        "\"\"\"",
+        "'''",
+        "<<E\n",
+        "$(",
+        "${",
+        "$((",
+        "@\"\n",
+        "\"@",
+        "<#",
+        "#>",
+        "--% ",
+        "$x=1 +\n",
+        "'a",
+        "\"a\"@",
+        "\\\n",
+        "${a:-",
+        "\"${a/",
+        "/*",
+        "//",
+        "<!--",
+        "--",
+        "<![CDATA[",
+        "<?",
+        "</",
+        "<a b='",
+        "<a b=\"",
+        "<a ",
+        "<script>",
+        "<style>",
+        "<!--<script>",
+        "url(",
+        "\\75 rl(",
+        "1e",
+        "-->",
+        "<?php ",
+        "<?php #",
+        "<?php \"{$",
+        "<?php <<<A\n",
+        "{$",
+        "?>",
+        "x /",
+        "%w[",
+        "?#",
+        "<<~A\n",
+        "=begin\n",
+        "\"#{",
+        "a::<<",
+        "a, ",
+        "->(a) {",
+        "in [a, ",
+        "rescue => a\n",
+        "/(?<a>)/ =~ ",
+        "/(?x)#(?<a>)",
+        "(?#",
+        "a[",
+        "(a, b = ",
+        "def f(a = proc { |b| ",
+        "=begin\r\na\r\n=end\r\n",
+        "$a-> /**/ __halt_compiler ",
+        "1%url(",
+        "&#x2f;",
     ];
     let pieces: Vec<_> = signs.iter().map(String::as_str).chain(openings).collect();
     let size = 64 << 10;
@@ -1682,6 +1744,11 @@ fn readers_take_time_in_proportion_to_the_text() {
         "json",
         "shellscript",
         "yaml",
+        "go",
+        "css",
+        "html",
+        "ruby",
+        "php",
     ] {
         // A Dockerfile reads words only in an instruction that can have a here-document.
         let heads: &[&str] = if language == "dockerfile" {
@@ -1804,6 +1871,44 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
         "[[ ",
         "' # ",
         "\" # ",
+        "/*",
+        "*/",
+        "//",
+        "<!--",
+        "-->",
+        "--",
+        "<a ",
+        "</a",
+        "<![CDATA[",
+        "<style>",
+        "</style>",
+        "<textarea>",
+        "url(",
+        "\\75 ",
+        "1e",
+        "<?php ",
+        "{$",
+        "${",
+        "<<<A\n",
+        "<<~A\n",
+        "A\n",
+        "#{",
+        "%w[",
+        "?#",
+        "x = 1\n",
+        "x /",
+        "=begin\n",
+        "=end\n",
+        "def f(a) ",
+        "def f(a = b, c:) ",
+        "{ |a| ",
+        "-> a { ",
+        "->(x=(",
+        ";",
+        "a, b = ",
+        "in {a:, ",
+        "/(?<a>)/ =~ ",
+        "\r\n",
     ];
     // A fixed sequence, so that every run reads the same texts.
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -1814,6 +1919,8 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
         (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % bound
     };
     let uri = "untitled:comment".parse().unwrap();
+    // A script in HTML is read by Oxc, whose depth of nesting is limited by
+    // the stack; the pieces here hold no `<script>`.
     for language in [
         "powershell",
         "toml",
@@ -1821,6 +1928,11 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
         "json",
         "shellscript",
         "yaml",
+        "go",
+        "css",
+        "html",
+        "ruby",
+        "php",
     ] {
         for _ in 0..160 {
             let size = (16 + below(49)) << 10;
@@ -1855,6 +1967,388 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
 fn docker_compose_is_read_as_yaml() {
     assert_eq!(bodies("dockercompose", YAML), bodies("yaml", YAML));
     assert!(!bodies("dockercompose", YAML).is_empty());
+}
+
+fn go(text: &str) -> Vec<String> {
+    sources("go", "untitled:comment", text)
+}
+
+#[test]
+fn go_comments_exclude_literals_and_directives() {
+    let text = concat!(
+        "// Package a reads.\n",
+        "//go:build linux\n",
+        "//nolint:errcheck\n",
+        "//export F\n",
+        "//line a.go:1\n",
+        "//TODO: kept\n",
+        "//http://kept\n",
+        "s := \"// not\" + `/* not */` + '/' // trailing\n",
+        "r := '\\'' // after rune\n",
+        "t := \"\\\" // not\" /* block */\n",
+        "u := `\n// raw\n`\n",
+        "v := \"unclosed // not\n",
+        "w := '/ // not\n",
+        "// after unclosed\n",
+        "/* unclosed",
+    );
+    assert_eq!(
+        go(text),
+        [
+            "// Package a reads.",
+            "//TODO: kept",
+            "//http://kept",
+            "// trailing",
+            "// after rune",
+            "/* block */",
+            "// after unclosed",
+        ]
+    );
+    assert_eq!(go("x := `unclosed\n// not"), Vec::<String>::new());
+    // A directive divides the comments around it.
+    assert_eq!(
+        bodies(
+            "go",
+            "// One\n// two\n//go:generate x\n// Three\nfunc f() {}\n"
+        ),
+        ["One\ntwo", "Three"]
+    );
+}
+
+fn css(text: &str) -> Vec<String> {
+    sources("css", "untitled:comment", text)
+}
+
+#[test]
+fn css_comments_exclude_strings_escapes_and_urls() {
+    let text = concat!(
+        "/* a */ a { content: \"/* not */\"; b: '/* not' }\n",
+        "c { background: url(http://x/*y) } /* after url */\n",
+        "d { background: URL( \"/* not */\" ) /* after quoted url */ }\n",
+        "e { x: myurl(/* f */) }\n",
+        "\\/* not */\n",
+        "g { content: \"a\\\n/* not */\" }\n",
+        "h { content: \"unclosed\n/* after bad string */\n",
+        "i { background: url(a\\)/*b) /* after escaped parenthesis */\n",
+        "j { --x: 1%url(a/*b*/c) } /* after percentage */\n",
+        "/* unclosed",
+    );
+    assert_eq!(
+        css(text),
+        [
+            "/* a */",
+            "/* after url */",
+            "/* after quoted url */",
+            "/* f */",
+            "/* after bad string */",
+            "/* after escaped parenthesis */",
+            "/* after percentage */",
+        ]
+    );
+    assert_eq!(bodies("css", "/* Retry\n   now */"), ["Retry\n   now "]);
+}
+
+fn html(text: &str) -> Vec<String> {
+    sources("html", "untitled:comment", text)
+}
+
+#[test]
+fn html_comments_exclude_tags_and_raw_text_and_read_scripts_and_styles() {
+    let text = concat!(
+        "<!DOCTYPE html>\n",
+        "<!-- top -->\n",
+        "<p title=\"<!-- not -->\" data-x='<!-- not' data-y=a<!--not>text <!--inline--></p>\n",
+        "<textarea><!-- not --></textarea><TITLE><!-- not --></title >\n",
+        "<script>\n// js line\nlet s = \"<!-- not -->\"; /* js block */\n</script>\n",
+        "<script type=\"application/json\">{\"a\": \"// not\"} // not</script>\n",
+        "<script type=module>// module line\n</script>\n",
+        "<script type=' text/JavaScript '>// typed line\n</script>\n",
+        "<script language=vbscript>' not // not</script>\n",
+        "<script type=\"text&#x2F;javascript\">// referenced type\n</script>\n",
+        "<script type=\"text&sol;javascript&#0;\">' not // not</script>\n",
+        "<script type language=vbscript>// empty type\n</script>\n",
+        "<script type=\"&Tab;text/javascript&NewLine;\">// named blanks\n</script>\n",
+        "<style>/* css */ a { content: \"<!-- not -->\" }</style>\n",
+        "<!-- a -- b --->\n",
+        "<!---->\n",
+        "<!-->\n",
+        "<!--->\n",
+        "<!-- bang --!>\n",
+        "<![CDATA[ <!-- not --> ]]>\n",
+        "<?xml <!-- not ?>\n",
+        "</ <!-- not >\n",
+        "<plaintext><!-- not -->",
+    );
+    assert_eq!(
+        html(text),
+        [
+            "<!-- top -->",
+            "<!--inline-->",
+            "// js line",
+            "/* js block */",
+            "// module line",
+            "// typed line",
+            "// referenced type",
+            "// empty type",
+            "// named blanks",
+            "/* css */",
+            "<!-- a -- b --->",
+            "<!---->",
+            "<!-->",
+            "<!--->",
+            "<!-- bang --!>",
+        ]
+    );
+    // One blank after `<!--` is left out, as after other comment marks.
+    assert_eq!(
+        bodies("html", "<!-- top -->\n<!--  a -- b --->\n<!-->"),
+        ["top ", " a -- b -", ""]
+    );
+    // An unclosed comment, tag, or quote hides the rest.
+    for text in [
+        "<!-- a -->\n<!-- b",
+        "<!-- a -->\n<p title=\"<!-- b -->",
+        "<!-- a -->\n<p <!-- b -->",
+        "<!-- a -->\n<!DOCTYPE <!-- b -->",
+        "<!-- a -->\n<style>",
+    ] {
+        assert_eq!(html(text), ["<!-- a -->"], "{text}");
+    }
+}
+
+#[test]
+fn html_scripts_end_where_the_tokenizer_ends_them() {
+    // After `<!--`, `<script>` makes the next `</script>` part of the script.
+    let text = concat!(
+        "<script><!--\n",
+        "document.write('<script></script>'); // inside\n",
+        "--></script><!-- after -->",
+    );
+    assert_eq!(html(text), ["<!--", "// inside", "-->", "<!-- after -->"]);
+    // Without `<!--`, the first `</script>` ends it.
+    assert_eq!(
+        html("<script>// a '</script>'; // b\n</script><!-- after -->"),
+        ["// a '", "<!-- after -->"]
+    );
+    assert_eq!(
+        html("<script><!-- x </SCRIPT ><!-- after -->"),
+        ["<!-- x ", "<!-- after -->"]
+    );
+    // A script that the document ends is read to the end.
+    assert_eq!(html("<script>// a\nlet b; // c"), ["// a", "// c"]);
+    // Adjacent line comments of a script are one group, as in JavaScript.
+    assert_eq!(
+        bodies("html", "<script>\n  // one\n  // two\n</script>"),
+        ["one\ntwo"]
+    );
+}
+
+fn ruby(text: &str) -> Vec<String> {
+    sources("ruby", "untitled:comment", text)
+}
+
+#[test]
+fn ruby_comments_exclude_literals_and_follow_what_precedes_an_operator() {
+    let text = concat!(
+        "#!/usr/bin/env ruby\n",
+        "# top\n",
+        "x = 1 # trailing\n",
+        "s = \"# not #{x # inside interpolation\n",
+        "} # not\" # after string\n",
+        "r = /# not/ # after regexp\n",
+        "y = x /2 # after division\n",
+        "p /# not/ # after method\n",
+        "w = %w[# not [# not]] # after words\n",
+        "c = ?# # after character\n",
+        "h = <<~EOS # after heredoc\n",
+        "  # not\n",
+        "  EOS\n",
+        "g = $' # after global\n",
+        "t = :\"# not\" + :$' # after symbols\n",
+        "def /(o) o /2 end # after operator\n",
+        "z.<<EOS # after method name\n",
+        "[1].each { |b| b /2 } # after block\n",
+        "b /# not/ # b is a method again\n",
+        "def m(d) = d /2 # after endless def\n",
+        "d /# not/ # d is a method again\n",
+        "for e in [] do end\n",
+        "e /2 # after for\n",
+        "=begin\n",
+        "block\n",
+        "=end\n",
+        "__END__\n",
+        "# not\n",
+    );
+    assert_eq!(
+        ruby(text),
+        [
+            "# top",
+            "# trailing",
+            "# inside interpolation",
+            "# after string",
+            "# after regexp",
+            "# after division",
+            "# after method",
+            "# after words",
+            "# after character",
+            "# after heredoc",
+            "# after global",
+            "# after symbols",
+            "# after operator",
+            "# after method name",
+            "# after block",
+            "# b is a method again",
+            "# after endless def",
+            "# d is a method again",
+            "# after for",
+            "=begin\nblock\n=end",
+        ]
+    );
+    assert_eq!(bodies("ruby", "=begin\nOne\ntwo\n=end"), ["One\ntwo\n"]);
+    // An unclosed literal or `=begin` hides the rest.
+    for text in [
+        "# a\n\"# b",
+        "# a\n%w[# b",
+        "# a\n<<~EOS\n# b",
+        "# a\n=begin\n# b",
+    ] {
+        assert_eq!(ruby(text), ["# a"], "{text}");
+    }
+}
+
+#[test]
+fn ruby_variables_are_declared_where_ruby_declares_them() {
+    // `y /2 # c` is a division when `y` is a variable, and `x /# r/` a
+    // regular expression when `x` is a method.
+    let lines = [
+        ("def f(y = x)\n  x /# r/ # c\nend\n", vec!["# c"]),
+        ("def f(y = x)\n  y /2 # c\nend\n", vec!["# c"]),
+        (
+            "def f(y = g(1, x), z: x)\n  z /2 # c\n  x /# r/\nend\n",
+            vec!["# c"],
+        ),
+        ("def f y, z = x\n  z /2 # c\n  x /# r/\nend\n", vec!["# c"]),
+        ("def f((y, z), w)\n  z /2 # c\nend\n", vec!["# c"]),
+        ("def +(y)\n  y /2 # c\nend\n", vec!["# c"]),
+        ("def f = x\nx /# r/\n", vec![]),
+        (
+            "[1].each { |y = x; z| z /2 # c\n  x /# r/\n}\n",
+            vec!["# c"],
+        ),
+        ("->(y, z = x) { z /2 # c\n}\nz /# r/\n", vec!["# c"]),
+        ("-> y { y /2 # c\n}\n", vec!["# c"]),
+        ("y, (z, *w) = 1, [2]\nw /2 # c\n", vec!["# c"]),
+        ("y.z, w = 1, 2\nw /2 # c\ny /# r/\n", vec!["# c"]),
+        ("g y, z\nz /# r/\n", vec![]),
+        ("y,\n  z = 1, 2\nz /2 # c\n", vec!["# c"]),
+        ("begin\nrescue Foo => y\n  y /2 # c\nend\n", vec!["# c"]),
+        ("変数 = 1\n変数 /2 # c\n", vec!["# c"]),
+        ("case 1\nin [y, {z:}]\n  z /2 # c\nend\n", vec!["# c"]),
+        ("case 1\nin {y: z}\n  y /# r/\nend\n", vec![]),
+        ("case 1\nin ^y\n  y /# r/\nend\n", vec![]),
+        ("if /(?<y>a)(?'z'b)/ =~ s\n  z /2 # c\nend\n", vec!["# c"]),
+        ("/(?<y>a)#{s}/ =~ s\ny /# r/\n", vec![]),
+        // A comment in a regular expression names no group.
+        ("/# (?<y>x)\n/x =~ s\ny /# r/\n", vec![]),
+        (
+            "/(?x: #(?<y>)\n)(?-x)#(?<z>x)/ =~ s\nz /2 # c\ny /# r/\n",
+            vec!["# c"],
+        ),
+        ("/(?#(?<y>x)(?<z>x)/ =~ s\nz /2 # c\ny /# r/\n", vec!["# c"]),
+        // A block or lambda in a default value leaves the list around it.
+        (
+            "def f(y = proc { |w| w }, z)\n  z /2 # c\nend\n",
+            vec!["# c"],
+        ),
+        (
+            "def f(y = ->(w) { w }, z:)\n  z /2 # c\n  w /# r/\nend\n",
+            vec!["# c"],
+        ),
+        ("->(y, z = y /2 # c\n) { z }\ny /# r/\n", vec!["# c"]),
+        ("foo((y, z = 1, 2))\ny /2 # c\n", vec!["# c"]),
+        ("r = (y, z = [4, 2])\ny /2 # c\n", vec!["# c"]),
+        ("y, a[0] = 4, 2\ny /2 # c\na /# r/\n", vec!["# c"]),
+        ("foo(y, z = 1)\ny /# r/\n", vec![]),
+    ];
+    for (text, comments) in lines {
+        assert_eq!(ruby(text), comments, "{text}");
+        // Ruby reads CRLF as LF.
+        let crlf = text.replace('\n', "\r\n");
+        assert_eq!(ruby(&crlf), comments, "{crlf:?}");
+    }
+    // A backslash before CRLF goes on with the statement and the
+    // here-document.
+    for ending in ["\n", "\r\n"] {
+        let text = [
+            "x = 4", "x \\", "/2 # c", "s = <<E", "a\\", "E", "# not", "E", "",
+        ]
+        .join(ending);
+        assert_eq!(ruby(&text), ["# c"], "{text:?}");
+    }
+    assert_eq!(
+        bodies("ruby", "=begin\r\nOne\r\n=end\r\n# Two"),
+        ["One\r\n", "Two"]
+    );
+}
+
+fn php(text: &str) -> Vec<String> {
+    sources("php", "untitled:comment", text)
+}
+
+#[test]
+fn php_comments_are_read_in_code_and_exclude_strings_and_attributes() {
+    let text = concat!(
+        "<!-- not --> # not\n",
+        "<?php\n",
+        "# hash\n",
+        "// slashes\n",
+        "/* block */ /** doc */\n",
+        "#[Attribute] // after attribute\n",
+        "$s = 'it\\'s # not'; // after single\n",
+        "$d = \"{$a['# not']} // not\"; // after double\n",
+        "$h = <<<EOT\n",
+        "# not\n",
+        "{$x /* in interpolation */}\n",
+        "EOT; // after heredoc\n",
+        "$n = <<<'EOT'\n",
+        "# not {$x /* not */}\n",
+        "  EOT;\n",
+        "echo 1; // before close ?> # not\n",
+        "<?= $x # short echo ?>\n",
+        "<?php $x-> /* property */ __halt_compiler(); // after property\n",
+        "__halt_compiler(); # not\n",
+    );
+    assert_eq!(
+        php(text),
+        [
+            "# hash",
+            "// slashes",
+            "/* block */",
+            "/** doc */",
+            "// after attribute",
+            "// after single",
+            "// after double",
+            "/* in interpolation */",
+            "// after heredoc",
+            "// before close ",
+            "# short echo ",
+            "/* property */",
+            "// after property",
+        ]
+    );
+    assert_eq!(
+        bodies("php", "<?php\n// One\n// two\n# Three\n/** Four */"),
+        ["One\ntwo", "Three", "Four "]
+    );
+    // An unclosed comment, string, or here-document hides the rest.
+    for text in [
+        "<?php # a\n/* # b",
+        "<?php # a\n\"# b",
+        "<?php # a\n'# b",
+        "<?php # a\n<<<EOT\n# b",
+    ] {
+        assert_eq!(php(text), ["# a"], "{text}");
+    }
 }
 
 #[test]

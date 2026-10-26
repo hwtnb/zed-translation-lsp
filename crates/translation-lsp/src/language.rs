@@ -11,6 +11,11 @@ pub(crate) enum Language {
     C,
     Cpp,
     Python,
+    Go,
+    Ruby,
+    Php,
+    Html,
+    Css,
     Json,
     Jsonc,
     Yaml,
@@ -25,7 +30,7 @@ pub(crate) enum Language {
 
 impl Language {
     /// Every language, in the order of `extension.toml`.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 23] = [
         Self::Rust,
         Self::JavaScript,
         Self::TypeScript,
@@ -34,6 +39,11 @@ impl Language {
         Self::C,
         Self::Cpp,
         Self::Python,
+        Self::Go,
+        Self::Ruby,
+        Self::Php,
+        Self::Html,
+        Self::Css,
         Self::Json,
         Self::Jsonc,
         Self::Yaml,
@@ -57,6 +67,11 @@ impl Language {
             Self::C => "c",
             Self::Cpp => "cpp",
             Self::Python => "python",
+            Self::Go => "go",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
+            Self::Html => "html",
+            Self::Css => "css",
             Self::Json => "json",
             Self::Jsonc => "jsonc",
             Self::Yaml => "yaml",

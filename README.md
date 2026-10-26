@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
+Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Ruby, PHP, HTML, CSS, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
 The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Until you select a provider, the extension sends no text to an external service.
 
@@ -44,7 +44,7 @@ cargo build -p translation-lsp --release --locked
 
 Set `lsp.translation-lsp.binary.path` to the absolute path of the executable you built, as described under [Server path](docs/configuration.md#server-path). The extension then starts that executable and downloads nothing.
 
-If you list language servers explicitly for C#, C, C++, Python, JSON, JSONC, YAML, TOML, Shell Script, PowerShell, Dockerfile, or Docker Compose, see [Language server settings](docs/languages.md#language-server-settings).
+If you list language servers explicitly for C#, C, C++, Python, Go, Ruby, PHP, HTML, CSS, JSON, JSONC, YAML, TOML, Shell Script, PowerShell, Dockerfile, or Docker Compose, see [Language server settings](docs/languages.md#language-server-settings).
 
 ## Set up a provider
 

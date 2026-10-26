@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。ChatGPTまたはAnthropicが利用可能な状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
+ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。ChatGPTまたはAnthropicが利用可能な状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
 
 ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropicを使う場合は、本人のAPIキーでAnthropic APIを呼びます。プロバイダーを選ぶまでは、文章を外部へ送りません。
 
@@ -44,7 +44,7 @@ cargo build -p translation-lsp --release --locked
 
 ビルドした実行ファイルの絶対パスを、[サーバーのパス](docs/ja/configuration.md#サーバーのパス)の説明に沿って `lsp.translation-lsp.binary.path` に設定します。拡張はその実行ファイルを起動し、サーバーを取得しません。
 
-C#、C、C++、Python、JSON、JSONC、YAML、TOML、Shell Script、PowerShell、Dockerfile、Docker Composeの言語サーバーを明示している場合は、[言語サーバーの設定](docs/ja/languages.md#言語サーバーの設定)を参照してください。
+C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOML、Shell Script、PowerShell、Dockerfile、Docker Composeの言語サーバーを明示している場合は、[言語サーバーの設定](docs/ja/languages.md#言語サーバーの設定)を参照してください。
 
 ## プロバイダーの設定
 

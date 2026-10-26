@@ -47,7 +47,7 @@ pub(super) fn parse(text: &str, deadline: Instant) -> Option<Vec<Comment>> {
             let contents = docstring_contents(expression, text)?;
             Some(Comment {
                 range: expression.byte_range(),
-                kind: Kind::Docstring(contents),
+                kind: Kind::Contents(contents),
             })
         },
     )

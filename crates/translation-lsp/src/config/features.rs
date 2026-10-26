@@ -80,7 +80,7 @@ mod tests {
         *,
     };
 
-    const LANGUAGE_IDS: [&str; 18] = [
+    const LANGUAGE_IDS: [&str; 23] = [
         "rust",
         "javascript",
         "typescript",
@@ -89,6 +89,11 @@ mod tests {
         "c",
         "cpp",
         "python",
+        "go",
+        "ruby",
+        "php",
+        "html",
+        "css",
         "json",
         "jsonc",
         "yaml",
@@ -278,15 +283,16 @@ mod tests {
                 assert_eq!(
                     error.to_string(),
                     "features.languages keys must be one of rust, javascript, typescript, \
-                     typescriptreact, csharp, c, cpp, python, json, jsonc, yaml, toml, \
-                     shellscript, powershell, dockerfile, dockercompose, markdown, plaintext"
+                     typescriptreact, csharp, c, cpp, python, go, ruby, php, html, css, json, \
+                     jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, \
+                     markdown, plaintext"
                 );
                 assert_eq!(format!("{error:?}"), error.to_string());
             }
         }
         // The named check reports before the generic error.
         let error = Settings::from_options(Some(json!({
-            "features": {"languages": {"go": {}}, "unknown": true},
+            "features": {"languages": {"kotlin": {}}, "unknown": true},
             "translation_limits": []
         })))
         .err()
@@ -296,7 +302,8 @@ mod tests {
 
     #[test]
     fn a_feature_is_accepted_only_for_the_languages_it_runs_in() {
-        let comments = &LANGUAGE_IDS[..16];
+        // Every language but Markdown and Plain Text, the last two.
+        let comments = &LANGUAGE_IDS[..LANGUAGE_IDS.len() - 2];
         for (feature, name, language_ids) in [
             (Feature::CommentHover, "comment_hover", comments),
             (
@@ -347,8 +354,9 @@ mod tests {
         assert_eq!(
             message(json!({"languages": {"markdown": {"comment_hover": false}}})),
             "features.languages.markdown.comment_hover is not available; comment_hover applies \
-             to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, json, \
-             jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose"
+             to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, ruby, \
+             php, html, css, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, \
+             dockercompose"
         );
     }
 }

@@ -6,7 +6,7 @@ This page lists the languages whose comments are translated on Hover, the rules 
 
 ## Supported languages
 
-Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
+Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Ruby, PHP, HTML, CSS, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
 
 ## Comment extraction
 
@@ -21,6 +21,36 @@ C/C++ supports ordinary and Doxygen comments (`///`, `//!`, `/**`, `/*!`, includ
 ### Python
 
 Python supports `#` comments and docstrings at the beginning of a module, class, or function body. Ordinary, raw, Unicode, parenthesized, and implicitly concatenated string docstrings are supported; assigned strings, f-strings, and bytes are not automatic targets. Quotes and string prefixes are removed from docstrings; source escapes and indentation are passed through without evaluating Python. Shebangs are skipped. Syntax-error regions are skipped. If an error region contains a quote, extraction stops there to avoid translating apparent comments inside unfinished strings; manual selection remains available.
+
+### Go
+
+Go supports `//` and `/* ... */`. Adjacent line comments of the same indentation are translated together. Text inside strings, runes, and raw strings is not treated as a comment. Directives are skipped by the rule of Go's own `go/ast`: a `//` comment whose text right after the slashes is `line `, `extern `, `export `, or lowercase letters and digits followed by a colon and another such character, as in `//go:build` and `//nolint:errcheck`. An unclosed string or rune ends at the end of its line. An unclosed raw string or block comment hides everything after it.
+
+### Ruby
+
+Ruby supports `#` comments and `=begin` ... `=end` blocks. Adjacent line comments of the same indentation are translated together. A shebang on the first line is skipped, and so is everything after `__END__`.
+
+Text inside strings, symbols, regular expressions, `%` literals such as `%w[...]`, character literals such as `?#`, and here-documents is not treated as a comment. A comment inside `#{ ... }` of a string is a comment.
+
+Whether `/`, `%`, `?`, and `<<` start a literal depends on what precedes them, and Ruby decides it partly by whether a word is a local variable. The server follows the same rule. A word is a local variable within its scope after it has been assigned, also as one of the targets in `a, b = list`; named as a parameter, but not in a default value; named as the variable of `for` or of `rescue => error`; bound in a pattern after `in`; or named by a group of a regular expression before `=~`, as in `/(?<year>\d+)/ =~ text`. A `def`, `class`, or `module` starts a scope that sees no variable outside it, and a block or lambda a scope that sees those outside it. A variable bound by `=>` after a value, as in `value => name`, is not followed: the word stays a method. In `x /2 # note`, for example, `# note` is a comment when `x` is a local variable, and part of a regular expression when `x` is a method.
+
+An unclosed string, literal, here-document, or `=begin` hides everything after it.
+
+### PHP
+
+PHP supports `#`, `//`, `/* ... */`, and `/** ... */` in the code between `<?php`, `<?=`, or `<?` and `?>`. `<?` opens code as it does with PHP's default `short_open_tag`. The text outside the code, such as HTML, is not read, so an HTML comment there is not an automatic target. Adjacent line comments of the same kind and indentation are translated together.
+
+`#[` starts an attribute, not a comment. `?>` ends a line comment as well as the code. Text inside strings, here-documents, and nowdocs is not treated as a comment. A comment inside `{$ ... }` of a string is a comment. Everything after `__halt_compiler` is skipped, unless the word names a property or a variable, as in `$object->__halt_compiler`. An unclosed string, here-document, or block comment hides everything after it.
+
+### HTML and CSS
+
+HTML supports `<!-- ... -->`, and each such comment is translated on its own. Inside `<script>`, the comments of JavaScript are read as in a JavaScript file, and inside `<style>`, those of CSS. A script is read when its `type` is empty, a JavaScript type, or `module`. Other scripts, such as JSON, are not. A syntax error that stops the reading of a script hides the comments after it in that script, as in a JavaScript file.
+
+Text inside tags and their attribute values, and inside `<textarea>`, `<title>`, and the other elements whose text holds no markup, is not treated as a comment. A script ends where a browser ends it, also where `<!--` and `<script>` inside it keep a `</script>` in its text.
+
+The server reads HTML without building the tree of the document. Where the tree changes how a browser reads the text, the server reads it as in the body of a document, with these exceptions. `<![CDATA[` runs to `]]>`, as in SVG and MathML, also elsewhere. The text of `<script>` and `<style>` inside SVG and MathML is read as JavaScript and CSS. An element such as `<textarea>` inside `<select>`, which a browser ignores there, still holds no comment. An unclosed comment or tag hides everything after it, and so does `<plaintext>`.
+
+CSS supports `/* ... */`. Text inside strings and inside an unquoted `url( ... )` is not treated as a comment. An unclosed comment hides everything after it.
 
 ### JSON, YAML, and TOML
 
@@ -122,6 +152,8 @@ For C# files, install Zed's [C# language extension](https://github.com/zed-exten
 C and C++ are built into Zed. If you list their language servers explicitly, add `"translation-lsp"` under `languages.C.language_servers` and `languages."C++".language_servers`, alongside clangd.
 
 Python is built into Zed. If you configure `languages.Python.language_servers`, add `"translation-lsp"` to that list alongside your existing Python servers.
+
+Go and CSS are built into Zed, and Zed installs its HTML extension by default. For Ruby and PHP files, install Zed's [Ruby extension](https://github.com/zed-extensions/ruby) and [PHP extension](https://github.com/zed-extensions/php). The settings keys are `Go`, `Ruby`, `PHP`, `HTML`, and `CSS`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 JSON, JSONC, and YAML are built into Zed. For TOML files, install Zed's [TOML extension](https://github.com/zed-extensions/toml). The settings keys are `JSON`, `JSONC`, `YAML`, and `TOML`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 

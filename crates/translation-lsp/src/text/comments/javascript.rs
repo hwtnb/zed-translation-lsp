@@ -10,6 +10,21 @@ pub(super) fn parse(language: Language, uri: &Uri, text: &str) -> Vec<Comment> {
     let Some(source_type) = source_type(language, uri) else {
         return Vec::new();
     };
+    comments(source_type, text)
+}
+
+/// The comments of the script in an HTML `<script>` element: a module, or a
+/// classic script, which also takes `<!--` and `-->` as line comments.
+pub(super) fn script(text: &str, module: bool) -> Vec<Comment> {
+    let source_type = if module {
+        SourceType::mjs()
+    } else {
+        SourceType::script()
+    };
+    comments(source_type, text)
+}
+
+fn comments(source_type: SourceType, text: &str) -> Vec<Comment> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, text, source_type).parse();
     parsed

@@ -17,10 +17,15 @@ use crate::language::Language;
 
 mod c_family;
 mod csharp;
+mod css;
 mod data;
 mod dockerfile;
+mod go;
+mod html;
+mod php;
 mod powershell;
 mod python;
+mod ruby;
 mod shell;
 mod syntax;
 
@@ -37,8 +42,13 @@ enum LineKind {
 
 enum Kind {
     Line(LineKind),
-    Block { opening: u8, closed: bool },
-    Docstring(Vec<Range<usize>>),
+    Block {
+        opening: u8,
+        closed: bool,
+    },
+    /// The text of a comment or a docstring lies in these ranges, without the
+    /// marks around and between them.
+    Contents(Vec<Range<usize>>),
 }
 
 struct Comment {
@@ -122,6 +132,11 @@ impl Comments {
             Language::C | Language::Cpp => c_family::parse(language, text, deadline),
             Language::CSharp => csharp::parse(text, deadline),
             Language::Rust => Some(rust::parse(text)),
+            Language::Go => Some(go::parse(text)),
+            Language::Html => Some(html::parse(text)),
+            Language::Css => Some(css::parse(text)),
+            Language::Php => Some(php::parse(text)),
+            Language::Ruby => Some(ruby::parse(text)),
             Language::Json
             | Language::Jsonc
             | Language::Yaml
@@ -196,7 +211,7 @@ impl Comments {
                         2
                     }
                 }
-                Kind::Docstring(ref contents) => {
+                Kind::Contents(ref contents) => {
                     for range in contents {
                         body.push_str(&text[range.clone()]);
                     }
