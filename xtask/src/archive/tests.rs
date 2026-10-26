@@ -1,8 +1,10 @@
+use tempfile::NamedTempFile;
+
 use super::*;
 
 #[test]
 fn checksum_matches_the_sha256_known_vector() -> Result<()> {
-    let file = tempfile::NamedTempFile::new()?;
+    let file = NamedTempFile::new()?;
     fs::write(file.path(), b"abc")?;
     assert_eq!(
         digest(file.path())?,

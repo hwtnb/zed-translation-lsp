@@ -1,16 +1,20 @@
 //! The key is saved, replaced, and removed while the server runs. What was
 //! translated, refused, or stopped under one key is not kept for another.
-use std::{fs, sync::Arc};
+use std::{env, fs, sync::Arc};
 
 use serde_json::{Value, json};
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::Semaphore,
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 
 use super::{actions, next, server, target};
 use crate::{
     lsp::server::*,
     providers::{
         AccountChange, TranslationProvider,
-        anthropic::test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal},
+        anthropic::test_support::{self, Fixture, KEY, KeyDirectory, Reply, Terminal},
     },
 };
 
@@ -57,9 +61,9 @@ fn sent(fixture: &Fixture) -> String {
 /// Waits until the fixture has received this many requests. The limit only ends
 /// a test that would otherwise hang.
 async fn received(fixture: &Fixture, calls: usize) {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    timeout(Duration::from_secs(30), async {
         while fixture.calls() < calls {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -68,7 +72,7 @@ async fn received(fixture: &Fixture, calls: usize) {
 
 async fn message(client: &Connection) -> Message {
     let receiver = client.receiver.clone();
-    tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(30)).unwrap())
+    spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(30)).unwrap())
         .await
         .unwrap()
 }
@@ -195,7 +199,7 @@ async fn key_menu_opens_the_terminal_without_disturbing_work_in_progress() {
     assert_eq!(response.response_result.unwrap(), Value::Null);
     assert_eq!(
         *terminal.opened.lock().unwrap(),
-        [std::env::current_exe().unwrap()]
+        [env::current_exe().unwrap()]
     );
 
     // The translation that was running is still wanted, and still arrives.
@@ -446,9 +450,7 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
     let (mut server, connection, client, completions) =
         server(fixture.provider(), Settings::default());
     let uri = open(&mut server, "kept.md", "markdown", SOURCE);
-    fixture.reply(Reply::stream(
-        crate::providers::anthropic::test_support::completed("古いキーの訳"),
-    ));
+    fixture.reply(Reply::stream(test_support::completed("古いキーの訳")));
     fixture.reply(Reply::failure(400, "invalid_request_error", "Rejected"));
     for (id, index) in [(1, 0), (2, 2)] {
         let target = target(&server, &uri, line(index));

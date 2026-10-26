@@ -1,4 +1,4 @@
-use std::ops::Range as ByteRange;
+use std::{iter, ops::Range as ByteRange};
 
 use lsp_types::{Position, Range};
 
@@ -107,7 +107,7 @@ impl IndexedText {
 
 fn line_breaks(bytes: &[u8], base: usize) -> impl Iterator<Item = usize> + '_ {
     let mut offset = 0;
-    std::iter::from_fn(move || {
+    iter::from_fn(move || {
         while offset < bytes.len() {
             let byte = bytes[offset];
             offset += 1;

@@ -1,13 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use sha2::{Digest, Sha256};
+use tar::{Archive, Builder, Header};
+use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::source::{self, Arch, Os, Source, Target};
 
@@ -63,11 +65,11 @@ pub fn check_binary(path: &Path, target: &Target) -> Result<()> {
 fn write(path: &Path, files: &Files, executable: &str, epoch: u64) -> Result<()> {
     let file = File::create(path)?;
     if path.extension().is_some_and(|e| e == "zip") {
-        let mut archive = zip::ZipWriter::new(file);
+        let mut archive = ZipWriter::new(file);
         for (name, data) in files {
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated)
-                .last_modified_time(zip::DateTime::default())
+            let options = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .last_modified_time(DateTime::default())
                 .unix_permissions(if name == executable { 0o755 } else { 0o644 });
             archive.start_file(name, options)?;
             archive.write_all(data)?;
@@ -77,9 +79,9 @@ fn write(path: &Path, files: &Files, executable: &str, epoch: u64) -> Result<()>
         let compressed = GzBuilder::new()
             .mtime(epoch.try_into()?)
             .write(file, Compression::default());
-        let mut archive = tar::Builder::new(compressed);
+        let mut archive = Builder::new(compressed);
         for (name, data) in files {
-            let mut header = tar::Header::new_gnu();
+            let mut header = Header::new_gnu();
             header.set_size(data.len() as u64);
             header.set_mtime(epoch);
             header.set_mode(if name == executable { 0o755 } else { 0o644 });
@@ -95,7 +97,7 @@ fn read(path: &Path) -> Result<Files> {
     let mut files = Files::new();
     let file = File::open(path)?;
     if path.extension().is_some_and(|e| e == "zip") {
-        let mut archive = zip::ZipArchive::new(file)?;
+        let mut archive = ZipArchive::new(file)?;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
             ensure!(
@@ -111,7 +113,7 @@ fn read(path: &Path) -> Result<Files> {
             );
         }
     } else {
-        let mut archive = tar::Archive::new(GzDecoder::new(file));
+        let mut archive = Archive::new(GzDecoder::new(file));
         for entry in archive.entries()? {
             let mut entry = entry?;
             ensure!(
@@ -251,7 +253,7 @@ pub fn checksums(directory: &Path, commit: &str) -> Result<()> {
         .collect();
     let actual: BTreeSet<_> = fs::read_dir(directory)?
         .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
-        .collect::<std::io::Result<Vec<_>>>()?
+        .collect::<io::Result<Vec<_>>>()?
         .into_iter()
         .filter(|n| n.ends_with(".zip") || n.ends_with(".tar.gz"))
         .collect();

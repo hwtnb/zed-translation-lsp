@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
-use serde::Deserialize;
+use reqwest::header::HeaderMap;
+use serde::{
+    Deserialize,
+    de::value::{self, StrDeserializer},
+};
 use serde_json::Value;
 
 use super::{SERVICE, key};
@@ -118,7 +122,7 @@ fn remote_error(
     .into()
 }
 
-fn request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
+fn request_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("request-id")
         .and_then(|id| id.to_str().ok())
@@ -270,7 +274,7 @@ const MALFORMED: &str = "Anthropic SSE event lacks a required field or has an un
 
 impl Kind {
     fn named(name: &str) -> Self {
-        let name = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(name);
+        let name = StrDeserializer::<value::Error>::new(name);
         Self::deserialize(name).unwrap_or(Self::Other)
     }
 

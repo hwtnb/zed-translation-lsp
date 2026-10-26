@@ -1,7 +1,9 @@
 use std::{
+    fmt,
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
+    str,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
@@ -130,7 +132,7 @@ impl ApiKey {
         File::open(path)
             .and_then(|file| file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes))
             .map_err(|source| unusable(CredentialError::io("read key", source)))?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| Error::configuration(INVALID))?;
+        let text = str::from_utf8(&bytes).map_err(|_| Error::configuration(INVALID))?;
         Self::parse(text).map_err(|error| {
             Error::configuration(match error {
                 NotKey::Empty => EMPTY,
@@ -161,8 +163,8 @@ impl ApiKey {
     }
 }
 
-impl std::fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ApiKey([redacted])")
     }
 }
@@ -280,7 +282,7 @@ pub(super) fn saved(directory: &Path) -> Result<bool, CredentialError> {
     match fs::symlink_metadata(directory.join(FILE)) {
         Ok(metadata) if metadata.is_file() => Ok(true),
         Ok(_) => Err(CredentialError::Permissions),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(CredentialError::io("inspect path", source)),
     }
 }

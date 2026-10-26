@@ -1,13 +1,16 @@
 use std::{
     collections::HashMap,
+    fs,
     io::{BufReader, Read},
     process::{Child, ChildStdin, Command, Stdio},
+    str,
     sync::mpsc::{self, Receiver},
     thread,
     time::{Duration, Instant},
 };
 
 use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
+use reqwest::Url;
 use serde_json::{Value, json};
 
 // A checkout may give the sample files CRLF line endings. The tests find text
@@ -17,7 +20,7 @@ macro_rules! sample {
         const SOURCE: &str = include_str!(concat!("../../../samples/", $name));
         const COPY: ([u8; SOURCE.len()], usize) = with_line_feeds(SOURCE);
         const BYTES: &[u8] = COPY.0.split_at(COPY.1).0;
-        match std::str::from_utf8(BYTES) {
+        match str::from_utf8(BYTES) {
             Ok(text) => text,
             Err(_) => panic!("A sample is not UTF-8 after its carriage returns are removed"),
         }
@@ -2085,18 +2088,18 @@ fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
         let open = client.documents.remove(0);
         assert_eq!(open.params["external"], false);
         assert_eq!(open.params["takeFocus"], true);
-        let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+        let path = Url::parse(open.params["uri"].as_str().unwrap())
             .unwrap()
             .to_file_path()
             .unwrap();
         assert_eq!(path.extension().unwrap(), extension);
         assert_eq!(path.file_stem().unwrap(), "Translation");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
         }
@@ -2104,13 +2107,13 @@ fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
         assert!(client.receive(request, TIMEOUT).unwrap().is_null());
         assert!(client.notifications.is_empty());
         let saved = path.with_extension("saved");
-        std::fs::copy(&path, &saved).unwrap();
+        fs::copy(&path, &saved).unwrap();
         let cached = client.execute(action);
         while client.documents.is_empty() {
             client.pump();
         }
         let open = client.documents.remove(0);
-        let cached_path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+        let cached_path = Url::parse(open.params["uri"].as_str().unwrap())
             .unwrap()
             .to_file_path()
             .unwrap();
@@ -2118,15 +2121,15 @@ fn document_preview_opens_complete_translation_and_keeps_saved_copy() {
             cached_path, path,
             "Cached tab must reuse the same preview file"
         );
-        assert_eq!(std::fs::read_to_string(&cached_path).unwrap(), PARAGRAPH_JA);
+        assert_eq!(fs::read_to_string(&cached_path).unwrap(), PARAGRAPH_JA);
         client.send(Response::new_ok(open.id, json!({"success":true})).into());
         assert!(client.receive(cached, TIMEOUT).unwrap().is_null());
         assert!(client.call("shutdown", Value::Null).unwrap().is_null());
         assert!(!path.exists());
         assert!(!cached_path.exists());
-        assert_eq!(std::fs::read_to_string(&saved).unwrap(), PARAGRAPH_JA);
+        assert_eq!(fs::read_to_string(&saved).unwrap(), PARAGRAPH_JA);
         client.finish_exit(true);
-        std::fs::remove_file(saved).unwrap();
+        fs::remove_file(saved).unwrap();
     }
 }
 
@@ -2222,11 +2225,11 @@ fn document_preview_preserves_selection_scope_and_rejects_oversized_input() {
         client.pump();
     }
     let open = client.documents.remove(0);
-    let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+    let path = Url::parse(open.params["uri"].as_str().unwrap())
         .unwrap()
         .to_file_path()
         .unwrap();
-    assert_eq!(std::fs::read_to_string(path).unwrap(), PARAGRAPH_JA);
+    assert_eq!(fs::read_to_string(path).unwrap(), PARAGRAPH_JA);
     client.send(Response::new_ok(open.id, json!({"success":true})).into());
     client.receive(id, TIMEOUT).unwrap();
     client.change(uri, 2, json!([{"text": "a".repeat(1024 * 1024 + 1)}]));
@@ -2269,11 +2272,11 @@ fn document_limits_accept_large_input_and_partial_settings_override_the_default(
             client.pump();
         }
         let open = client.documents.remove(0);
-        let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+        let path = Url::parse(open.params["uri"].as_str().unwrap())
             .unwrap()
             .to_file_path()
             .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARAGRAPH_JA);
         client.send(Response::new_ok(open.id, json!({"success":true})).into());
         client.change(uri, 2, json!([{"text":format!(" {source}")}]));
         let action = document_action(&mut client, uri, range);

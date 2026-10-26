@@ -3,16 +3,20 @@ mod callback;
 #[cfg(test)]
 use callback::callback;
 use callback::wait_callback;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use openidconnect::{
-    AdditionalProviderMetadata, AuthType, AuthorizationCode, ClientId, CsrfToken, IssuerUrl, Nonce,
-    NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, ProviderMetadata, RedirectUrl,
-    RefreshToken, RequestTokenError, RevocationUrl, Scope, StandardErrorResponse, TokenResponse,
-    core::*,
+    AdditionalProviderMetadata, AuthType, AuthorizationCode, ClientId, CsrfToken, DiscoveryError,
+    IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, ProviderMetadata,
+    RedirectUrl, RefreshToken, RequestTokenError, RevocationUrl, Scope, StandardErrorResponse,
+    TokenResponse, core::*,
 };
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, task::JoinSet};
+use serde_json::Value;
+use tokio::{net::TcpListener, task::JoinSet, time::sleep};
 use uuid::Uuid;
 
 use crate::providers::{
@@ -202,7 +206,7 @@ impl Auth {
         loop {
             match self.key() {
                 Err(error) if error.kind() == ErrorKind::Unavailable => {
-                    tokio::time::sleep(Duration::from_millis(25)).await
+                    sleep(Duration::from_millis(25)).await
                 }
                 result => return result,
             }
@@ -214,7 +218,7 @@ impl Auth {
             Metadata::discover_async(self.issuer.clone(), &|request| self.http.oidc(request))
                 .await
                 .map_err(|error| match error {
-                    openidconnect::DiscoveryError::Request(error) => error,
+                    DiscoveryError::Request(error) => error,
                     _ => Error::failed(
                         "OpenAI OIDC discovery or JWKS validation failed; retry later",
                     ),
@@ -438,13 +442,13 @@ impl Auth {
                 // the refresh token it is stored with is trusted the same way. Read
                 // no other token without checking its signature.
                 let old: CoreIdToken =
-                    serde_json::from_value(serde_json::Value::String(previous.id_token.clone()))
+                    serde_json::from_value(Value::String(previous.id_token.clone()))
                         .map_err(|_| Error::failed("Saved ID token is invalid"))?;
                 let mut original_nonce = None;
                 let historical = client
                     .id_token_verifier()
                     .insecure_disable_signature_check()
-                    .set_time_fn(|| std::time::UNIX_EPOCH.into());
+                    .set_time_fn(|| UNIX_EPOCH.into());
                 let old_claims = old
                     .claims(&historical, |nonce: Option<&Nonce>| {
                         original_nonce = nonce.cloned();
@@ -544,7 +548,7 @@ impl Auth {
                     Err(_) => break,
                 }
                 if attempt < 2 {
-                    tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
+                    sleep(Duration::from_millis(250 * (1 << attempt))).await;
                 }
             }
         }

@@ -1,8 +1,16 @@
+use std::{
+    env, io,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Instant,
+};
+
 use super::super::test_support::Fixture;
 use super::*;
 use http_body_util::Full;
-use hyper::body::Bytes;
+use hyper::{Request, body::Bytes};
 use serde_json::json;
+use tokio::{runtime, task::spawn_blocking, time::sleep};
 
 #[test]
 fn only_store_contention_is_retryable() {
@@ -13,10 +21,7 @@ fn only_store_contention_is_retryable() {
     for error in [
         CredentialError::Invalid,
         CredentialError::Permissions,
-        CredentialError::io(
-            "test",
-            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        ),
+        CredentialError::io("test", io::Error::from(io::ErrorKind::PermissionDenied)),
     ] {
         assert_eq!(Error::from(error).kind(), ErrorKind::Storage);
     }
@@ -26,7 +31,7 @@ fn only_store_contention_is_retryable() {
 fn callback_checks_state_path_duplicates_and_issued_client_before_exchange() {
     let state = CsrfToken::new("expected".into());
     let parse = |query: &str, path: &str, returning| {
-        let request = hyper::Request::builder()
+        let request = Request::builder()
             .uri(format!("{path}?{query}"))
             .header("host", "127.0.0.1:3456")
             .body(Full::new(Bytes::new()))
@@ -391,8 +396,8 @@ async fn refresh_still_compares_the_saved_identity_with_the_registration() {
 #[test]
 #[ignore = "child entry invoked by the multiprocess refresh test"]
 fn refresh_child_process() {
-    let directory = std::path::PathBuf::from(std::env::var("ZED_SYNTHETIC_REFRESH_DIR").unwrap());
-    assert!(directory.starts_with(std::env::temp_dir()));
+    let directory = PathBuf::from(env::var("ZED_SYNTHETIC_REFRESH_DIR").unwrap());
+    assert!(directory.starts_with(env::temp_dir()));
     assert!(
         directory
             .file_name()
@@ -401,21 +406,21 @@ fn refresh_child_process() {
             .unwrap()
             .starts_with("zed-auth-multiprocess-")
     );
-    let issuer = std::env::var("ZED_SYNTHETIC_ISSUER").unwrap();
+    let issuer = env::var("ZED_SYNTHETIC_ISSUER").unwrap();
     assert!(issuer.starts_with("http://127.0.0.1:"));
     let auth = Auth::synthetic(
         AuthStore::synthetic(directory),
         Http::new().unwrap(),
         issuer,
     );
-    tokio::runtime::Builder::new_current_thread()
+    runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                assert!(std::time::Instant::now() < deadline);
+                assert!(Instant::now() < deadline);
                 if let Ok(key) = auth.key() {
                     match auth.access(&key).await {
                         Ok(access) => {
@@ -425,7 +430,7 @@ fn refresh_child_process() {
                         Err(error) => assert_eq!(error.kind(), ErrorKind::Modified),
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                sleep(Duration::from_millis(10)).await;
             }
         });
 }
@@ -434,7 +439,7 @@ fn refresh_child_process() {
 async fn multiprocess_refresh_serializes_rotation_and_rereads_latest_credentials() {
     let fixture = Fixture::new().await;
     fixture.state.lock().unwrap().delay = Duration::from_millis(150);
-    let directory = std::env::temp_dir().join(format!("zed-auth-multiprocess-{}", Uuid::new_v4()));
+    let directory = env::temp_dir().join(format!("zed-auth-multiprocess-{}", Uuid::new_v4()));
     let auth = Auth::synthetic(
         AuthStore::synthetic(directory.clone()),
         Http::new().unwrap(),
@@ -443,7 +448,7 @@ async fn multiprocess_refresh_serializes_rotation_and_rereads_latest_credentials
     fixture.connected(&auth, 0).await;
     let mut children = Vec::new();
     for _ in 0..2 {
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
+        let child = Command::new(env::current_exe().unwrap())
             .args([
                 "--ignored",
                 "--exact",
@@ -452,13 +457,11 @@ async fn multiprocess_refresh_serializes_rotation_and_rereads_latest_credentials
             ])
             .env("ZED_SYNTHETIC_REFRESH_DIR", &directory)
             .env("ZED_SYNTHETIC_ISSUER", &fixture.base)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        children.push(tokio::task::spawn_blocking(move || {
-            child.wait_with_output().unwrap()
-        }));
+        children.push(spawn_blocking(move || child.wait_with_output().unwrap()));
     }
     for child in children {
         let output = child.await.unwrap();

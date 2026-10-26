@@ -12,6 +12,9 @@ use anyhow::{Context, Result, ensure};
 use lsp_server::{Message, Notification, Request, RequestId};
 use serde_json::{Value, json};
 
+use crate::archive::unpack;
+use tempfile::NamedTempFile;
+
 struct Process(Child);
 
 impl Drop for Process {
@@ -23,14 +26,14 @@ impl Drop for Process {
 
 pub fn archive(path: &Path) -> Result<()> {
     let temporary = tempfile::tempdir()?;
-    let (binary, source) = crate::archive::unpack(path, temporary.path())?;
+    let (binary, source) = unpack(path, temporary.path())?;
     run(&binary, &source.version)?;
     println!("Packaged server passed initialize, mock Hover, and shutdown");
     Ok(())
 }
 
 fn run(binary: &Path, version: &str) -> Result<()> {
-    let stderr = tempfile::NamedTempFile::new()?;
+    let stderr = NamedTempFile::new()?;
     let mut command = Command::new(binary);
     for name in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
         command.env_remove(name);

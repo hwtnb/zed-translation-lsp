@@ -1,15 +1,20 @@
 use super::Error;
 use http_body_util::Full;
-use hyper::{body::Bytes, service::service_fn};
+use hyper::{
+    Method, Response,
+    body::{Bytes, Incoming},
+    server::conn::http1,
+    service::service_fn,
+};
 use hyper_util::rt::TokioIo;
-use openidconnect::CsrfToken;
+use openidconnect::{CsrfToken, url::form_urlencoded};
 use std::{
     collections::HashMap,
     convert::Infallible,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{net::TcpListener, sync::oneshot, task::JoinSet};
+use tokio::{net::TcpListener, sync::oneshot, task::JoinSet, time::timeout};
 
 pub(super) struct Callback {
     pub code: String,
@@ -38,7 +43,7 @@ pub(super) async fn wait_callback(
                     state.clone(), returning.clone(), sender.clone(), address.clone(),
                 );
                 connections.spawn(async move {
-                    let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                    let service = service_fn(move |request: hyper::Request<Incoming>| {
                         let received = callback(&request, &state, returning.as_deref(), &address);
                         let status = if matches!(received, Some(Ok(_))) { 200 } else { 400 };
                         if let Some(result) = received
@@ -53,7 +58,7 @@ pub(super) async fn wait_callback(
                                 b"Invalid ChatGPT callback."
                             };
                             Ok::<_, Infallible>(
-                                hyper::Response::builder()
+                                Response::builder()
                                     .status(status)
                                     .header("content-type", "text/plain; charset=utf-8")
                                     .body(Full::new(Bytes::from_static(message)))
@@ -61,9 +66,9 @@ pub(super) async fn wait_callback(
                             )
                         }
                     });
-                    let mut builder = hyper::server::conn::http1::Builder::new();
+                    let mut builder = http1::Builder::new();
                     builder.max_buf_size(32 * 1024);
-                    let _ = tokio::time::timeout(
+                    let _ = timeout(
                         Duration::from_secs(5),
                         builder.serve_connection(TokioIo::new(socket), service),
                     ).await;
@@ -75,7 +80,7 @@ pub(super) async fn wait_callback(
 }
 
 fn valid_state(query: &str, state: &CsrfToken) -> bool {
-    let values: Vec<_> = openidconnect::url::form_urlencoded::parse(query.as_bytes())
+    let values: Vec<_> = form_urlencoded::parse(query.as_bytes())
         .filter(|(key, _)| key == "state")
         .map(|(_, value)| value)
         .collect();
@@ -110,11 +115,11 @@ fn parse<B>(
     query: &str,
     returning: Option<&str>,
 ) -> Result<Callback, Error> {
-    if request.method() != hyper::Method::GET || request.uri().to_string().len() > 16 * 1024 {
+    if request.method() != Method::GET || request.uri().to_string().len() > 16 * 1024 {
         return Err(Error::failed("Invalid ChatGPT callback request"));
     }
     let mut parameters = HashMap::new();
-    for (key, value) in openidconnect::url::form_urlencoded::parse(query.as_bytes()) {
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
         if parameters
             .insert(key.into_owned(), value.into_owned())
             .is_some()

@@ -8,6 +8,7 @@ use crate::providers::{
     prompt,
 };
 use serde_json::json;
+use tokio::task::spawn_blocking;
 
 mod document;
 mod key;
@@ -15,7 +16,7 @@ mod startup;
 
 async fn next(receiver: &crossbeam_channel::Receiver<WorkerEvent<KeyId>>) -> Finished<KeyId> {
     let receiver = receiver.clone();
-    tokio::task::spawn_blocking(move || {
+    spawn_blocking(move || {
         loop {
             if let WorkerEvent::Finished(completion) =
                 receiver.recv_timeout(Duration::from_secs(3)).unwrap()

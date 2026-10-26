@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use openidconnect::{HttpRequest, HttpResponse};
+use openidconnect::{HttpRequest, HttpResponse, http::Response, url::form_urlencoded};
+use reqwest::{Request, header::HeaderMap};
 use serde_json::Value;
 
 #[cfg(test)]
@@ -17,7 +18,7 @@ pub(crate) struct Http {
     revocation_fixture: Option<String>,
 }
 
-pub(super) fn request_id(headers: &reqwest::header::HeaderMap) -> Option<&str> {
+pub(super) fn request_id(headers: &HeaderMap) -> Option<&str> {
     headers.get("x-request-id").and_then(|id| id.to_str().ok())
 }
 
@@ -131,7 +132,7 @@ impl Http {
             }
             request
         };
-        let secrets: Vec<String> = openidconnect::url::form_urlencoded::parse(request.body())
+        let secrets: Vec<String> = form_urlencoded::parse(request.body())
             .filter(|(key, _)| {
                 matches!(
                     key.as_ref(),
@@ -140,14 +141,14 @@ impl Http {
             })
             .map(|(_, value)| value.into_owned())
             .collect();
-        let request = reqwest::Request::try_from(request)
-            .map_err(|_| Error::failed("Invalid OIDC HTTP request"))?;
+        let request =
+            Request::try_from(request).map_err(|_| Error::failed("Invalid OIDC HTTP request"))?;
         let mut response = self
             .client
             .execute(request)
             .await
             .map_err(temporary_network)?;
-        let mut builder = openidconnect::http::Response::builder().status(response.status());
+        let mut builder = Response::builder().status(response.status());
         for (name, value) in response.headers() {
             builder = builder.header(name, value);
         }

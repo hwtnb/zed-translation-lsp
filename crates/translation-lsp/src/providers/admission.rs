@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::time::sleep;
+
 use super::{
     Intent,
     error::{Error, ErrorKind},
@@ -197,7 +199,7 @@ impl<K: Clone + PartialEq> Admission<K> {
                     };
                     retried = true;
                     // The worker's existing deadline and cancellation cover this wait too.
-                    tokio::time::sleep(delay).await;
+                    sleep(delay).await;
                     if intent == Intent::Automatic {
                         self.state.lock().unwrap().allowed(key)?;
                     }

@@ -6,6 +6,7 @@ pub(crate) mod http;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use std::mem;
 #[cfg(test)]
 use std::time::Instant;
 
@@ -13,9 +14,9 @@ use std::time::Instant;
 use serde_json::Value;
 use serde_json::json;
 
-#[cfg(test)]
-use crate::config::ReasoningEffort;
 use crate::config::{ChatgptModel, limits::SizeLimit};
+#[cfg(test)]
+use crate::config::{ReasoningEffort, limits::TranslationLimits};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
@@ -118,7 +119,7 @@ impl ChatGptProvider {
                 None,
             ),
             source_language: "auto".into(),
-            output_limit: crate::config::limits::TranslationLimits::default().output_kib,
+            output_limit: TranslationLimits::default().output_kib,
             admission: Admission::default(),
         }
     }
@@ -180,7 +181,7 @@ impl ChatGptProvider {
             .admission
             .retrying(key, intent, async || {
                 // The account may have changed during the wait.
-                if std::mem::replace(&mut sent, true)
+                if mem::replace(&mut sent, true)
                     && let Err(error) = self.check_account(key).await
                 {
                     return Attempt::without_response(error);

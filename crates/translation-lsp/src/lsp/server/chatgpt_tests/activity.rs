@@ -1,4 +1,14 @@
 //! The progress and status the server reports while it translates.
+use std::sync::Arc;
+
+use tokio::{
+    sync::Notify,
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
+
+use crate::providers::error::credentials::CredentialError;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -96,7 +106,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
     fixture.state.lock().unwrap().stream_tail_delay = Duration::from_millis(300);
     let auth = fixture.auth();
     fixture.connected(&auth, 0).await;
-    let token_release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let token_release = Arc::new(Notify::new());
     fixture.state.lock().unwrap().token_release = Some(token_release.clone());
     let provider = ChatGptProvider::synthetic(
         auth.clone(),
@@ -160,21 +170,17 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         .unwrap();
     server.jobs = Some(worker_jobs);
     let events = completions.clone();
-    let started =
-        tokio::task::spawn_blocking(move || events.recv_timeout(Duration::from_secs(2)).unwrap())
-            .await
-            .unwrap();
+    let started = spawn_blocking(move || events.recv_timeout(Duration::from_secs(2)).unwrap())
+        .await
+        .unwrap();
     let WorkerEvent::Started(started_ticket) = started else {
         panic!("Expected worker Started");
     };
     assert_eq!(started_ticket, ticket);
     server.scheduler.mark_running(ticket);
-    assert!(matches!(
-        auth.store.snapshot(),
-        Err(crate::providers::error::credentials::CredentialError::Busy)
-    ));
+    assert!(matches!(auth.store.snapshot(), Err(CredentialError::Busy)));
     assert!(provider.context().is_err());
-    tokio::time::sleep(Duration::from_millis(160)).await;
+    sleep(Duration::from_millis(160)).await;
     server.publish_activity();
     let Message::Notification(running) = client.receiver.try_recv().unwrap() else {
         panic!("Expected running report during store lock");
@@ -202,7 +208,7 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
         "Remaining background owner keeps progress alive"
     );
     drop(locked);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    timeout(Duration::from_secs(2), async {
         while !fixture
             .state
             .lock()
@@ -211,15 +217,12 @@ async fn activity_keeps_background_owner_after_hover_expiry_and_allows_token_ref
             .iter()
             .any(|record| record.path == "/token")
         {
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            sleep(Duration::from_millis(2)).await;
         }
     })
     .await
     .unwrap();
-    assert!(matches!(
-        auth.store.snapshot(),
-        Err(crate::providers::error::credentials::CredentialError::Busy)
-    ));
+    assert!(matches!(auth.store.snapshot(), Err(CredentialError::Busy)));
     server.publish_activity();
     assert!(
         client.receiver.is_empty(),

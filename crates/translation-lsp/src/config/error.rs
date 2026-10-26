@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::{features::Feature, limits::SizeSetting};
 use crate::language::Language;
 
@@ -69,8 +71,8 @@ pub(crate) enum Relation {
     LessThan,
 }
 
-impl std::fmt::Display for Relation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Relation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::AtMost => "at most",
             Self::LessThan => "less than",
@@ -84,8 +86,8 @@ pub(crate) enum Budget {
     ConcurrentOutput,
 }
 
-impl std::fmt::Display for Budget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Budget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::AcceptedInput => "translation_limits input size times work.admitted",
             Self::ConcurrentOutput => "translation_limits.output_kib times work.concurrent",
@@ -118,8 +120,8 @@ pub(super) fn bounded_number(
     Ok(())
 }
 
-impl std::fmt::Debug for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+impl fmt::Debug for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }

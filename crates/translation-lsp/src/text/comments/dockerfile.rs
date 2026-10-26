@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, iter::Peekable, mem, str::Chars};
 
 use super::Comment;
 
@@ -227,7 +227,7 @@ enum Frame {
 /// and removes them when it reads a delimiter. The lexer calls itself for each
 /// `${name ... }` and each string; the stack takes the place of those calls.
 struct Words<'a> {
-    characters: std::iter::Peekable<std::str::Chars<'a>>,
+    characters: Peekable<Chars<'a>>,
     keeps: bool,
     stack: Vec<Frame>,
     words: Vec<String>,
@@ -279,7 +279,7 @@ impl<'a> Words<'a> {
             self.word.push(character);
         } else if !self.word.is_empty() {
             self.waits = opening(&self.word).is_some_and(|(_, rest)| rest.is_empty());
-            self.words.push(std::mem::take(&mut self.word));
+            self.words.push(mem::take(&mut self.word));
         }
     }
 
@@ -444,7 +444,7 @@ impl<'a> Words<'a> {
             // `${name ... }`. Only a string around it stays in the word.
             let dropped = match self.stack.first() {
                 None => self.word.len(),
-                Some(Frame::Double { .. }) => std::mem::take(&mut self.string),
+                Some(Frame::Double { .. }) => mem::take(&mut self.string),
                 Some(Frame::Part { .. }) => 0,
             };
             // The dropped text is read here once, and is gone after that.

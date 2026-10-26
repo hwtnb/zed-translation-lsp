@@ -1,4 +1,11 @@
 //! Markdown selections and automatic translation of them.
+use std::sync::Arc;
+
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -398,9 +405,9 @@ async fn live_loop_starts_after_stability_and_settings_dismissal_preserves_backg
         3
     );
     assert!(started.elapsed() < Duration::from_millis(200));
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    sleep(Duration::from_millis(250)).await;
     assert!(fixture.state.lock().unwrap().records.is_empty());
-    tokio::time::timeout(Duration::from_secs(1), async {
+    timeout(Duration::from_secs(1), async {
         loop {
             if fixture
                 .state
@@ -412,7 +419,7 @@ async fn live_loop_starts_after_stability_and_settings_dismissal_preserves_backg
             {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -516,7 +523,7 @@ async fn live_loop_starts_after_stability_and_settings_dismissal_preserves_backg
         panic!("Expected shutdown");
     };
     assert_eq!(response.id, 99.into());
-    tokio::task::spawn_blocking(move || server.join().unwrap())
+    spawn_blocking(move || server.join().unwrap())
         .await
         .unwrap();
 }
@@ -525,7 +532,7 @@ async fn live_loop_starts_after_stability_and_settings_dismissal_preserves_backg
 async fn empty_selection_preserves_adjustment_chain_but_visiting_another_range_breaks_it() {
     let (fixture, mut server, connection, _client, completions, uri) =
         range_server(Settings::default()).await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let first = range_target(&server, &uri, 0);
     markdown_actions(&mut server, &uri, first.range);
@@ -711,7 +718,7 @@ async fn unrelated_action_kinds_preserve_selection_candidate_and_adjustment_chai
     server
         .code_actions(unrelated(&uri, selected.range, "translation"))
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(
+    sleep(Duration::from_millis(
         server.settings.selection_debounce_ms + 10,
     ))
     .await;

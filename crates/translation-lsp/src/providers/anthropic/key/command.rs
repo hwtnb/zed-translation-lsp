@@ -1,6 +1,7 @@
 //! `translation-lsp anthropic-key`: asks for the key in the terminal and saves
 //! it. The key reaches the file without passing through the editor.
 use std::{
+    env,
     fs::OpenOptions,
     io::{self, Write},
     path::PathBuf,
@@ -84,7 +85,7 @@ impl Console for Terminal {
 /// `None` when the arguments do not name the command: the process then serves
 /// an editor.
 pub fn from_arguments() -> Option<ExitCode> {
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = env::args().skip(1);
     if arguments.next()? != ARGUMENT {
         return None;
     }
@@ -127,11 +128,12 @@ pub fn from_arguments() -> Option<ExitCode> {
 /// seeing it, and a process kept alive there would save what was typed so far.
 #[cfg(unix)]
 fn receive_interruptions() -> io::Result<impl Sized> {
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::{
+        runtime,
+        signal::unix::{SignalKind, signal},
+    };
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()?;
+    let runtime = runtime::Builder::new_current_thread().enable_io().build()?;
     let interruptions = {
         let _context = runtime.enter();
         signal(SignalKind::interrupt())?

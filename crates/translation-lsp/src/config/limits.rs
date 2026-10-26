@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::Deserialize;
 
 use super::error::{Budget, ConfigError, Relation, SizeExceeded, bounded_number};
@@ -136,8 +138,8 @@ impl SizeSetting {
     }
 }
 
-impl std::fmt::Display for SizeSetting {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SizeSetting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
 }

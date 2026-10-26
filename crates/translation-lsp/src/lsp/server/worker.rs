@@ -1,3 +1,9 @@
+use std::future::Future;
+
+use tokio::time::sleep_until;
+
+use crate::providers::Intent;
+
 use super::*;
 
 const ADMIN_CONCURRENCY: usize = 1;
@@ -13,7 +19,7 @@ pub(super) enum Task<C> {
         ui: Ui,
     },
     Translation {
-        intent: crate::providers::Intent,
+        intent: Intent,
         output: Output,
         generation: u64,
         text: String,
@@ -171,7 +177,7 @@ pub(super) async fn run_job<P: TranslationProvider>(
 async fn until_deadline<T>(
     deadline: &mut watch::Receiver<Option<Instant>>,
     start: impl FnOnce() -> bool,
-    operation: impl std::future::Future<Output = Result<T, ProviderError>>,
+    operation: impl Future<Output = Result<T, ProviderError>>,
 ) -> Result<T, ProviderError> {
     let Some(current) = *deadline.borrow_and_update() else {
         return Err(ProviderError::cancelled());
@@ -181,7 +187,7 @@ async fn until_deadline<T>(
     }
     // Keep the same operation alive when a waiter extends or shortens its deadline.
     tokio::pin!(operation);
-    let timer = tokio::time::sleep_until(current.into());
+    let timer = sleep_until(current.into());
     tokio::pin!(timer);
     loop {
         tokio::select! {

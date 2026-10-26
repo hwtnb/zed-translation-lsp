@@ -1,3 +1,8 @@
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
 use super::*;
 
 fn parsed(language: &str, uri: &Uri, text: &str) -> Comments {
@@ -521,11 +526,11 @@ fn json_on_a_single_line_is_read_in_one_pass() {
         source.push_str(&format!("\"key{index}\":\"value {index}\","));
     }
     source.push_str("} // note");
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     assert_eq!(bodies("json", &source), ["note"]);
     // One pass takes milliseconds. Looking for the line end again at each
     // string took minutes in a debug build.
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 /// Valid YAML: each quoted value continues one column deeper than its key.
@@ -907,7 +912,7 @@ fn shell_reads_deep_nesting_and_long_input_in_one_pass() {
         format!("{}\n# note", "<1 ".repeat(megabyte / 3)),
     ];
     let uri = "untitled:comment".parse().unwrap();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     for text in &texts {
         let comments = parsed("shellscript", &uri, text);
         let last = comments
@@ -920,7 +925,7 @@ fn shell_reads_deep_nesting_and_long_input_in_one_pass() {
     // Each takes milliseconds when read once, on a stack that the heap holds.
     // All of them take seconds in a debug build on a slow machine; reading a
     // megabyte again at each piece would take hours.
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    assert!(started.elapsed() < Duration::from_secs(60));
 }
 
 #[test]
@@ -1325,7 +1330,7 @@ fn powershell_reads_deep_nesting_and_long_input_in_one_pass() {
         format!("{}\n# note", "a#b ".repeat(megabyte / 4)),
         format!("@\"\n{}\n\"@\n# note", "$()\n".repeat(megabyte / 4)),
     ];
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     for text in &texts {
         let found = powershell(text);
         assert_eq!(found.last().map(String::as_str), Some("# note"));
@@ -1334,7 +1339,7 @@ fn powershell_reads_deep_nesting_and_long_input_in_one_pass() {
     // Each takes milliseconds when read once, without a stack. All of them
     // take seconds in a debug build on a slow machine; reading a megabyte
     // again at each piece would take hours.
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    assert!(started.elapsed() < Duration::from_secs(60));
 }
 
 /// The example of the request, with tabs before the lines that `<<-` strips.
@@ -1647,7 +1652,7 @@ fn dockerfile_long_lines_and_many_here_documents_are_read_in_one_pass() {
         "\"${a:-".repeat(depth),
         "}\"".repeat(depth)
     );
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     for text in [line, documents, operators, continued, nested] {
         assert!(text.len() >= megabyte - 64);
         assert_eq!(bodies("dockerfile", &text), ["note"]);
@@ -1655,7 +1660,7 @@ fn dockerfile_long_lines_and_many_here_documents_are_read_in_one_pass() {
     // Each takes milliseconds when read once. All of them take seconds in a
     // debug build on a slow machine; reading a megabyte again at each piece
     // would take hours.
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    assert!(started.elapsed() < Duration::from_secs(60));
 }
 
 #[test]
@@ -1690,12 +1695,12 @@ fn readers_take_time_in_proportion_to_the_text() {
                 .flat_map(move |piece| ["", "\n", "\nx"].map(|tail| (head, piece, tail)))
         }) {
             let text = format!("{head}{}{tail}", piece.repeat(size / piece.len()));
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             parsed(language, &uri, &text);
             // One pass takes milliseconds in a debug build. Reading the
             // rest of the text again at each piece took over 20 seconds.
             assert!(
-                started.elapsed() < std::time::Duration::from_secs(5),
+                started.elapsed() < Duration::from_secs(5),
                 "{language} {head:?} {piece:?} {tail:?}"
             );
         }
@@ -1709,7 +1714,7 @@ fn dockerfile_decides_once_what_a_word_is() {
     let size = 256 << 10;
     let digits = "1".repeat(size / 2);
     let expansions = "${a:-x}".repeat(size / 14);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     for text in [
         format!("# note\nRUN {digits} {expansions} <<E\n"),
         format!("# note\nRUN <<- {digits} {expansions}\n"),
@@ -1719,7 +1724,7 @@ fn dockerfile_decides_once_what_a_word_is() {
     // Each takes milliseconds when read once, and about a second in a debug
     // build on a slow machine. Reading the word again at each `${name ... }`
     // took three minutes.
-    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert!(started.elapsed() < Duration::from_secs(30));
 }
 
 #[test]
@@ -1836,10 +1841,10 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
                 };
                 text.push_str(&piece.repeat(repeats));
             }
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             parsed(language, &uri, &text);
             assert!(
-                started.elapsed() < std::time::Duration::from_secs(5),
+                started.elapsed() < Duration::from_secs(5),
                 "{language} {parts:?}"
             );
         }
@@ -2191,7 +2196,7 @@ fn reading_stops_at_the_limit_while_parsing_and_while_walking_the_tree() {
         Instant::now() + Duration::from_millis(500),
         |_| {
             visited += 1;
-            std::thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50));
             None
         },
     );

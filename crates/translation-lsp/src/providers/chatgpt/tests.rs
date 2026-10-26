@@ -1,8 +1,18 @@
-use std::{sync::Arc, time::Duration};
+use std::{env, fs, sync::Arc, time::Duration};
 
-use super::test_support::{self, Fixture};
+use reqwest::Client;
+use tokio::time::timeout;
+use uuid::Uuid;
+
 use super::*;
-use crate::providers::error::ErrorKind;
+use super::{
+    auth_store::AuthStore,
+    test_support::{self, Fixture},
+};
+use crate::providers::{
+    Intent, Output,
+    error::{ErrorKind, Notification},
+};
 
 fn response_calls(fixture: &Fixture) -> usize {
     fixture
@@ -42,8 +52,8 @@ async fn configurable_output_accepts_large_escaped_text_and_checks_exact_byte_bo
         }
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Translate this.",
                 "ja",
                 provider.context().unwrap(),
@@ -95,8 +105,8 @@ async fn temporary_failures_retry_once_and_return_only_the_successful_response()
             );
             let result = provider
                 .translate(
-                    crate::providers::Intent::Automatic,
-                    crate::providers::Output::Range,
+                    Intent::Automatic,
+                    Output::Range,
                     "Retry after a temporary failure.",
                     "ja",
                     provider.context().unwrap(),
@@ -107,10 +117,7 @@ async fn temporary_failures_retry_once_and_return_only_the_successful_response()
                 assert_eq!(result.err().unwrap().kind(), ErrorKind::Temporary);
                 assert_eq!(
                     provider
-                        .admit(
-                            &provider.context().unwrap(),
-                            crate::providers::Intent::Automatic
-                        )
+                        .admit(&provider.context().unwrap(), Intent::Automatic)
                         .unwrap_err()
                         .kind(),
                     ErrorKind::Temporary
@@ -155,7 +162,7 @@ async fn interrupted_stream_is_reported_without_sending_the_request_again() {
         let error = provider
             .translate(
                 intent,
-                crate::providers::Output::Range,
+                Output::Range,
                 "Read this.",
                 "ja",
                 provider.context().unwrap(),
@@ -190,15 +197,15 @@ async fn retry_wait_is_cancellable_and_account_changes_skip_the_retry() {
             "synthetic-model".into(),
         );
         let request = provider.translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "Read this.",
             "ja",
             provider.context().unwrap(),
         );
         tokio::pin!(request);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut request)
+            timeout(Duration::from_millis(100), &mut request)
                 .await
                 .is_err()
         );
@@ -206,9 +213,7 @@ async fn retry_wait_is_cancellable_and_account_changes_skip_the_retry() {
         if account_change {
             fixture.connected(&auth, 3600).await;
             // The retry waits 2 seconds before it checks the account.
-            let result = tokio::time::timeout(Duration::from_secs(5), &mut request)
-                .await
-                .unwrap();
+            let result = timeout(Duration::from_secs(5), &mut request).await.unwrap();
             assert_eq!(result.err().unwrap().kind(), ErrorKind::Modified);
             assert_eq!(response_calls(&fixture), 1);
         }
@@ -240,15 +245,15 @@ async fn a_credential_update_in_progress_delays_the_retry_and_the_result() {
             "synthetic-model".into(),
         );
         let request = provider.translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "Read this.",
             "ja",
             provider.context().unwrap(),
         );
         tokio::pin!(request);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut request)
+            timeout(Duration::from_millis(100), &mut request)
                 .await
                 .is_err()
         );
@@ -258,15 +263,10 @@ async fn a_credential_update_in_progress_delays_the_retry_and_the_result() {
         }
         // The retry waits 1 second before it checks the account.
         let wait = Duration::from_millis(if retry { 1500 } else { 300 });
-        assert!(
-            tokio::time::timeout(wait, &mut request).await.is_err(),
-            "retry {retry}"
-        );
+        assert!(timeout(wait, &mut request).await.is_err(), "retry {retry}");
         assert_eq!(response_calls(&fixture), 1);
         drop(writer);
-        let result = tokio::time::timeout(Duration::from_secs(5), &mut request)
-            .await
-            .unwrap();
+        let result = timeout(Duration::from_secs(5), &mut request).await.unwrap();
         assert!(result.is_ok(), "retry {retry}: {:?}", result.err());
         assert_eq!(response_calls(&fixture), if retry { 2 } else { 1 });
     }
@@ -289,10 +289,9 @@ async fn a_credential_store_that_breaks_during_a_request_fails_as_itself() {
                 state.stream_tail_gate = Some(tail.clone());
             }
         }
-        let directory =
-            std::env::temp_dir().join(format!("zed-auth-synthetic-{}", uuid::Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-synthetic-{}", Uuid::new_v4()));
         let auth = Auth::synthetic(
-            super::auth_store::AuthStore::synthetic(directory.clone()),
+            AuthStore::synthetic(directory.clone()),
             Http::synthetic_revocation(&fixture.base),
             fixture.base.clone(),
         );
@@ -303,23 +302,23 @@ async fn a_credential_store_that_breaks_during_a_request_fails_as_itself() {
             "synthetic-model".into(),
         );
         let request = provider.translate(
-            crate::providers::Intent::Explicit,
-            crate::providers::Output::Range,
+            Intent::Explicit,
+            Output::Range,
             "Read this.",
             "ja",
             provider.context().unwrap(),
         );
         tokio::pin!(request);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut request)
+            timeout(Duration::from_millis(100), &mut request)
                 .await
                 .is_err()
         );
-        std::fs::write(directory.join("auth.json"), b"{").unwrap();
+        fs::write(directory.join("auth.json"), b"{").unwrap();
         if !retry {
             tail.release.notify_one();
         }
-        let error = tokio::time::timeout(Duration::from_secs(5), &mut request)
+        let error = timeout(Duration::from_secs(5), &mut request)
             .await
             .unwrap()
             .err()
@@ -355,8 +354,8 @@ async fn server_retry_delay_is_honored_or_left_for_manual_retry() {
         let started = Instant::now();
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Read this.",
                 "ja",
                 provider.context().unwrap(),
@@ -406,8 +405,8 @@ async fn complete_translation_is_returned_as_text_without_reassembly_or_repeated
         );
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 source,
                 "ja",
                 provider.context().unwrap(),
@@ -519,8 +518,8 @@ async fn stream_failures_keep_typed_diagnostics_without_dumping_payloads() {
         );
         let error = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 source,
                 "ja",
                 provider.context().unwrap(),
@@ -532,10 +531,7 @@ async fn stream_failures_keep_typed_diagnostics_without_dumping_payloads() {
         if matches!(kind, ErrorKind::Configuration | ErrorKind::UsageLimit) {
             assert_eq!(
                 provider
-                    .admit(
-                        &provider.context().unwrap(),
-                        crate::providers::Intent::Automatic
-                    )
+                    .admit(&provider.context().unwrap(), Intent::Automatic)
                     .unwrap_err()
                     .kind(),
                 kind
@@ -639,8 +635,8 @@ async fn real_http_requires_complete_consistent_streams() {
         let body = "Read `retry_count` and [the guide](https://example.invalid). 🚀\r\n\r\n```rust\r\nlet n = 1;\r\n```\r\n";
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 body,
                 "ja",
                 provider.context().unwrap(),
@@ -731,8 +727,8 @@ async fn terminal_plan_errors_do_not_retry_or_clear_credentials_and_pause_new_re
         );
         let error = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Translate this.",
                 "ja",
                 provider.context().unwrap(),
@@ -745,10 +741,7 @@ async fn terminal_plan_errors_do_not_retry_or_clear_credentials_and_pause_new_re
             .check_admission(&provider.context().unwrap(), 0)
             .unwrap_err();
         assert_eq!(suppressed.kind(), kind);
-        assert_eq!(
-            suppressed.notification(),
-            crate::providers::error::Notification::Suppress
-        );
+        assert_eq!(suppressed.notification(), Notification::Suppress);
         assert_eq!(suppressed.to_string(), error.to_string());
         assert!(error.to_string().contains("req-synthetic"));
         assert!(
@@ -758,10 +751,7 @@ async fn terminal_plan_errors_do_not_retry_or_clear_credentials_and_pause_new_re
         );
         assert!(
             provider
-                .admit(
-                    &provider.context().unwrap(),
-                    crate::providers::Intent::Automatic
-                )
+                .admit(&provider.context().unwrap(), Intent::Automatic)
                 .is_err()
         );
         assert_eq!(
@@ -783,18 +773,16 @@ async fn terminal_plan_errors_do_not_retry_or_clear_credentials_and_pause_new_re
         let context = provider.context().unwrap();
         assert_eq!(
             provider
-                .admit(&context, crate::providers::Intent::Automatic)
+                .admit(&context, Intent::Automatic)
                 .unwrap_err()
                 .kind(),
             kind
         );
         fixture.state.lock().unwrap().failure = None;
-        provider
-            .admit(&context, crate::providers::Intent::Explicit)
-            .unwrap();
+        provider.admit(&context, Intent::Explicit).unwrap();
         assert_eq!(
             provider
-                .admit(&context, crate::providers::Intent::Automatic)
+                .admit(&context, Intent::Automatic)
                 .unwrap_err()
                 .kind(),
             kind
@@ -811,9 +799,7 @@ async fn terminal_plan_errors_do_not_retry_or_clear_credentials_and_pause_new_re
             .unwrap();
         assert_eq!(translated.context, context);
         assert_eq!(response_calls(&fixture), 2);
-        provider
-            .admit(&context, crate::providers::Intent::Automatic)
-            .unwrap();
+        provider.admit(&context, Intent::Automatic).unwrap();
     }
 }
 
@@ -879,10 +865,7 @@ async fn failure_of_one_account_keeps_the_stop_of_another() {
             .push_back(failure);
         let error = automatic().await.err().unwrap();
         assert_eq!(error.kind(), kind);
-        assert_eq!(
-            error.notification(),
-            crate::providers::error::Notification::Show
-        );
+        assert_eq!(error.notification(), Notification::Show);
         assert_eq!(response_calls(&fixture), 2);
 
         activate(stopped).await;
@@ -923,8 +906,8 @@ async fn configured_model_is_sent_without_fallback() {
         let context = provider.context().unwrap();
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Retry only when the remote service reports a transient failure.",
                 "ja",
                 context.clone(),
@@ -944,17 +927,14 @@ async fn configured_model_is_sent_without_fallback() {
             assert_eq!(result.err().unwrap().kind(), ErrorKind::Configuration);
             assert!(
                 provider
-                    .admit(
-                        &provider.context().unwrap(),
-                        crate::providers::Intent::Automatic
-                    )
+                    .admit(&provider.context().unwrap(), Intent::Automatic)
                     .is_err()
             );
             assert_eq!(
                 provider
                     .translate(
-                        crate::providers::Intent::Automatic,
-                        crate::providers::Output::Range,
+                        Intent::Automatic,
+                        Output::Range,
                         "Translate this.",
                         "ja",
                         context
@@ -1002,8 +982,8 @@ async fn inference_redirects_are_not_followed_and_plain_errors_keep_detail() {
         );
         let result = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Translate this.",
                 "ja",
                 provider.context().unwrap(),
@@ -1037,7 +1017,7 @@ async fn responses_can_outlast_the_common_http_timeout_without_changing_oauth() 
     let mut auth = fixture.auth();
     fixture.connected(&auth, 3600).await;
     // Scale only the common client's limit down for this local fixture.
-    auth.http.client = reqwest::Client::builder()
+    auth.http.client = Client::builder()
         .timeout(Duration::from_millis(80))
         .build()
         .unwrap();
@@ -1063,8 +1043,8 @@ async fn responses_can_outlast_the_common_http_timeout_without_changing_oauth() 
     // Responses uses its own client; the worker will bound the total operation.
     let translated = provider
         .translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "Translate this.",
             "ja",
             provider.context().unwrap(),
@@ -1102,8 +1082,8 @@ async fn manual_selections_reach_http() {
     ] {
         let translated = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 body,
                 "ja",
                 provider.context().unwrap(),

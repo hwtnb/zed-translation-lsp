@@ -1,4 +1,5 @@
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
+use uuid::Uuid;
 
 pub(super) mod cache;
 pub(super) mod files;
@@ -23,7 +24,7 @@ impl<C> Preview<C> {
         note: Option<&'static str>,
     ) -> Self {
         Self {
-            id: uuid::Uuid::new_v4(),
+            id: Uuid::new_v4(),
             context,
             range,
             translation,
@@ -65,6 +66,10 @@ fn fenced_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use pulldown_cmark::{Event, Parser, Tag};
+
+    use crate::providers::chatgpt::test_support::Fixture;
+
     use super::*;
 
     #[test]
@@ -75,7 +80,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn header_and_rule_leave_both_provider_bodies_literal() {
-        let fixture = crate::providers::chatgpt::test_support::Fixture::new().await;
+        let fixture = Fixture::new().await;
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
         let source =
@@ -100,39 +105,31 @@ mod tests {
                 note.is_some()
             );
             assert!(content.value.ends_with(&fenced_text(source)));
-            let events: Vec<_> = pulldown_cmark::Parser::new(&content.value).collect();
+            let events: Vec<_> = Parser::new(&content.value).collect();
             assert_eq!(
                 events
                     .iter()
-                    .filter(|event| matches!(event, pulldown_cmark::Event::Rule))
+                    .filter(|event| matches!(event, Event::Rule))
                     .count(),
                 1
             );
             assert_eq!(
                 events
                     .iter()
-                    .filter(|event| matches!(
-                        event,
-                        pulldown_cmark::Event::Start(pulldown_cmark::Tag::BlockQuote(_))
-                    ))
+                    .filter(|event| matches!(event, Event::Start(Tag::BlockQuote(_))))
                     .count(),
                 1
             );
             assert_eq!(
                 events
                     .iter()
-                    .filter(|event| matches!(
-                        event,
-                        pulldown_cmark::Event::Start(pulldown_cmark::Tag::CodeBlock(_))
-                    ))
+                    .filter(|event| matches!(event, Event::Start(Tag::CodeBlock(_))))
                     .count(),
                 1
             );
             assert!(!events.iter().any(|event| matches!(
                 event,
-                pulldown_cmark::Event::Html(_)
-                    | pulldown_cmark::Event::InlineHtml(_)
-                    | pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { .. })
+                Event::Html(_) | Event::InlineHtml(_) | Event::Start(Tag::Image { .. })
             )));
         }
         assert!(fixture.state.lock().unwrap().records.is_empty());

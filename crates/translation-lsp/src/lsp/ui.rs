@@ -5,10 +5,12 @@ use std::{
 };
 
 use crossbeam_channel::Sender;
-use lsp_server::{Message, Request, RequestId, Response};
+use lsp_server::{Message, Notification, Request, RequestId, Response};
 use lsp_types::{ClientCapabilities, MessageType};
+use reqwest::Url;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 use crate::providers::{Interaction, error::Error};
 
@@ -105,9 +107,9 @@ impl Ui {
     /// Withdraws a request that is still waiting for its response.
     pub(super) fn cancel_request(&self, id: &RequestId) {
         if self.replies.lock().unwrap().remove(id).is_some() {
-            let _ = self.sender.send(
-                lsp_server::Notification::new("$/cancelRequest".into(), json!({"id": id})).into(),
-            );
+            let _ = self
+                .sender
+                .send(Notification::new("$/cancelRequest".into(), json!({"id": id})).into());
         }
     }
 
@@ -125,7 +127,7 @@ impl Ui {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, Error> {
-        let id = RequestId::from(format!("translation-ui-{}", uuid::Uuid::new_v4()));
+        let id = RequestId::from(format!("translation-ui-{}", Uuid::new_v4()));
         let (sender, reply) = oneshot::channel();
         self.replies
             .lock()
@@ -170,7 +172,7 @@ impl Ui {
     fn show_message(&self, kind: MessageType, message: &str) -> Result<(), Error> {
         self.sender
             .send(
-                lsp_server::Notification::new(
+                Notification::new(
                     "window/showMessage".into(),
                     json!({"type":kind,"message":message}),
                 )
@@ -206,7 +208,7 @@ impl Interaction for Ui {
             return Err(Error::failed("The editor must support window/showDocument"));
         }
         let unopened = || Error::failed("The editor could not open the file");
-        let uri = reqwest::Url::from_file_path(path).map_err(|_| unopened())?;
+        let uri = Url::from_file_path(path).map_err(|_| unopened())?;
         if !self.show_document(uri.as_str(), false).await? {
             return Err(unopened());
         }

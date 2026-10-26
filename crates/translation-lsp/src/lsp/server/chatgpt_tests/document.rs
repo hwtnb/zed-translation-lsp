@@ -1,4 +1,9 @@
 //! Tab translations and results shared between outputs.
+use std::{fs, sync::Arc};
+
+use reqwest::Url;
+use tokio::time::sleep;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -67,11 +72,11 @@ async fn document_pipeline_opens_large_translation_and_does_not_publish_oversize
                     _ => None,
                 })
                 .unwrap();
-            let path = reqwest::Url::parse(open.params["uri"].as_str().unwrap())
+            let path = Url::parse(open.params["uri"].as_str().unwrap())
                 .unwrap()
                 .to_file_path()
                 .unwrap();
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), translated);
+            assert_eq!(fs::read_to_string(&path).unwrap(), translated);
             drop(server);
             assert!(!path.exists());
         } else {
@@ -101,7 +106,7 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
         ..Default::default()
     };
     let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let target = range_target(&server, &uri, 0);
     server
@@ -121,7 +126,7 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
         server.scheduler.translations()[&ticket].execution_deadline(),
         Some(start + Duration::from_millis(1000))
     );
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
     server.expire(&connection).unwrap();
     assert!(server.scheduler.pending().is_empty());
     assert!(server.scheduler.translations()[&ticket].owners.tab());
@@ -161,7 +166,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
         ..Default::default()
     };
     let (fixture, mut server, connection, client, completions, uri) = range_server(settings).await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let target = range_target(&server, &uri, 0);
     server
@@ -179,7 +184,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
         .next()
         .unwrap()
         .execution_deadline();
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    sleep(Duration::from_millis(60)).await;
     server
         .queue(2.into(), target, PendingReply::Hover(Position::new(0, 4)))
         .unwrap();
@@ -193,7 +198,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
             .execution_deadline(),
         cap
     );
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    sleep(Duration::from_millis(120)).await;
     server.expire(&connection).unwrap();
     server
         .finish(&connection, next(&completions).await)

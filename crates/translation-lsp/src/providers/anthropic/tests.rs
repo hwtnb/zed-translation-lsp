@@ -1,6 +1,13 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
+use tokio::{net::TcpListener, time::timeout};
 
 use super::key::ApiKey;
 use super::test_support::{self, Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
@@ -397,7 +404,7 @@ async fn rate_limits_retry_once_after_a_bounded_numeric_delay() {
     let request = translate(&provider, Intent::Automatic);
     tokio::pin!(request);
     assert!(
-        tokio::time::timeout(Duration::from_millis(300), &mut request)
+        timeout(Duration::from_millis(300), &mut request)
             .await
             .is_err()
     );
@@ -435,16 +442,14 @@ async fn interrupted_responses_and_refused_connections_are_not_sent_again() {
         }
     }
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let api = format!("http://{}/v1", listener.local_addr().unwrap());
-    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connections = Arc::new(AtomicUsize::new(0));
     let accepted = connections.clone();
     let refusing = tokio::spawn(async move {
         loop {
             let (socket, _) = listener.accept().await.unwrap();
-            accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            accepted.fetch_add(1, Ordering::SeqCst);
             drop(socket);
         }
     });
@@ -453,7 +458,7 @@ async fn interrupted_responses_and_refused_connections_are_not_sent_again() {
     let error = translate(&provider, Intent::Automatic).await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Temporary);
     assert!(!error.retryable());
-    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
     // The short pause for automatic work still follows a network failure.
     assert_eq!(
         automatic(&provider).unwrap_err().kind(),
@@ -567,9 +572,7 @@ async fn key_stays_out_of_debug_output_and_network_errors() {
     assert!(!format!("{:?}", key.header).contains(KEY));
 
     let unused = {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         format!("http://{}/v1", listener.local_addr().unwrap())
     };
     let keys = KeyDirectory::with_key(KEY);

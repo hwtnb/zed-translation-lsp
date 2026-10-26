@@ -3,13 +3,15 @@ mod response;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
+use std::{env, mem, path::PathBuf};
 
 use key::{ApiKey, KeyFile, KeyId, terminal};
 use serde_json::json;
 
 #[cfg(test)]
-use crate::config::AnthropicEffort;
+use crate::config::{AnthropicEffort, limits::TranslationLimits};
 use crate::config::{AnthropicModel, anthropic_thinking, limits::SizeLimit};
 
 use super::{
@@ -118,7 +120,7 @@ impl AnthropicProvider {
     }
 
     #[cfg(test)]
-    pub fn synthetic(api: String, directory: &std::path::Path) -> Self {
+    pub fn synthetic(api: String, directory: &Path) -> Self {
         Self {
             api,
             terminal: Terminal::Synthetic(test_support::Terminal::default()),
@@ -133,7 +135,7 @@ impl AnthropicProvider {
                     None,
                 ),
                 "auto".into(),
-                crate::config::limits::TranslationLimits::default().output_kib,
+                TranslationLimits::default().output_kib,
                 Ok(directory.into()),
             )
             .unwrap()
@@ -155,7 +157,7 @@ impl AnthropicProvider {
     /// The notice names the command either way: the window may be on a machine
     /// the user is not sitting at.
     async fn open_terminal(&self) -> Result<String, Error> {
-        let executable = std::env::current_exe()
+        let executable = env::current_exe()
             .map_err(|_| Error::failed("Could not locate the language server executable"))?;
         let command = terminal::manual_command(&executable);
         let opened = match &self.terminal {
@@ -279,7 +281,7 @@ impl TranslationProvider for AnthropicProvider {
             .admission
             .retrying(&expected, intent, async || {
                 // The key may have been replaced or removed during the wait.
-                if std::mem::replace(&mut sent, true)
+                if mem::replace(&mut sent, true)
                     && let Err(error) = self.key_in_use(expected)
                 {
                     unsent = Some(error.clone());

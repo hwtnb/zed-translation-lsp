@@ -1,5 +1,8 @@
 use super::*;
-use crate::{config::limits::SizeSetting, providers::error::Notification as ErrorNotification};
+use crate::{
+    config::limits::SizeSetting,
+    providers::{Intent, error::Notification as ErrorNotification},
+};
 
 impl<P: TranslationProvider> Server<P> {
     pub(super) fn dispatch(&mut self) -> RequestResult<()> {
@@ -135,7 +138,7 @@ impl<P: TranslationProvider> Server<P> {
         let generation = if request.explicit() {
             Some(
                 self.provider
-                    .admit(context, crate::providers::Intent::Explicit)
+                    .admit(context, Intent::Explicit)
                     .map_err(provider_failure)?,
             )
         } else {
@@ -169,9 +172,9 @@ impl<P: TranslationProvider> Server<P> {
             ));
         }
         let intent = if request.explicit() {
-            crate::providers::Intent::Explicit
+            Intent::Explicit
         } else {
-            crate::providers::Intent::Automatic
+            Intent::Automatic
         };
         let generation = self
             .provider

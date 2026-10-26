@@ -1,3 +1,5 @@
+use crate::providers::Intent;
+
 use super::*;
 
 pub(super) struct Selection<C> {
@@ -109,10 +111,7 @@ impl<P: TranslationProvider> Server<P> {
             return;
         };
         if self.provider.context().ok().as_ref() != Some(&context)
-            || self
-                .provider
-                .admit(&context, crate::providers::Intent::Automatic)
-                .is_err()
+            || self.provider.admit(&context, Intent::Automatic).is_err()
         {
             return;
         }

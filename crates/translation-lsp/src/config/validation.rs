@@ -6,7 +6,10 @@
 //! without its value. The checks on the decoded settings cover ranges, text,
 //! and combinations.
 
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    de::{self, DeserializeOwned},
+};
 use serde_json::Value;
 
 use super::{
@@ -178,7 +181,7 @@ const SPEED: Choice = Choice {
 };
 
 impl Choice {
-    fn check<T: serde::de::DeserializeOwned>(
+    fn check<T: DeserializeOwned>(
         &self,
         provider: &Value,
         choices: &'static str,
@@ -208,7 +211,7 @@ impl Choice {
 /// format. Reject arrays before decoding, wherever they appear.
 fn reject_arrays(options: &Value) -> Result<(), ConfigError> {
     match options {
-        Value::Array(_) => Err(ConfigError::Decode(serde::de::Error::custom(
+        Value::Array(_) => Err(ConfigError::Decode(de::Error::custom(
             "settings do not take arrays",
         ))),
         Value::Object(fields) => fields.values().try_for_each(reject_arrays),

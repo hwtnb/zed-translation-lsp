@@ -1,10 +1,16 @@
 //! Several translations at once: HTTP slots, queues, and the credential store.
+use std::sync::{Arc, atomic::Ordering};
+
+use uuid::Uuid;
+
+use crate::providers::{Intent, Output};
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn two_http_translations_run_while_other_documents_stay_queued() {
     let fixture = Fixture::new().await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     {
         let mut state = fixture.state.lock().unwrap();
         state.response_mode = "delta_compact".into();
@@ -122,7 +128,7 @@ async fn two_http_translations_run_while_other_documents_stay_queued() {
             .count(),
         5
     );
-    assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(tail.peak.load(Ordering::SeqCst), 2);
     let replies: Vec<_> = client.receiver.try_iter().collect();
     assert_eq!(replies.len(), 6);
     assert!(replies.iter().all(
@@ -143,7 +149,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         "reopen",
     ] {
         let fixture = Fixture::new().await;
-        let tail = std::sync::Arc::new(StreamTailGate::default());
+        let tail = Arc::new(StreamTailGate::default());
         {
             let mut state = fixture.state.lock().unwrap();
             state.response_mode = "delta_compact".into();
@@ -173,7 +179,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
         parallel_hover(&mut server, 3, &uris[2]);
         assert_eq!(response_calls(&fixture), 2);
         // Later HTTP requests finish independently of the held initial streams.
-        let following = std::sync::Arc::new(StreamTailGate::default());
+        let following = Arc::new(StreamTailGate::default());
         fixture.state.lock().unwrap().stream_tail_gate = Some(following.clone());
         let queued = operation.ends_with("queued");
         let id = RequestId::from(if queued { 3 } else { 1 });
@@ -317,7 +323,7 @@ async fn parallel_retirement_refills_slots_without_caching_retired_work() {
 async fn parallel_account_change_and_shutdown_retire_all_jobs() {
     for operation in ["account-change", "shutdown"] {
         let fixture = Fixture::new().await;
-        let tail = std::sync::Arc::new(StreamTailGate::default());
+        let tail = Arc::new(StreamTailGate::default());
         {
             let mut state = fixture.state.lock().unwrap();
             state.response_mode = "delta_compact".into();
@@ -454,7 +460,7 @@ async fn cached_translation_survives_store_lock_but_not_reauthorization() {
         .registrations
         .get_mut(&registration)
         .unwrap()
-        .authorization_id = uuid::Uuid::new_v4();
+        .authorization_id = Uuid::new_v4();
     writer.save().unwrap();
     drop(writer);
     fixture.state.lock().unwrap().translation = Some("New authorization translation".into());
@@ -484,15 +490,15 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     let context = provider.context().unwrap();
     let (first, second) = tokio::join!(
         provider.translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "First source.",
             "ja",
             context.clone()
         ),
         provider.translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "Second source.",
             "ja",
             context
@@ -513,8 +519,8 @@ async fn concurrent_refresh_preserves_authorization_and_completes_both_requests(
     assert_eq!(response_calls(&fixture), 2);
     let retry = provider
         .translate(
-            crate::providers::Intent::Automatic,
-            crate::providers::Output::Range,
+            Intent::Automatic,
+            Output::Range,
             "Retry source.",
             "ja",
             provider.context().unwrap(),
@@ -538,7 +544,7 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
         "synthetic-model".into(),
     );
     for round in 0..10 {
-        let tail = std::sync::Arc::new(StreamTailGate::default());
+        let tail = Arc::new(StreamTailGate::default());
         fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
         let (connection, client) = Connection::memory();
         let (finished, completions) = bounded(WORKER_EVENT_CHANNEL_CAPACITY);
@@ -594,8 +600,8 @@ async fn fast_finishes_refill_slots_and_admit_new_work_without_read_lock_failure
 #[tokio::test(flavor = "current_thread")]
 async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
     let fixture = Fixture::new().await;
-    let invalid = std::sync::Arc::new(StreamTailGate::default());
-    let following = std::sync::Arc::new(StreamTailGate::default());
+    let invalid = Arc::new(StreamTailGate::default());
+    let following = Arc::new(StreamTailGate::default());
     {
         let mut state = fixture.state.lock().unwrap();
         state.response_mode = "item_without_completed".into();
@@ -676,7 +682,7 @@ async fn parallel_incomplete_streams_do_not_cache_and_release_slots() {
 #[tokio::test(flavor = "current_thread")]
 async fn canceled_queued_jobs_release_capacity_while_active_requests_keep_running() {
     let fixture = Fixture::new().await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let auth = fixture.auth();
     fixture.connected(&auth, 3600).await;

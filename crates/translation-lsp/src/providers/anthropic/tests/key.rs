@@ -1,12 +1,17 @@
 use std::{
-    fs,
+    env, fs, io,
     path::Path,
     pin::Pin,
+    process::Command,
+    str,
     sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, SystemTime},
 };
 
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::Semaphore,
+    time::{sleep, timeout},
+};
 
 use super::{PAUSED, automatic, translate};
 use crate::{
@@ -135,7 +140,7 @@ async fn empty_and_malformed_key_files_are_told_apart_without_showing_their_cont
         let message = refusal(&fixture, &directory.path).await;
         assert!(message.starts_with(expected), "{message}");
         assert!(message.ends_with(&format!("{MENU} to save the key")));
-        if let Ok(text) = std::str::from_utf8(&contents)
+        if let Ok(text) = str::from_utf8(&contents)
             && !text.trim().is_empty()
         {
             assert!(!message.contains(text.trim()));
@@ -218,7 +223,7 @@ async fn key_file_and_its_directory_must_be_private() {
 
     // Opening a named pipe waits for a writer, so it is refused before it is opened.
     let pipe = KeyDirectory::new();
-    let made = std::process::Command::new("mkfifo")
+    let made = Command::new("mkfifo")
         .args(["-m", "600"])
         .arg(pipe.file())
         .status()
@@ -235,7 +240,7 @@ fn unlocated_directory_and_read_failure_are_settings_errors() {
             "Anthropic API key file could not be located",
         ),
         (
-            CredentialError::io("inspect path", std::io::Error::other("synthetic failure")),
+            CredentialError::io("inspect path", io::Error::other("synthetic failure")),
             "Anthropic API key file could not be read.",
         ),
     ] {
@@ -261,7 +266,7 @@ fn rewrite(path: &Path, contents: &str) {
         .truncate(true)
         .open(path)
         .unwrap();
-    std::io::Write::write_all(&mut file, contents.as_bytes()).unwrap();
+    io::Write::write_all(&mut file, contents.as_bytes()).unwrap();
 }
 
 fn set_modified(path: &Path, time: SystemTime) {
@@ -547,12 +552,12 @@ async fn sent_while_pending<T>(
 ) {
     let arrival = async {
         while fixture.calls() < calls {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
         }
     };
     tokio::select! {
         _ = &mut pending => panic!("A held request must not complete"),
-        arrived = tokio::time::timeout(Duration::from_secs(30), arrival) => {
+        arrived = timeout(Duration::from_secs(30), arrival) => {
             arrived.expect("The request did not reach the fixture");
         }
     }
@@ -755,7 +760,7 @@ impl Interaction for Editor {
         panic!("The key commands open no page")
     }
 
-    async fn edit(&self, _path: &std::path::Path) -> Result<(), Error> {
+    async fn edit(&self, _path: &Path) -> Result<(), Error> {
         panic!("The key commands open no file")
     }
 
@@ -774,7 +779,7 @@ async fn saving_opens_a_terminal_for_this_executable_and_names_the_command_to_ru
     let terminal = Terminal::default();
     let provider = fixture.provider().with_terminal(terminal.clone());
     let editor = Editor::default();
-    let executable = std::env::current_exe().unwrap();
+    let executable = env::current_exe().unwrap();
     let command = terminal::manual_command(&executable);
     assert!(command.ends_with(" anthropic-key"), "{command}");
 
@@ -913,7 +918,7 @@ fn production(directory: &Path) -> AnthropicProvider {
 #[ignore = "child entry invoked by the environment test"]
 fn environment_child_process() {
     for name in VARIABLES {
-        assert_eq!(std::env::var(name).unwrap(), ENVIRONMENT_KEY);
+        assert_eq!(env::var(name).unwrap(), ENVIRONMENT_KEY);
     }
     let empty = KeyDirectory::new();
     let error = production(&empty.path).key.read().unwrap_err();
@@ -926,7 +931,7 @@ fn environment_child_process() {
 /// Environment variables belong to the whole process, so a child gets them.
 #[test]
 fn environment_variables_supply_no_key() {
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    let mut child = Command::new(env::current_exe().unwrap());
     child.args(["--ignored", "--exact", CHILD, "--nocapture"]);
     for name in VARIABLES {
         child.env(name, ENVIRONMENT_KEY);

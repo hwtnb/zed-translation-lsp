@@ -1,3 +1,4 @@
+use hyper::Response;
 use serde_json::{Value, json};
 
 use super::{PAUSED, SOURCE, automatic, translate};
@@ -803,7 +804,7 @@ async fn message_start_reports_the_served_speed_without_deciding_the_result() {
 }
 
 fn streamed(body: String) -> reqwest::Response {
-    hyper::Response::builder()
+    Response::builder()
         .status(200)
         .header("content-type", "text/event-stream")
         .body(body)

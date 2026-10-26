@@ -9,9 +9,11 @@
 #![cfg(unix)]
 
 use std::{
-    ffi::CString,
+    env,
+    ffi::{CStr, CString, OsStr},
     fs::{self, File},
     io::{self, Read, Write},
+    mem,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{
@@ -20,7 +22,7 @@ use std::{
             process::CommandExt,
         },
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Mutex,
@@ -29,6 +31,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use uuid::Uuid;
 
 const KEY: &str = "sk-ant-synthetic-typed-key";
 const PROMPT: &str = "Press Enter alone to cancel: ";
@@ -44,10 +48,7 @@ struct Home {
 
 impl Home {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "translation-lsp-key-command-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = env::temp_dir().join(format!("translation-lsp-key-command-{}", Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         Self { root }
     }
@@ -91,7 +92,7 @@ impl Drop for Home {
     }
 }
 
-fn mode(path: &std::path::Path) -> u32 {
+fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
@@ -154,7 +155,7 @@ impl Window {
                 assert_eq!(libc::unlockpt(descriptor), 0);
                 let name = libc::ptsname(descriptor);
                 assert!(!name.is_null());
-                CString::from(std::ffi::CStr::from_ptr(name))
+                CString::from(CStr::from_ptr(name))
             }
         };
         // The test never becomes a session leader, and asks not to get the
@@ -163,7 +164,7 @@ impl Window {
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY)
-            .open(std::ffi::OsStr::from_bytes(slave.to_bytes()))
+            .open(OsStr::from_bytes(slave.to_bytes()))
             .unwrap();
         // SAFETY: the closure runs in the child between `fork` and `exec`,
         // where only async-signal-safe functions may be called. `setsid` and
@@ -227,7 +228,7 @@ impl Window {
         // SAFETY: `termios` is plain data, so all zeros is a valid value, and
         // `tcgetattr` fills it for the open terminal that `master` refers to.
         let settings = unsafe {
-            let mut settings: libc::termios = std::mem::zeroed();
+            let mut settings: libc::termios = mem::zeroed();
             assert_eq!(libc::tcgetattr(self.master.as_raw_fd(), &mut settings), 0);
             settings
         };

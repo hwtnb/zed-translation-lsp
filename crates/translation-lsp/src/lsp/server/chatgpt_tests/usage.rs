@@ -1,4 +1,6 @@
 //! Pauses for usage limits and translations without a usable authorization.
+use crate::providers::Intent;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -83,10 +85,7 @@ async fn explicit_translation_recovers_from_usage_pause_through_worker() {
     assert!(server.cache.latest(&uri).is_some());
     assert_eq!(response_calls(&fixture), 2);
     provider
-        .admit(
-            &provider.context().unwrap(),
-            crate::providers::Intent::Automatic,
-        )
+        .admit(&provider.context().unwrap(), Intent::Automatic)
         .unwrap();
     assert!(server.hover(4.into(), hover()).unwrap().is_some());
     assert_eq!(response_calls(&fixture), 2);
@@ -269,9 +268,6 @@ async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_
     );
     server
         .provider
-        .admit(
-            &server.provider.context().unwrap(),
-            crate::providers::Intent::Automatic,
-        )
+        .admit(&server.provider.context().unwrap(), Intent::Automatic)
         .unwrap();
 }

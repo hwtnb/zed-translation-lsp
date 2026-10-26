@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io};
 
 #[derive(thiserror::Error)]
 pub(crate) enum CredentialError {
@@ -29,8 +29,8 @@ impl CredentialError {
     }
 }
 
-impl std::fmt::Debug for CredentialError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+impl fmt::Debug for CredentialError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }

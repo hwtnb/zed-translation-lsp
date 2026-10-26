@@ -11,6 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
@@ -160,9 +161,7 @@ impl AuthStore {
         loop {
             match lock.try_lock() {
                 Ok(()) => break,
-                Err(TryLockError::WouldBlock) => {
-                    tokio::time::sleep(Duration::from_millis(25)).await
-                }
+                Err(TryLockError::WouldBlock) => sleep(Duration::from_millis(25)).await,
                 Err(TryLockError::Error(source)) => {
                     return Err(CredentialError::io("lock", source));
                 }
@@ -258,12 +257,17 @@ pub(crate) fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs};
+
+    use tokio::time::timeout;
+
+    use crate::providers::{Intent, Output};
+
     use super::*;
-    use std::fs;
 
     #[tokio::test(flavor = "current_thread")]
     async fn read_only_snapshots_coexist_and_exclude_credential_writers() {
-        let directory = std::env::temp_dir().join(format!("zed-auth-readers-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-readers-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         let locked = store.lock(true).await.unwrap().unwrap();
         let revision = locked.save().unwrap();
@@ -272,7 +276,7 @@ mod tests {
         reader.try_lock_shared().unwrap();
         assert_eq!(store.snapshot().unwrap().unwrap().revision, revision);
         assert!(
-            tokio::time::timeout(Duration::from_millis(60), store.lock(false))
+            timeout(Duration::from_millis(60), store.lock(false))
                 .await
                 .is_err()
         );
@@ -290,8 +294,7 @@ mod tests {
         use crate::providers::{TranslationProvider, error::ErrorKind};
         let fixture = Fixture::new().await;
         fixture.state.lock().unwrap().response_mode = "delta_compact".into();
-        let directory =
-            std::env::temp_dir().join(format!("zed-auth-access-readers-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-access-readers-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         let auth = Auth::synthetic(
             store.clone(),
@@ -307,11 +310,11 @@ mod tests {
         let context = provider.context().unwrap();
         let reader = store.open_lock(false).unwrap().unwrap();
         reader.try_lock_shared().unwrap();
-        let translated = tokio::time::timeout(
+        let translated = timeout(
             Duration::from_secs(5),
             provider.translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Shared source.",
                 "ja",
                 context.clone(),
@@ -341,8 +344,8 @@ mod tests {
         drop(writer);
         let stale = provider
             .translate(
-                crate::providers::Intent::Automatic,
-                crate::providers::Output::Range,
+                Intent::Automatic,
+                Output::Range,
                 "Stale source.",
                 "ja",
                 context,
@@ -369,7 +372,7 @@ mod tests {
     async fn store_rejects_records_other_than_version_1() {
         use super::super::{auth::Auth, http::Http, test_support::Fixture};
         let fixture = Fixture::new().await;
-        let directory = std::env::temp_dir().join(format!("zed-auth-version-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-version-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         let auth = Auth::synthetic(
             store.clone(),
@@ -421,7 +424,7 @@ mod tests {
     async fn sign_out_clears_credentials_when_revocation_fails() {
         use super::super::{auth::Auth, http::Http, test_support::Fixture};
         let fixture = Fixture::new().await;
-        let directory = std::env::temp_dir().join(format!("zed-auth-signout-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-signout-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         let auth = Auth::synthetic(
             store.clone(),
@@ -450,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_is_lazy_atomic_and_lock_wait_is_cancellable() {
-        let directory = std::env::temp_dir().join(format!("zed-auth-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-{}", Uuid::new_v4()));
         let store = AuthStore::synthetic(directory.clone());
         assert!(store.snapshot().unwrap().is_none());
         assert!(!directory.exists());
@@ -459,7 +462,7 @@ mod tests {
         locked.save().unwrap();
         assert!(matches!(store.snapshot(), Err(CredentialError::Busy)));
         assert!(
-            tokio::time::timeout(Duration::from_millis(60), store.lock(false))
+            timeout(Duration::from_millis(60), store.lock(false))
                 .await
                 .is_err()
         );

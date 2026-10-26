@@ -1,7 +1,7 @@
 //! The provider in use while the settings choose none. It translates nothing
 //! and shows how to choose a provider.
 
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Interaction, ProviderCommand, Translated,
@@ -126,7 +126,7 @@ fn settings_file() -> Option<PathBuf> {
     #[cfg(windows)]
     let directory = dirs::config_dir()?.join("Zed");
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    let directory = std::env::var_os("FLATPAK_XDG_CONFIG_HOME")
+    let directory = env::var_os("FLATPAK_XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(dirs::config_dir)?
         .join("zed");

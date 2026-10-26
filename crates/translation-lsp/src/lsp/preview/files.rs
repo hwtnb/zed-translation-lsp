@@ -1,6 +1,7 @@
 use super::Preview;
 use std::{
     collections::HashMap,
+    env,
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -8,7 +9,9 @@ use std::{
 };
 
 use lsp_server::{ErrorCode, RequestId, Response, ResponseError};
+use reqwest::Url;
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::lsp::ui::{Purpose, Ui};
 
@@ -42,8 +45,7 @@ impl PreviewFiles {
 
     fn create(&mut self, text: &str, markdown: bool) -> Result<PathBuf, ResponseError> {
         let extension = if markdown { "md" } else { "txt" };
-        let directory =
-            std::env::temp_dir().join(format!("translation-lsp-{}", uuid::Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("translation-lsp-{}", Uuid::new_v4()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -66,9 +68,9 @@ impl PreviewFiles {
     }
 
     fn show(&mut self, ui: &Ui, path: &Path) -> Result<(), ResponseError> {
-        let uri = reqwest::Url::from_file_path(path)
-            .map_err(|_| failed("Could not open the translation path"))?;
-        let id = RequestId::from(format!("translation-document-{}", uuid::Uuid::new_v4()));
+        let uri =
+            Url::from_file_path(path).map_err(|_| failed("Could not open the translation path"))?;
+        let id = RequestId::from(format!("translation-document-{}", Uuid::new_v4()));
         ui.send_request(
             id.clone(),
             "window/showDocument",
@@ -162,18 +164,20 @@ impl Drop for PreviewFiles {
 #[cfg(test)]
 mod tests {
     use lsp_server::{Connection, Message};
+    use lsp_types::Range;
+    use reqwest::Url;
 
     use super::*;
 
     fn preview(text: &str) -> Preview<()> {
-        Preview::new((), lsp_types::Range::default(), text.into(), false, None)
+        Preview::new((), Range::default(), text.into(), false, None)
     }
 
     fn shown_path(client: &Connection) -> PathBuf {
         let Message::Request(request) = client.receiver.recv().unwrap() else {
             panic!("Expected showDocument")
         };
-        reqwest::Url::parse(request.params["uri"].as_str().unwrap())
+        Url::parse(request.params["uri"].as_str().unwrap())
             .unwrap()
             .to_file_path()
             .unwrap()

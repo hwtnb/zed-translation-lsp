@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, slice};
 
 use anyhow::Result;
 use clap::Parser;
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
             let output = output.unwrap_or_else(|| root.join("dist"));
             source::check()?;
             let source = source::Source::current(&target, allow_dirty)?;
-            let notices = notices::generate(std::slice::from_ref(&target))?;
+            let notices = notices::generate(slice::from_ref(&target))?;
             let path = archive::package(&target, &binary, &output, &source, notices)?;
             smoke::archive(&path)?;
             println!("{}", path.display());

@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -59,7 +59,7 @@ pub(crate) fn inspect(
 ) -> Result<Option<fs::Metadata>, CredentialError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(CredentialError::io("inspect path", source)),
     };
     let expected = if directory {

@@ -95,7 +95,9 @@ async fn program_that_is_not_installed_is_not_a_terminal() {
 
 #[cfg(unix)]
 mod started {
-    use std::os::unix::fs::PermissionsExt;
+    use std::{env, os::unix::fs::PermissionsExt};
+
+    use uuid::Uuid;
 
     use super::*;
 
@@ -108,10 +110,8 @@ mod started {
     }
 
     fn scratch() -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "translation-lsp-terminal-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let directory =
+            env::temp_dir().join(format!("translation-lsp-terminal-test-{}", Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         directory
     }
@@ -183,7 +183,7 @@ mod started {
     fn script_file_is_private_and_gone_once_it_has_run() {
         // `echo` stands for the executable: the script runs it with the command.
         let path = write_script(Path::new("/bin/echo")).unwrap();
-        assert_eq!(path.parent().unwrap(), std::env::temp_dir());
+        assert_eq!(path.parent().unwrap(), env::temp_dir());
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("translation-lsp-anthropic-key-") && name.ends_with(".command"));
         assert_eq!(

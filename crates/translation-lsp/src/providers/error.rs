@@ -2,7 +2,7 @@ pub(crate) mod credentials;
 
 use crate::config::error::SizeExceeded;
 use credentials::CredentialError;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
@@ -41,8 +41,8 @@ impl Service {
     }
 }
 
-impl std::fmt::Display for Service {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Service {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
@@ -64,8 +64,8 @@ enum Recovery {
     ExplicitTranslation,
 }
 
-impl std::fmt::Display for Recovery {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Recovery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::None => "",
             Self::ExplicitTranslation => ". Automatic translation is paused. After resolving the cause, run a selection or document translation to retry.",
@@ -162,8 +162,8 @@ pub(crate) struct RemoteError {
 
 impl std::error::Error for RemoteError {}
 
-impl std::fmt::Display for RemoteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} HTTP {}: {}", self.service, self.status, self.detail)?;
         for (name, value) in [
             (self.service.code_label(), &self.code),
@@ -295,8 +295,8 @@ impl Error {
 }
 
 /// Ordinary diagnostics must not dump credential/JSON/network source internals.
-impl std::fmt::Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Error")
             .field("kind", &self.kind())
             .field("message", &self.to_string())
@@ -311,8 +311,8 @@ pub(crate) enum TransportScope {
     Event,
 }
 
-impl std::fmt::Display for TransportScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for TransportScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Stream => "stream",
             Self::Event => "SSE event",
@@ -339,8 +339,10 @@ impl From<TransportExceeded> for Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::limits::SizeSetting;
+
     use super::*;
-    use std::error::Error as _;
+    use std::{error::Error as _, io};
 
     #[test]
     fn notification_policy_does_not_change_remote_cause_or_recovery() {
@@ -436,8 +438,8 @@ mod tests {
     fn credential_io_retains_native_cause_without_displaying_it() {
         let error: Error = CredentialError::io(
             "read credentials",
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
                 "synthetic-private-path-token",
             ),
         )
@@ -449,9 +451,9 @@ mod tests {
         let native = storage
             .source()
             .unwrap()
-            .downcast_ref::<std::io::Error>()
+            .downcast_ref::<io::Error>()
             .unwrap();
-        assert_eq!(native.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(native.kind(), io::ErrorKind::PermissionDenied);
         assert!(format!("{error}").contains("read credentials"));
         assert!(!format!("{error:?}").contains("synthetic-private-path-token"));
         assert!(!error.to_string().contains("synthetic-private-path-token"));
@@ -460,7 +462,7 @@ mod tests {
     #[test]
     fn output_limit_keeps_structured_sizes_across_provider_boundary() {
         let error: Error = SizeExceeded {
-            setting: crate::config::limits::SizeSetting::Output,
+            setting: SizeSetting::Output,
             actual_bytes: 1025,
             maximum_bytes: 1024,
         }

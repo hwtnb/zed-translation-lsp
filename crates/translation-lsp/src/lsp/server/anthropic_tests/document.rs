@@ -1,4 +1,7 @@
 //! How tab translations and range translations of one target share work.
+use std::fs;
+
+use reqwest::Url;
 use serde_json::{Value, json};
 
 use super::{actions, next, target};
@@ -203,11 +206,11 @@ fn opened(messages: &[Message]) -> Vec<String> {
         .iter()
         .filter_map(|message| match message {
             Message::Request(request) if request.method == "window/showDocument" => {
-                let path = reqwest::Url::parse(request.params["uri"].as_str().unwrap())
+                let path = Url::parse(request.params["uri"].as_str().unwrap())
                     .unwrap()
                     .to_file_path()
                     .unwrap();
-                Some(std::fs::read_to_string(path).unwrap())
+                Some(fs::read_to_string(path).unwrap())
             }
             _ => None,
         })

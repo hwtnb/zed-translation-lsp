@@ -2,6 +2,7 @@
 //! command. The window belongs to the terminal: the server gives it none of its
 //! own streams, and does not wait for what the user does there.
 use std::{
+    env,
     ffi::OsString,
     fs,
     io::{self, Write},
@@ -10,6 +11,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use tokio::time::sleep;
+use uuid::Uuid;
 
 use super::command::ARGUMENT;
 
@@ -110,9 +114,9 @@ pub(in crate::providers::anthropic) fn manual_command(executable: &Path) -> Stri
 
 fn write_script(executable: &Path) -> io::Result<PathBuf> {
     let text = script(executable.to_str().ok_or(io::ErrorKind::InvalidInput)?);
-    let path = std::env::temp_dir().join(format!(
+    let path = env::temp_dir().join(format!(
         "translation-lsp-anthropic-key-{}.command",
-        uuid::Uuid::new_v4()
+        Uuid::new_v4()
     ));
     let mut options = fs::OpenOptions::new();
     // A new file that only this user can change, under a name no one can guess.
@@ -165,7 +169,7 @@ async fn started(mut child: Child, grace: Duration) -> bool {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < deadline => tokio::time::sleep(POLL).await,
+            Ok(None) if Instant::now() < deadline => sleep(POLL).await,
             _ => break,
         }
     }

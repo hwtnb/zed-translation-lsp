@@ -1,6 +1,13 @@
-use super::{Capabilities, Translated, TranslationProvider, error::Error};
+use std::{env, time::Duration};
 
-use std::time::Duration;
+use tokio::time::sleep;
+
+use crate::{
+    config::Settings,
+    providers::{Intent, Output},
+};
+
+use super::{Capabilities, Translated, TranslationProvider, error::Error};
 
 #[derive(Clone, Default)]
 pub(crate) struct MockOptions {
@@ -10,7 +17,7 @@ pub(crate) struct MockOptions {
 }
 
 impl MockOptions {
-    pub fn apply_timeouts(&self, settings: &mut crate::config::Settings) {
+    pub fn apply_timeouts(&self, settings: &mut Settings) {
         if let Some(milliseconds) = self.timeout_ms {
             settings.hover_timeout_ms = milliseconds;
             settings.selection_timeout_ms = milliseconds;
@@ -20,7 +27,7 @@ impl MockOptions {
 
     pub fn from_args() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut options = Self::default();
-        let mut args = std::env::args().skip(1);
+        let mut args = env::args().skip(1);
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--stdio" => (),
@@ -92,13 +99,13 @@ impl TranslationProvider for MockProvider {
 
     async fn translate(
         &self,
-        _intent: crate::providers::Intent,
-        _output: crate::providers::Output,
+        _intent: Intent,
+        _output: Output,
         text: &str,
         target_language: &str,
         context: MockContext,
     ) -> Result<Translated<MockContext>, Error> {
-        tokio::time::sleep(self.options.delay).await;
+        sleep(self.options.delay).await;
         if self.options.fail {
             return Err(Error::failed("Simulated mock translation failure"));
         }
@@ -133,14 +140,16 @@ impl TranslationProvider for MockProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::providers::{Intent, Output};
+
     use super::*;
     #[tokio::test(flavor = "current_thread")]
     async fn arbitrary_text_is_not_presented_as_a_translation() {
         assert!(
             MockProvider::default()
                 .translate(
-                    crate::providers::Intent::Automatic,
-                    crate::providers::Output::Range,
+                    Intent::Automatic,
+                    Output::Range,
                     "Any text",
                     "ja",
                     MockContext
@@ -152,8 +161,8 @@ mod tests {
             assert!(
                 MockProvider::default()
                     .translate(
-                        crate::providers::Intent::Automatic,
-                        crate::providers::Output::Range,
+                        Intent::Automatic,
+                        Output::Range,
                         &text.replace('\n', "\r\n"),
                         "ja",
                         MockContext
@@ -165,8 +174,8 @@ mod tests {
         assert!(
             MockProvider::default()
                 .translate(
-                    crate::providers::Intent::Automatic,
-                    crate::providers::Output::Range,
+                    Intent::Automatic,
+                    Output::Range,
                     COMMENT_BODY,
                     "en",
                     MockContext

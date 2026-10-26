@@ -6,7 +6,7 @@ mod selection;
 mod translation;
 mod worker;
 
-use tokio::sync::mpsc as queue;
+use tokio::{runtime, sync::mpsc as queue};
 type JobSender<C> = queue::Sender<Job<C>>;
 type JobReceiver<C> = queue::Receiver<Job<C>>;
 use commands::ServerCommand;
@@ -44,6 +44,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 
+#[cfg(test)]
+use crate::providers::mock::MockContext;
 use crate::{
     config::{
         AnthropicModel, ChatgptModel, ProviderSettings, Settings, features::Feature, language,
@@ -236,7 +238,7 @@ fn serve(
 /// prompt left open holds up no account operation. An unanswered prompt waits
 /// until the process ends.
 fn prompt_setup(ui: Ui) -> ServerResult<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     thread::Builder::new()
@@ -374,10 +376,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
 
 impl Server<MockProvider> {
     #[cfg(test)]
-    fn new(
-        options: MockOptions,
-        finished: Sender<WorkerEvent<crate::providers::mock::MockContext>>,
-    ) -> ServerResult<Self> {
+    fn new(options: MockOptions, finished: Sender<WorkerEvent<MockContext>>) -> ServerResult<Self> {
         let mut settings = Settings::default();
         options.apply_timeouts(&mut settings);
         let (sender, _) = bounded(1);
@@ -413,7 +412,7 @@ impl<P: TranslationProvider> Server<P> {
     ) -> ServerResult<Self> {
         let (sender, jobs) = queue::channel(settings.translation_limits.work.concurrent);
         let (admin_sender, admin_jobs) = queue::channel(1);
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         let worker_provider = provider.clone();

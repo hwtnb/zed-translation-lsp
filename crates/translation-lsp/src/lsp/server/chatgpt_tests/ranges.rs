@@ -1,11 +1,15 @@
 //! Range work kept past its requests, comment Hover, and retries.
+use std::sync::{Arc, atomic::Ordering};
+
+use lsp_types::CodeActionContext;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation() {
     let (fixture, mut server, connection, client, completions, uri) =
         range_server(Settings::default()).await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let target = range_target(&server, &uri, 0);
     markdown_actions(&mut server, &uri, target.range);
@@ -52,7 +56,7 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
 async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_ticket() {
     let (fixture, mut server, connection, _client, completions, uri) =
         range_server(Settings::default()).await;
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     for line in [0, 2, 4] {
         let target = range_target(&server, &uri, line);
@@ -111,7 +115,7 @@ async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_para
                 .into(),
         ),
     );
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     let hover = |line| {
         parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":4}})).unwrap()
@@ -147,7 +151,7 @@ async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_para
         .cancel_actions(&CodeActionParams {
             text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
             range: Range::new(Position::new(0, 4), Position::new(0, 4)),
-            context: lsp_types::CodeActionContext::default(),
+            context: CodeActionContext::default(),
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         })
@@ -170,7 +174,7 @@ async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_para
             .unwrap();
     }
     assert_eq!(response_calls(&fixture), 3);
-    assert_eq!(tail.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(tail.peak.load(Ordering::SeqCst), 2);
     assert!(
         client.receiver.is_empty(),
         "Canceled responses and automatic completion must stay silent"
@@ -256,7 +260,7 @@ async fn retry_action_refreshes_failed_range_without_discarding_readable_transla
         arguments: retry.arguments.unwrap(),
         work_done_progress_params: Default::default(),
     };
-    let tail = std::sync::Arc::new(StreamTailGate::default());
+    let tail = Arc::new(StreamTailGate::default());
     fixture.state.lock().unwrap().stream_tail_gate = Some(tail.clone());
     server
         .execute_command(&connection, 1.into(), params.clone())

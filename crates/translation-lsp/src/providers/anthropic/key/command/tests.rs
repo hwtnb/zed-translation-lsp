@@ -3,7 +3,10 @@ use std::{collections::VecDeque, fs, io, path::Path};
 use super::*;
 use crate::providers::{
     Intent, Output, TranslationProvider,
-    anthropic::test_support::{Fixture, KEY, KeyDirectory},
+    anthropic::{
+        AnthropicProvider,
+        test_support::{Fixture, KEY, KeyDirectory},
+    },
 };
 
 const NEW_KEY: &str = "sk-ant-synthetic-entered-key";
@@ -79,10 +82,7 @@ async fn entered_key_is_saved_privately_and_sent_with_the_next_request() {
     let parent = KeyDirectory::new();
     // The credential directory does not exist before the first key is saved.
     let directory = parent.path.join("translation-lsp");
-    let provider = crate::providers::anthropic::AnthropicProvider::synthetic(
-        format!("{}/v1", fixture.base),
-        &directory,
-    );
+    let provider = AnthropicProvider::synthetic(format!("{}/v1", fixture.base), &directory);
     assert!(provider.context().is_err());
 
     let (saved, console) = Typed::run(&[&format!("  {NEW_KEY} ")], &directory);
@@ -245,7 +245,10 @@ fn unlocated_directory_and_wrong_kinds_are_refused_before_the_key_is_asked_for()
 #[cfg(unix)]
 #[test]
 fn loose_directory_symbolic_links_and_named_pipe_are_refused_and_left_alone() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::{
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+    };
 
     let loose = KeyDirectory::with_key(KEY);
     fs::set_permissions(&loose.path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -270,7 +273,7 @@ fn loose_directory_symbolic_links_and_named_pipe_are_refused_and_left_alone() {
     assert_eq!(target.names(), ["anthropic-api-key"]);
 
     let pipe = KeyDirectory::new();
-    let made = std::process::Command::new("mkfifo")
+    let made = Command::new("mkfifo")
         .args(["-m", "600"])
         .arg(pipe.file())
         .status()

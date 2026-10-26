@@ -1,3 +1,5 @@
+use crate::providers::Intent;
+
 use super::*;
 
 pub(super) struct Pending {
@@ -381,7 +383,7 @@ impl<C> Scheduler<C> {
         work.owners.add(&request, work.is_comment);
         if let Some(Task::Translation { intent, output, .. }) = work.task.as_mut() {
             if request.explicit() {
-                *intent = crate::providers::Intent::Explicit;
+                *intent = Intent::Explicit;
             }
             // A tab that joins before sending asks for its own output.
             if request.output() == Output::Document {
@@ -525,7 +527,7 @@ impl<C> Scheduler<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::mock::MockContext;
+    use crate::providers::{Intent, mock::MockContext};
 
     fn add(
         s: &mut Scheduler<MockContext>,
@@ -545,7 +547,7 @@ mod tests {
             target_language: "ja".into(),
         };
         let task = Task::Translation {
-            intent: crate::providers::Intent::Explicit,
+            intent: Intent::Explicit,
             output: Output::Range,
             generation: 0,
             text: "source".into(),
@@ -699,7 +701,7 @@ mod tests {
 #[cfg(test)]
 mod shared_outputs_tests {
     use super::*;
-    use crate::providers::mock::MockContext;
+    use crate::providers::{Intent, mock::MockContext};
 
     #[test]
     fn a_tab_subscriber_shares_a_running_range_without_another_slot() {
@@ -716,7 +718,7 @@ mod shared_outputs_tests {
                 target_language: "ja".into(),
             };
             let task = Task::Translation {
-                intent: crate::providers::Intent::Explicit,
+                intent: Intent::Explicit,
                 output: Output::Range,
                 generation: 0,
                 text: "source".into(),
@@ -765,8 +767,10 @@ mod shared_outputs_tests {
 
 #[cfg(test)]
 mod separate_outputs_tests {
+    use std::iter;
+
     use super::*;
-    use crate::providers::anthropic::key::KeyId;
+    use crate::providers::{Intent, anthropic::key::KeyId};
 
     fn settings(separate: bool) -> Settings {
         let mut provider = serde_json::json!({"name": "anthropic"});
@@ -799,7 +803,7 @@ mod separate_outputs_tests {
         now: Instant,
     ) {
         let task = Task::Translation {
-            intent: crate::providers::Intent::Explicit,
+            intent: Intent::Explicit,
             output: request.output(),
             generation: 0,
             text: "source".into(),
@@ -869,7 +873,7 @@ mod separate_outputs_tests {
             now,
         );
         scheduler.dispatch(&jobs, &separate, now).unwrap();
-        let dispatched: Vec<_> = std::iter::from_fn(|| received.try_recv().ok())
+        let dispatched: Vec<_> = iter::from_fn(|| received.try_recv().ok())
             .map(|job| (job.ticket, matches!(job.task, Task::Translation { output, .. } if output == Output::Document)))
             .collect();
         assert_eq!(dispatched, [(1, true), (2, false)]);
@@ -979,7 +983,7 @@ mod separate_outputs_tests {
         scheduler.terminated(1);
         scheduler.terminated(2);
         scheduler.dispatch(&jobs, &shared, now).unwrap();
-        let outputs: Vec<_> = std::iter::from_fn(|| received.try_recv().ok())
+        let outputs: Vec<_> = iter::from_fn(|| received.try_recv().ok())
             .map(|job| match job.task {
                 Task::Translation { output, .. } => (job.ticket, output),
                 _ => panic!("Expected a translation"),

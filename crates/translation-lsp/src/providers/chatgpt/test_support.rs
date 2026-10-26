@@ -3,32 +3,47 @@
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
-    sync::{Arc, Mutex},
+    env, io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
-    body::{Bytes, Frame},
+    Response,
+    body::{Bytes, Frame, Incoming},
+    server::conn::http1,
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
+use lsp_server::{Connection, Message};
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, Nonce, PkceCodeChallenge,
-    PkceCodeVerifier, PrivateSigningKey, StandardClaims, SubjectIdentifier, core::*,
+    Audience, ClaimsVerificationError, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl,
+    Nonce, PkceCodeChallenge, PkceCodeVerifier, PrivateSigningKey, StandardClaims,
+    SubjectIdentifier,
+    core::*,
+    url::{Url, form_urlencoded},
 };
+use reqwest::Client;
 use serde_json::{Value, json};
 use tokio::{
     net::TcpListener,
     sync::Notify,
-    task::{JoinHandle, JoinSet},
+    task::{JoinHandle, JoinSet, spawn_blocking, yield_now},
+    time::{sleep, timeout},
 };
 use uuid::Uuid;
 
-use crate::lsp::ui::{Ui, UiCapabilities};
+use crate::{
+    lsp::ui::{Ui, UiCapabilities},
+    providers::{error, prompt},
+};
 
 use super::{
     auth::Auth,
@@ -47,15 +62,14 @@ pub(crate) struct Record {
 pub(crate) struct StreamTailGate {
     pub reached: Notify,
     pub release: Notify,
-    pub held: std::sync::atomic::AtomicUsize,
-    pub peak: std::sync::atomic::AtomicUsize,
+    pub held: AtomicUsize,
+    pub peak: AtomicUsize,
 }
 
 struct HeldTail(Arc<StreamTailGate>);
 
 impl HeldTail {
     fn new(gate: Arc<StreamTailGate>) -> Self {
-        use std::sync::atomic::Ordering;
         let held = gate.held.fetch_add(1, Ordering::SeqCst) + 1;
         gate.peak.fetch_max(held, Ordering::SeqCst);
         gate.reached.notify_one();
@@ -65,9 +79,7 @@ impl HeldTail {
 
 impl Drop for HeldTail {
     fn drop(&mut self) {
-        self.0
-            .held
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.held.fetch_sub(1, Ordering::SeqCst);
         self.0.reached.notify_one();
     }
 }
@@ -86,7 +98,7 @@ pub(crate) struct FixtureState {
     pub retry_after: Option<String>,
     pub direct: bool,
     pub delay: Duration,
-    pub token_release: Option<Arc<tokio::sync::Notify>>,
+    pub token_release: Option<Arc<Notify>>,
     pub stream_tail_delay: Duration,
     pub stream_tail_gate: Option<Arc<StreamTailGate>>,
     /// Cut this many successful streams halfway by closing the connection.
@@ -141,7 +153,7 @@ impl Fixture {
                             let service = service_fn(move |request| {
                                 endpoint(request, base.clone(), state.clone())
                             });
-                            let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
+                            let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), service).await;
                         });
                     }
                     Some(_) = connections.join_next(), if !connections.is_empty() => (),
@@ -152,7 +164,7 @@ impl Fixture {
     }
 
     pub fn auth(&self) -> Auth {
-        let directory = std::env::temp_dir().join(format!("zed-auth-synthetic-{}", Uuid::new_v4()));
+        let directory = env::temp_dir().join(format!("zed-auth-synthetic-{}", Uuid::new_v4()));
         Auth::synthetic(
             AuthStore::synthetic(directory),
             Http::synthetic_revocation(&self.base),
@@ -207,8 +219,8 @@ impl Fixture {
         auth: &Auth,
         selected: Option<Uuid>,
         enable: bool,
-    ) -> Result<String, crate::providers::error::Error> {
-        let (connection, client) = lsp_server::Connection::memory();
+    ) -> Result<String, error::Error> {
+        let (connection, client) = Connection::memory();
         let ui = Ui::new(
             connection.sender.clone(),
             UiCapabilities {
@@ -219,7 +231,7 @@ impl Fixture {
         let ui_driver = ui.clone();
         let state = self.state.clone();
         let browser = async move {
-            let request = tokio::task::spawn_blocking(move || {
+            let request = spawn_blocking(move || {
                 client
                     .receiver
                     .recv_timeout(Duration::from_secs(3))
@@ -227,13 +239,12 @@ impl Fixture {
             })
             .await
             .unwrap();
-            let lsp_server::Message::Request(request) = request else {
+            let Message::Request(request) = request else {
                 panic!("Expected external showDocument");
             };
             assert_eq!(request.method, "window/showDocument");
             assert_eq!(request.params["external"], true);
-            let url =
-                openidconnect::url::Url::parse(request.params["uri"].as_str().unwrap()).unwrap();
+            let url = Url::parse(request.params["uri"].as_str().unwrap()).unwrap();
             let query: HashMap<String, String> = url
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -270,7 +281,7 @@ impl Fixture {
                 request.id,
                 json!({"success":true}),
             ));
-            let mut callback = openidconnect::url::Url::parse(&query["redirect_uri"]).unwrap();
+            let mut callback = Url::parse(&query["redirect_uri"]).unwrap();
             let mode = state.lock().unwrap().mode.clone();
             callback.query_pairs_mut().append_pair(
                 "state",
@@ -304,7 +315,7 @@ impl Fixture {
                         .append_pair("code", "duplicate-code");
                 }
             }
-            let response = reqwest::Client::new().get(callback).send().await.unwrap();
+            let response = Client::new().get(callback).send().await.unwrap();
             assert_eq!(
                 response.status().as_u16(),
                 if matches!(
@@ -322,10 +333,10 @@ impl Fixture {
             );
         };
         let attempt = async {
-            tokio::time::timeout(Duration::from_secs(1), auth.connect(&ui, selected, enable))
+            timeout(Duration::from_secs(1), auth.connect(&ui, selected, enable))
                 .await
                 .unwrap_or_else(|_| {
-                    Err(crate::providers::error::Error::failed(
+                    Err(error::Error::failed(
                         "Synthetic callback was rejected and the attempt was cancelled",
                     ))
                 })
@@ -412,7 +423,7 @@ fn signed_token(
 async fn fixture_keys_are_distinct_and_jwks_verify_only_their_own_tokens() {
     let first = Fixture::new().await;
     let second = Fixture::new().await;
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let first_jwks: Value = client
         .get(format!("{}/jwks", first.base))
         .send()
@@ -432,7 +443,7 @@ async fn fixture_keys_are_distinct_and_jwks_verify_only_their_own_tokens() {
     assert_ne!(first_jwks, second_jwks);
     let verifier = |jwks| {
         CoreIdTokenVerifier::new_public_client(
-            openidconnect::ClientId::new("oaiapp_synthetic".into()),
+            ClientId::new("oaiapp_synthetic".into()),
             IssuerUrl::new(first.base.clone()).unwrap(),
             serde_json::from_value(jwks).unwrap(),
         )
@@ -449,7 +460,7 @@ async fn fixture_keys_are_distinct_and_jwks_verify_only_their_own_tokens() {
         assert!(token.claims(&own, &nonce).is_ok());
         assert!(matches!(
             token.claims(&other, &nonce),
-            Err(openidconnect::ClaimsVerificationError::SignatureVerification(_))
+            Err(ClaimsVerificationError::SignatureVerification(_))
         ));
     }
     let after: Value = client
@@ -674,10 +685,10 @@ fn response_stream(mode: &str, text: &str, model: &str) -> String {
 }
 
 async fn endpoint(
-    request: hyper::Request<hyper::body::Incoming>,
+    request: hyper::Request<Incoming>,
     base: String,
     shared: Arc<Mutex<FixtureState>>,
-) -> Result<hyper::Response<BoxBody<Bytes, std::io::Error>>, Infallible> {
+) -> Result<hyper::Response<BoxBody<Bytes, io::Error>>, Infallible> {
     let path = request.uri().path().to_owned();
     let authorization = request
         .headers()
@@ -697,7 +708,7 @@ async fn endpoint(
         state.delay
     };
     if path == "/v1/responses" || path == "/token" {
-        tokio::time::sleep(delay).await;
+        sleep(delay).await;
     }
     let token_release = (path == "/token")
         .then(|| shared.lock().unwrap().token_release.clone())
@@ -711,7 +722,7 @@ async fn endpoint(
         "/.well-known/openid-configuration" => (200, "application/json", json!({"issuer":base,"authorization_endpoint":format!("{base}/authorize"),"token_endpoint":format!("{base}/token"),"jwks_uri":format!("{base}/jwks"),"revocation_endpoint":format!("{}/revoke",base.replacen("http:","https:",1)),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["EdDSA"]}).to_string()),
         "/jwks" => (200, "application/json", json!({"keys":[signing_key.as_verification_key()]}).to_string()),
         "/token" => {
-            let form: HashMap<String, String> = openidconnect::url::form_urlencoded::parse(body.as_bytes()).map(|(key,value)| (key.into_owned(),value.into_owned())).collect();
+            let form: HashMap<String, String> = form_urlencoded::parse(body.as_bytes()).map(|(key,value)| (key.into_owned(),value.into_owned())).collect();
             assert_eq!(form["resource"], "https://api.openai.com/v1");
             assert_eq!(form["client_id"], "oaiapp_synthetic");
             assert!(!form.contains_key("client_secret"));
@@ -754,7 +765,7 @@ async fn endpoint(
                 for field in ["temperature","max_output_tokens","previous_response_id","tools","prompt"] { assert!(request.get(field).is_none()); }
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
                 assert!(request.get("text").is_none());
-                let mut text = state.translation.clone().unwrap_or_else(|| format!("訳{}", crate::providers::prompt::source(request["input"][0]["content"].as_str().unwrap())));
+                let mut text = state.translation.clone().unwrap_or_else(|| format!("訳{}", prompt::source(request["input"][0]["content"].as_str().unwrap())));
                 match state.response_mode.as_str() {
                     "empty_text" => text.clear(),
                     "output_limit" | "compact_output_limit" => text = "字".repeat(64*1024),
@@ -776,7 +787,7 @@ async fn endpoint(
         }
         _ => (404,"text/plain","unknown synthetic endpoint".into()),
     };
-    let mut response = hyper::Response::builder();
+    let mut response = Response::builder();
     if (300..400).contains(&status) {
         response = response.header("location", format!("{base}/v1/responses"));
     }
@@ -791,26 +802,24 @@ async fn endpoint(
     let body = if interrupted {
         state.interrupted_streams -= 1;
         let partial = Bytes::copy_from_slice(&result.as_bytes()[..result.len() / 2]);
-        let frames = futures_util::stream::once(async move { Ok(Frame::data(partial)) }).chain(
-            futures_util::stream::once(async {
+        let frames =
+            stream::once(async move { Ok(Frame::data(partial)) }).chain(stream::once(async {
                 // Let the server flush the status and body before the connection drops.
-                tokio::task::yield_now().await;
-                Err(std::io::Error::other("synthetic connection loss"))
-            }),
-        );
+                yield_now().await;
+                Err(io::Error::other("synthetic connection loss"))
+            }));
         BodyExt::boxed(StreamBody::new(frames))
     } else if path == "/v1/responses" && (!tail_delay.is_zero() || tail_gate.is_some()) {
-        let frames = futures_util::stream::once(async move {
-            Ok::<_, std::io::Error>(Frame::data(Bytes::from(result)))
-        })
-        .chain(futures_util::stream::once(async move {
-            if let Some(gate) = tail_gate {
-                let _held = HeldTail::new(gate.clone());
-                gate.release.notified().await;
-            }
-            tokio::time::sleep(tail_delay).await;
-            Ok::<_, std::io::Error>(Frame::data(Bytes::new()))
-        }));
+        let frames =
+            stream::once(async move { Ok::<_, io::Error>(Frame::data(Bytes::from(result))) })
+                .chain(stream::once(async move {
+                    if let Some(gate) = tail_gate {
+                        let _held = HeldTail::new(gate.clone());
+                        gate.release.notified().await;
+                    }
+                    sleep(tail_delay).await;
+                    Ok::<_, io::Error>(Frame::data(Bytes::new()))
+                }));
         BodyExt::boxed(StreamBody::new(frames))
     } else {
         Full::new(Bytes::from(result))

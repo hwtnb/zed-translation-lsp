@@ -1,4 +1,13 @@
 //! What the worker does with deadlines, cancellation, and failed streams.
+use std::sync::Arc;
+
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep_until, timeout},
+};
+
+use crate::providers::Intent;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -22,7 +31,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
             ticket: 1,
             deadline,
             task: Task::Translation {
-                intent: crate::providers::Intent::Automatic,
+                intent: Intent::Automatic,
                 output: Output::Range,
                 generation: 0,
                 text: "Read this.".into(),
@@ -33,15 +42,13 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
         let running = run_job(job, &finished, &provider);
         tokio::pin!(running);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut running)
+            timeout(Duration::from_millis(100), &mut running)
                 .await
                 .is_err()
         );
         assert_eq!(response_calls(&fixture), 1);
         stop.send_replace(if cancel { None } else { Some(Instant::now()) });
-        tokio::time::timeout(Duration::from_secs(1), &mut running)
-            .await
-            .unwrap();
+        timeout(Duration::from_secs(1), &mut running).await.unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
             WorkerEvent::Started(1)
@@ -247,10 +254,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
         if mode == "compact_late_failed" {
             assert!(
                 provider
-                    .admit(
-                        &provider.context().unwrap(),
-                        crate::providers::Intent::Automatic
-                    )
+                    .admit(&provider.context().unwrap(), Intent::Automatic)
                     .is_err()
             );
             assert_eq!(
@@ -308,7 +312,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
 async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
     for operation in ["cancel", "deadline", "edit", "shutdown"] {
         let fixture = Fixture::new().await;
-        let tail = std::sync::Arc::new(StreamTailGate::default());
+        let tail = Arc::new(StreamTailGate::default());
         {
             let mut state = fixture.state.lock().unwrap();
             state.response_mode = "delta_compact".into();
@@ -359,7 +363,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
         let ticket = server.scheduler.pending()[&1.into()].ticket;
         let started = {
             let completions = completions.clone();
-            tokio::task::spawn_blocking(move || completions.recv_timeout(Duration::from_secs(3)))
+            spawn_blocking(move || completions.recv_timeout(Duration::from_secs(3)))
                 .await
                 .unwrap()
                 .unwrap()
@@ -415,7 +419,7 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
                     Some(execution_deadline)
                 );
                 // Expiry holds at any time after the deadline, however late this runs.
-                tokio::time::sleep_until(execution_deadline.into()).await;
+                sleep_until(execution_deadline.into()).await;
                 server.expire(&connection).unwrap();
             }
             "edit" => {

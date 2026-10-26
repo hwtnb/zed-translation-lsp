@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use super::*;
 use crate::providers::{
     chatgpt::{
@@ -7,6 +9,10 @@ use crate::providers::{
     prompt,
 };
 use serde_json::json;
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 
 mod account;
 mod activity;
@@ -211,7 +217,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             server.expire(&connection).unwrap();
             assert!(server.scheduler.translations().is_empty());
             assert!(fixture.state.lock().unwrap().records.is_empty());
-            tokio::time::sleep(Duration::from_millis(110)).await;
+            sleep(Duration::from_millis(110)).await;
             server.expire(&connection).unwrap();
             server
                 .finish(&connection, next(&completions).await)
@@ -228,7 +234,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             );
         } else {
             assert!(server.selection.is_none());
-            tokio::time::sleep(Duration::from_millis(110)).await;
+            sleep(Duration::from_millis(110)).await;
             markdown_actions(&mut server, &uri, range);
             server.expire(&connection).unwrap();
             assert!(
@@ -327,7 +333,7 @@ async fn next(
     receiver: &crossbeam_channel::Receiver<WorkerEvent<AccountKey>>,
 ) -> Finished<AccountKey> {
     let receiver = receiver.clone();
-    tokio::task::spawn_blocking(move || {
+    spawn_blocking(move || {
         loop {
             if let WorkerEvent::Finished(completion) =
                 receiver.recv_timeout(Duration::from_secs(3)).unwrap()
@@ -341,8 +347,8 @@ async fn next(
 }
 
 async fn wait_held(tail: &StreamTailGate, count: usize) {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while tail.held.load(std::sync::atomic::Ordering::SeqCst) != count {
+    timeout(Duration::from_secs(2), async {
+        while tail.held.load(Ordering::SeqCst) != count {
             tail.reached.notified().await;
         }
     })
@@ -350,7 +356,7 @@ async fn wait_held(tail: &StreamTailGate, count: usize) {
     .unwrap_or_else(|_| {
         panic!(
             "Expected {count} held HTTP responses; observed {}",
-            tail.held.load(std::sync::atomic::Ordering::SeqCst)
+            tail.held.load(Ordering::SeqCst)
         )
     });
 }
@@ -536,7 +542,7 @@ fn markdown_actions(
 
 async fn protocol_message(client: &Connection) -> Message {
     let receiver = client.receiver.clone();
-    tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+    spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(3)).unwrap())
         .await
         .unwrap()
 }

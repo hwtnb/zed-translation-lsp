@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use serde::Deserialize;
 
@@ -34,8 +34,8 @@ impl Feature {
     }
 }
 
-impl std::fmt::Display for Feature {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Feature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::CommentHover => "comment_hover",
             Self::AutomaticSelection => "automatic_selection",

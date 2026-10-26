@@ -1,14 +1,17 @@
 use super::*;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    env, process,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 fn root() -> Staging {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let base = std::env::temp_dir();
+    let base = env::temp_dir();
     Staging::new(
         &base,
         &format!(
             "translation-install-test-{}-{}",
-            std::process::id(),
+            process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ),
     )

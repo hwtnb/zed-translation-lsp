@@ -1,8 +1,12 @@
-use std::time::{Duration, Instant};
+use std::{
+    mem,
+    time::{Duration, Instant},
+};
 
-use lsp_server::{RequestId, Response};
+use lsp_server::{Notification, RequestId, Response};
 use lsp_types::ProgressToken;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::ui::{Purpose, Ui, UiCapabilities};
 
@@ -144,7 +148,7 @@ impl Activity {
             self.generation += 1;
         }
         self.work = work;
-        let progress = std::mem::replace(&mut self.progress, Progress::Idle);
+        let progress = mem::replace(&mut self.progress, Progress::Idle);
         self.progress = match progress {
             Progress::Registered { token, generation } => {
                 if work.busy() && generation == self.generation {
@@ -193,7 +197,7 @@ impl Activity {
             && self.capabilities.work_done_progress
             && matches!(self.progress, Progress::Idle)
         {
-            let identity = format!("translation-progress-{}", uuid::Uuid::new_v4());
+            let identity = format!("translation-progress-{}", Uuid::new_v4());
             let id = RequestId::from(identity.clone());
             let token = ProgressToken::String(identity);
             let _ = self.ui.send_request(
@@ -212,7 +216,7 @@ impl Activity {
     }
 
     pub fn shutdown(&mut self) {
-        match std::mem::replace(&mut self.progress, Progress::Idle) {
+        match mem::replace(&mut self.progress, Progress::Idle) {
             Progress::Visible { token, .. } => self.end(&token),
             Progress::Registered { token, .. } => {
                 self.begin(&token, None);
@@ -267,7 +271,7 @@ impl Activity {
         let _ = self
             .ui
             .sender
-            .send(lsp_server::Notification::new(method.into(), params).into());
+            .send(Notification::new(method.into(), params).into());
     }
 }
 

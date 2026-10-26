@@ -1,5 +1,7 @@
-use eventsource_stream::{Event, Eventsource};
-use futures_util::StreamExt;
+use std::mem;
+
+use eventsource_stream::{Event, EventStreamError, Eventsource};
+use futures_util::{StreamExt, stream};
 
 use super::{
     error::{Error, Service, TransportExceeded, TransportScope},
@@ -93,7 +95,7 @@ pub(crate) async fn read_events(
     {
         // eventsource-stream reparses incomplete lines on every chunk. Feed whole
         // lines so large completed-output snapshots are parsed only once.
-        let lines = futures_util::stream::try_unfold(
+        let lines = stream::try_unfold(
             (response.bytes_stream(), Vec::new(), &mut raw),
             |(mut source, mut pending, raw)| async move {
                 loop {
@@ -101,7 +103,7 @@ pub(crate) async fn read_events(
                         return if pending.is_empty() {
                             Ok(None)
                         } else {
-                            Ok(Some((std::mem::take(&mut pending), (source, pending, raw))))
+                            Ok(Some((mem::take(&mut pending), (source, pending, raw))))
                         };
                     };
                     let chunk = chunk.map_err(network_error(service))?;
@@ -112,7 +114,7 @@ pub(crate) async fn read_events(
                         let split = pending.len() - chunk.len() + end + 1;
                         let tail = pending.split_off(split);
                         return Ok(Some((
-                            std::mem::replace(&mut pending, tail),
+                            mem::replace(&mut pending, tail),
                             (source, pending, raw),
                         )));
                     }
@@ -123,7 +125,7 @@ pub(crate) async fn read_events(
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
             let event = event.map_err(|error| match error {
-                eventsource_stream::EventStreamError::Transport(error) => error,
+                EventStreamError::Transport(error) => error,
                 _ => Error::protocol(service, "SSE stream is invalid or truncated"),
             })?;
             accept(event)?;

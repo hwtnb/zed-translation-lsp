@@ -1,6 +1,9 @@
 use super::{Error, SizeLimit, SizeSetting};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    mem,
+};
 
 #[derive(Default)]
 pub(super) struct Output {
@@ -116,7 +119,7 @@ impl Output {
             }
         }
         if items.is_empty() {
-            items = std::mem::take(&mut self.done_items);
+            items = mem::take(&mut self.done_items);
         } else {
             for (index, done) in &self.done_items {
                 let Some(item) = items.get(index) else {

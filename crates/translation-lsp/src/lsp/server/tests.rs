@@ -1,15 +1,24 @@
+use std::{rc::Rc, sync::Arc};
+
 use serde_json::json;
+use tokio::{
+    sync::{
+        Semaphore,
+        mpsc::{UnboundedSender, unbounded_channel},
+    },
+    time::timeout,
+};
 
 use super::*;
-use crate::providers::mock::MockContext;
+use crate::providers::{AccountChange, Intent, mock::MockContext};
 
 #[tokio::test(flavor = "current_thread")]
 async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
     #[derive(Clone)]
     struct GatedProvider {
-        started: tokio::sync::mpsc::UnboundedSender<&'static str>,
-        admin: std::sync::Arc<tokio::sync::Semaphore>,
-        translation: std::sync::Arc<tokio::sync::Semaphore>,
+        started: UnboundedSender<&'static str>,
+        admin: Arc<Semaphore>,
+        translation: Arc<Semaphore>,
     }
     impl TranslationProvider for GatedProvider {
         type Context = MockContext;
@@ -19,13 +28,13 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         }
         async fn translate(
             &self,
-            _intent: crate::providers::Intent,
+            _intent: Intent,
             _output: Output,
             text: &str,
             _: &str,
             context: MockContext,
         ) -> Result<Translated<MockContext>, ProviderError> {
-            let text = std::rc::Rc::new(text.to_owned());
+            let text = Rc::new(text.to_owned());
             self.started.send("translation").unwrap();
             self.translation.acquire().await.unwrap().forget();
             Ok(Translated {
@@ -34,15 +43,15 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
             })
         }
         async fn administer(&self, _: &str, _: &impl Interaction) -> Result<String, ProviderError> {
-            let text = std::rc::Rc::new("admin".to_owned());
+            let text = Rc::new("admin".to_owned());
             self.started.send("admin").unwrap();
             self.admin.acquire().await.unwrap().forget();
             Ok((*text).clone())
         }
     }
-    let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
-    let admin = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
-    let translation = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let (started, mut observed) = unbounded_channel();
+    let admin = Arc::new(Semaphore::new(0));
+    let translation = Arc::new(Semaphore::new(0));
     let provider = GatedProvider {
         started,
         admin: admin.clone(),
@@ -59,7 +68,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         stops.push(stop);
         let task = if ticket < 4 {
             Task::Translation {
-                intent: crate::providers::Intent::Automatic,
+                intent: Intent::Automatic,
                 output: Output::Range,
                 generation: 0,
                 text: format!("source {ticket}"),
@@ -98,7 +107,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
         drop(jobs);
         drop(administrations);
     };
-    tokio::time::timeout(Duration::from_secs(2), async {
+    timeout(Duration::from_secs(2), async {
         tokio::join!(
             worker(received_jobs, received_admin, finished, provider, 2),
             exercise
@@ -135,7 +144,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
         }
         async fn translate(
             &self,
-            _intent: crate::providers::Intent,
+            _intent: Intent,
             _output: Output,
             text: &str,
             target: &str,
@@ -335,7 +344,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
                 commands: &[ProviderCommand {
                     command: "synthetic.inspect",
                     title: "Inspect synthetic account",
-                    changes_account: crate::providers::AccountChange::Never,
+                    changes_account: AccountChange::Never,
                 }],
                 hover_note: None,
                 comment_notice: None,
@@ -344,7 +353,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         }
         async fn translate(
             &self,
-            _intent: crate::providers::Intent,
+            _intent: Intent,
             _output: Output,
             text: &str,
             _: &str,

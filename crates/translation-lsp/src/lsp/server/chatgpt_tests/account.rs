@@ -1,4 +1,11 @@
 //! The account menu, account operations, and pauses for usage limits.
+use std::{env, ffi::OsString, fs, iter};
+
+use tokio::task::spawn_blocking;
+use uuid::Uuid;
+
+use crate::providers::chatgpt;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -391,7 +398,7 @@ async fn account_picker_filters_states_and_closing_it_has_no_effects() {
             panic!("Expected management picker");
         };
         assert_eq!(request.method, "window/showMessageRequest");
-        let expected: Vec<_> = crate::providers::chatgpt::management_commands(state)
+        let expected: Vec<_> = chatgpt::management_commands(state)
             .iter()
             .map(|command| json!({"title":command.title}))
             .collect();
@@ -456,14 +463,14 @@ async fn account_picker_dispatches_only_the_selected_command() {
     let commands = serde_json::to_value(capabilities::<ChatGptProvider>()).unwrap()["capabilities"]
         ["executeCommandProvider"]["commands"]
         .clone();
-    for command in std::iter::once(COMMAND)
+    for command in iter::once(COMMAND)
         .chain(
             ChatGptProvider::capabilities()
                 .commands
                 .iter()
                 .map(|command| command.command),
         )
-        .chain(std::iter::once(SETTINGS_COMMAND))
+        .chain(iter::once(SETTINGS_COMMAND))
     {
         assert!(commands.as_array().unwrap().contains(&json!(command)));
     }
@@ -524,8 +531,7 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
         http::Http,
     };
     let fixture = Fixture::new().await;
-    let directory =
-        std::env::temp_dir().join(format!("zed-actions-synthetic-{}", uuid::Uuid::new_v4()));
+    let directory = env::temp_dir().join(format!("zed-actions-synthetic-{}", Uuid::new_v4()));
     let auth = Auth::synthetic(
         AuthStore::synthetic(directory.clone()),
         Http::synthetic_revocation(&fixture.base),
@@ -702,8 +708,8 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
     assert_eq!(actions(&server), ready);
     // An invalid local snapshot also retains the explicit recovery entry.
     let path = directory.join("auth.json");
-    let saved = std::fs::read(&path).unwrap();
-    std::fs::write(&path, b"{").unwrap();
+    let saved = fs::read(&path).unwrap();
+    fs::write(&path, b"{").unwrap();
     assert_eq!(actions(&server), unknown);
     server
         .request(
@@ -722,24 +728,21 @@ async fn candidates_follow_auth_transitions_without_http_or_store_writes() {
     assert_eq!(error.code, ErrorCode::RequestFailed as i32);
     assert!(!error.message.contains("synthetic-access"));
     assert_eq!(
-        std::fs::read(&path).unwrap(),
+        fs::read(&path).unwrap(),
         b"{",
         "Explicit failed recovery must not rewrite the store"
     );
-    std::fs::write(&path, saved).unwrap();
+    fs::write(&path, saved).unwrap();
     assert_eq!(actions(&server), ready);
     assert!(fixture.state.lock().unwrap().records.is_empty());
-    let mut files: Vec<_> = std::fs::read_dir(&directory)
+    let mut files: Vec<_> = fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
     files.sort();
     assert_eq!(
         files,
-        vec![
-            std::ffi::OsString::from("auth.json"),
-            std::ffi::OsString::from("auth.lock")
-        ]
+        vec![OsString::from("auth.json"), OsString::from("auth.lock")]
     );
     drop(completions);
     drop(server);
@@ -792,7 +795,7 @@ async fn candidates_are_local_and_explicit_commands_use_standard_lsp_ui() {
         .unwrap();
     let receiver = client.receiver.clone();
     let Message::Request(request) =
-        tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
+        spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
             .await
             .unwrap()
     else {
@@ -841,7 +844,7 @@ async fn candidates_are_local_and_explicit_commands_use_standard_lsp_ui() {
         .unwrap();
     let receiver = client.receiver.clone();
     let Message::Request(request) =
-        tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
+        spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(2)).unwrap())
             .await
             .unwrap()
     else {

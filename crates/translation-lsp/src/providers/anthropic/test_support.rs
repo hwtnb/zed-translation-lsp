@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
-    fs,
+    env, fs, future, io,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -12,10 +12,12 @@ use std::{
     time::Duration,
 };
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
-    body::{Bytes, Frame},
+    Response,
+    body::{Bytes, Frame, Incoming},
+    server::conn::http1,
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
@@ -23,11 +25,13 @@ use serde_json::{Value, json};
 use tokio::{
     net::TcpListener,
     sync::{Notify, Semaphore},
-    task::{JoinHandle, JoinSet},
+    task::{JoinHandle, JoinSet, yield_now},
+    time::timeout,
 };
+use uuid::Uuid;
 
 use super::AnthropicProvider;
-use crate::providers::credential_directory;
+use crate::providers::{credential_directory, prompt};
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
 
@@ -40,7 +44,7 @@ pub(crate) struct KeyDirectory {
 impl KeyDirectory {
     /// A private directory without a key file.
     pub fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("zed-anthropic-key-{}", uuid::Uuid::new_v4()));
+        let path = env::temp_dir().join(format!("zed-anthropic-key-{}", Uuid::new_v4()));
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -61,7 +65,7 @@ impl KeyDirectory {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        std::io::Write::write_all(
+        io::Write::write_all(
             &mut options.open(directory.file()).unwrap(),
             contents.as_ref(),
         )
@@ -182,7 +186,7 @@ pub(crate) struct OpenResponses {
 
 impl OpenResponses {
     pub async fn wait(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        timeout(Duration::from_secs(2), async {
             while self.count.load(Ordering::SeqCst) != count {
                 self.changed.notified().await;
             }
@@ -241,7 +245,7 @@ impl Fixture {
                             let service = service_fn(move |request| {
                                 endpoint(request, state.clone(), open.clone())
                             });
-                            let _ = hyper::server::conn::http1::Builder::new()
+                            let _ = http1::Builder::new()
                                 .serve_connection(TokioIo::new(socket), service)
                                 .await;
                         });
@@ -371,10 +375,10 @@ pub(crate) fn completed(text: &str) -> String {
 }
 
 async fn endpoint(
-    request: hyper::Request<hyper::body::Incoming>,
+    request: hyper::Request<Incoming>,
     shared: Arc<Mutex<FixtureState>>,
     open: Arc<OpenResponses>,
-) -> Result<hyper::Response<BoxBody<Bytes, std::io::Error>>, Infallible> {
+) -> Result<hyper::Response<BoxBody<Bytes, io::Error>>, Infallible> {
     let path = request.uri().path().to_owned();
     let headers = request.headers().clone();
     let body = request.into_body().collect().await.unwrap().to_bytes();
@@ -409,10 +413,10 @@ async fn endpoint(
         let request: Value = serde_json::from_str(&body).unwrap();
         Reply::stream(completed(&format!(
             "訳{}",
-            crate::providers::prompt::source(request["messages"][0]["content"].as_str().unwrap())
+            prompt::source(request["messages"][0]["content"].as_str().unwrap())
         )))
     };
-    let mut response = hyper::Response::builder().status(reply.status).header(
+    let mut response = Response::builder().status(reply.status).header(
         "content-type",
         if reply.status == 200 {
             "text/event-stream"
@@ -430,21 +434,19 @@ async fn endpoint(
         response = response.header("retry-after", delay);
     }
     let first = |body: String| {
-        futures_util::stream::once(async move {
-            Ok::<_, std::io::Error>(Frame::data(Bytes::from(body)))
-        })
+        stream::once(async move { Ok::<_, io::Error>(Frame::data(Bytes::from(body))) })
     };
     let body = if reply.interrupted {
-        let cut = futures_util::stream::once(async {
+        let cut = stream::once(async {
             // Let the server flush the status and body before the connection drops.
-            tokio::task::yield_now().await;
-            Err(std::io::Error::other("synthetic connection loss"))
+            yield_now().await;
+            Err(io::Error::other("synthetic connection loss"))
         });
         BodyExt::boxed(StreamBody::new(first(reply.body).chain(cut)))
     } else if state.hold {
-        let held = futures_util::stream::once(async move {
+        let held = stream::once(async move {
             let _held = Held::new(open);
-            std::future::pending::<Result<Frame<Bytes>, std::io::Error>>().await
+            future::pending::<Result<Frame<Bytes>, io::Error>>().await
         });
         BodyExt::boxed(StreamBody::new(first(reply.body).chain(held)))
     } else {
