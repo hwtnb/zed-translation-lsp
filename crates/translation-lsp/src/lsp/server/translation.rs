@@ -194,7 +194,7 @@ impl<P: TranslationProvider> Server<P> {
         let task = Task::Translation {
             intent,
             output: request.output(),
-            text: input.text,
+            source: input.source,
             target_language: target.target_language.clone(),
             context: context.clone(),
             generation,
@@ -263,13 +263,15 @@ impl<P: TranslationProvider> Server<P> {
                 .output_kib
                 .check(translation.text.len(), SizeSetting::Output)
                 .map_err(|m| failure(ErrorCode::RequestFailed, &m.to_string()))?;
-            Ok(Preview::new(
+            let mut preview = Preview::new(
                 translation.context,
                 work.target.range,
                 translation.text,
                 work.is_comment,
                 P::capabilities().hover_note,
-            ))
+            );
+            preview.entry = translation.entry;
+            Ok(preview)
         })();
         self.complete(connection, completion.ticket, &work, result, silent)?;
         self.dispatch().map_err(|e| e.message)?;

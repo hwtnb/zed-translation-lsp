@@ -20,9 +20,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 [samples/comment.rs](../../samples/comment.rs) のコメント、または [samples/comment.cs](../../samples/comment.cs) の通常コメント・XMLドキュメントコメントにマウスポインターを重ねてください。C/C++は [samples/comment.c](../../samples/comment.c) と [samples/comment.cpp](../../samples/comment.cpp) でDoxygenコメントも試せます。
 
-Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](../../samples/comment.py) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](../../samples/comment.jsonc)、[samples/comment.yaml](../../samples/comment.yaml)、[samples/comment.toml](../../samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](../../samples/comment.sh)、[samples/comment.ps1](../../samples/comment.ps1)、[samples/Dockerfile](../../samples/Dockerfile)、[samples/compose.yaml](../../samples/compose.yaml) で試せます。[samples/paragraph.md](../../samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to Japanese (ja)` を実行してから、選択範囲にマウスポインターを重ねます。モックのプロバイダーでは、Markdownは手動実行が必要です。
+Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](../../samples/comment.py) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](../../samples/comment.jsonc)、[samples/comment.yaml](../../samples/comment.yaml)、[samples/comment.toml](../../samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](../../samples/comment.sh)、[samples/comment.ps1](../../samples/comment.ps1)、[samples/Dockerfile](../../samples/Dockerfile)、[samples/compose.yaml](../../samples/compose.yaml) で試せます。[samples/paragraph.md](../../samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to Japanese (ja)` を実行してから、選択範囲にマウスポインターを重ねます。辞書の項目を見るには、同じサンプルで `retry_count` だけを選択して、同じ操作を実行します。モックのプロバイダーでは、Markdownは手動実行が必要です。
 
-モックのプロバイダーはこれらのサンプルと改行の違いだけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーの見出しには `Mock translation (fixed sample)` と表示します。
+モックのプロバイダーはこれらのサンプル、その改行の違い、語 `retry_count` だけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーの見出しには `Mock translation (fixed sample)` と表示します。
 
 stdioのテストは、実行ファイルを `--mock-delay-ms <ミリ秒>`、`--mock-fail`、`--mock-timeout-ms <ミリ秒>` 付きで起動し、モックの翻訳を遅らせる、失敗させる、または期限を指定の値にします。これらの引数はモックのプロバイダーにだけ効きます。
 

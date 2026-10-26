@@ -42,7 +42,7 @@ use uuid::Uuid;
 
 use crate::{
     lsp::ui::{Ui, UiCapabilities},
-    providers::{error, prompt},
+    providers::{dictionary, error},
 };
 
 use super::{
@@ -765,7 +765,7 @@ async fn endpoint(
                 for field in ["temperature","max_output_tokens","previous_response_id","tools","prompt"] { assert!(request.get(field).is_none()); }
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
                 assert!(request.get("text").is_none());
-                let mut text = state.translation.clone().unwrap_or_else(|| format!("訳{}", prompt::source(request["input"][0]["content"].as_str().unwrap())));
+                let mut text = state.translation.clone().unwrap_or_else(|| dictionary::synthetic_reply(request["input"][0]["content"].as_str().unwrap()));
                 match state.response_mode.as_str() {
                     "empty_text" => text.clear(),
                     "output_limit" | "compact_output_limit" => text = "字".repeat(64*1024),

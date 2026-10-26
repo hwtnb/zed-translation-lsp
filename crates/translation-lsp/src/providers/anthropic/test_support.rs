@@ -31,7 +31,7 @@ use tokio::{
 use uuid::Uuid;
 
 use super::AnthropicProvider;
-use crate::providers::{credential_directory, prompt};
+use crate::providers::{credential_directory, dictionary};
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
 
@@ -165,7 +165,7 @@ impl Reply {
 pub(crate) struct FixtureState {
     pub records: Vec<Record>,
     /// Scripted replies are consumed first, then `fallback` repeats. Without
-    /// either, the fixture streams `訳` followed by the submitted text.
+    /// either, the fixture streams [`dictionary::synthetic_reply`].
     pub scripted: VecDeque<Reply>,
     pub fallback: Option<Reply>,
     pub retry_after: Option<String>,
@@ -411,9 +411,8 @@ async fn endpoint(
         reply
     } else {
         let request: Value = serde_json::from_str(&body).unwrap();
-        Reply::stream(completed(&format!(
-            "訳{}",
-            prompt::source(request["messages"][0]["content"].as_str().unwrap())
+        Reply::stream(completed(&dictionary::synthetic_reply(
+            request["messages"][0]["content"].as_str().unwrap(),
         )))
     };
     let mut response = Response::builder().status(reply.status).header(

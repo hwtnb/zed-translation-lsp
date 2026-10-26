@@ -7,7 +7,10 @@ use crate::{
     providers::{Intent, Output},
 };
 
-use super::{Capabilities, Translated, TranslationProvider, error::Error};
+use super::{
+    Capabilities, Translated, TranslationProvider, dictionary,
+    error::{Error, Service},
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct MockOptions {
@@ -77,6 +80,9 @@ const XML_COMMENT_BODY: &str =
     "<summary>\nRetry only if the remote service\nreports a temporary failure.\n</summary>";
 const PARAGRAPH: &str =
     "The `retry_count` value is preserved.\nRetry only after a temporary failure. 🚀";
+/// The term of the Markdown sample that the mock provider looks up.
+const TERM: &str = "retry_count";
+const TERM_ENTRY: &str = r#"{"senses": [{"part_of_speech": "識別子", "meaning": "再試行の回数"}], "parts": [{"part": "retry", "meaning": "再試行"}, {"part": "count", "meaning": "回数"}], "combined": "再試行した回数", "example": {"text": "The retry_count value is preserved.", "translation": "retry_count の値は保持される。"}}"#;
 
 impl TranslationProvider for MockProvider {
     type Context = MockContext;
@@ -134,6 +140,32 @@ impl TranslationProvider for MockProvider {
         Ok(Translated {
             text: translation.into(),
             context,
+            entry: false,
+        })
+    }
+
+    async fn look_up(
+        &self,
+        _intent: Intent,
+        _output: Output,
+        term: &str,
+        _line: &str,
+        target_language: &str,
+        context: MockContext,
+    ) -> Result<Translated<MockContext>, Error> {
+        sleep(self.options.delay).await;
+        if self.options.fail {
+            return Err(Error::failed("Simulated mock translation failure"));
+        }
+        if target_language != "ja" || term != TERM {
+            return Err(Error::failed(
+                "The mock provider only looks up retry_count in Japanese",
+            ));
+        }
+        Ok(Translated {
+            text: dictionary::entry(term, TERM_ENTRY, Service::OpenAi)?,
+            context,
+            entry: true,
         })
     }
 }

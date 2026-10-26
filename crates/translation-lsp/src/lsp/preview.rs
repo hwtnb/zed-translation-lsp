@@ -10,6 +10,8 @@ pub(crate) struct Preview<C> {
     pub context: C,
     pub range: Range,
     pub translation: String,
+    /// The translation is a dictionary entry in Markdown.
+    pub entry: bool,
     pub is_comment: bool,
     /// The provider's line under the Hover title.
     pub note: Option<&'static str>,
@@ -28,6 +30,7 @@ impl<C> Preview<C> {
             context,
             range,
             translation,
+            entry: false,
             is_comment,
             note,
         }
@@ -43,10 +46,15 @@ impl<C> Preview<C> {
             Some(note) => format!("> **Translation LSP**\n>\n> {note}"),
             None => "> **Translation LSP**".into(),
         };
+        let body = if self.entry {
+            self.translation.clone()
+        } else {
+            fenced_text(&self.translation)
+        };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("{header}\n\n---\n\n{}", fenced_text(&self.translation)),
+                value: format!("{header}\n\n---\n\n{body}"),
             }),
             range: Some(self.range),
         })

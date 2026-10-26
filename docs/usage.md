@@ -22,6 +22,12 @@ Selecting prose just to copy it can also send it for translation.
 
 To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. With the Anthropic provider, if no key is saved, save one through `Anthropic API key…` first. The Hover translation action is hidden when there is no selection.
 
+## Looking up a word
+
+A selection of up to three words and 64 characters on one line that does not end with `.`, `!`, `?`, `。`, `！`, or `？`, such as `retain`, `take over`, or the identifier `retain_completed`, is looked up instead of translated. Words are counted by the Unicode word boundaries, which also divide languages written without spaces: in Japanese, `保持する` is two words and `設定を保存する` four, because particles and endings count as words. Hover over it to read a dictionary entry: the term, its meanings with their parts of speech, with the meaning it has in its line first, the words of an identifier or compound and what they mean together, and one example sentence with its translation. This applies to automatic Markdown selections, `Translate selection to …`, and `… and open in tab`. A selection of the whole document is translated, as `Translate document to … and open in tab` translates it. A comment read by Comment Hover is always translated, even when it is one word.
+
+The labels of an entry, such as `Example:`, are in English. The meanings and parts of speech are in the target language.
+
 ## Opening a translation in a tab
 
 In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. Both operations use `translation_limits.input_kib.document`, which defaults to 1 MiB. The client must support `window/showDocument`.
@@ -65,6 +71,8 @@ To retry a failed range without selecting its text again, place the cursor insid
 
 Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The passage is marked as the text to translate, and the model is instructed to translate any instructions or questions in it instead of following or answering them. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
 
+To look up a term, the model receives the term and, marked separately, the line it is on, at most 200 characters on each side of it. It is instructed to reply with a JSON object of meanings, word parts, and an example. The server builds the entry from that object and escapes every text of the reply, so the reply cannot add links, images, or other formatting to the Hover. A reply that is not such an object is reported as an error; retry it from Code Actions.
+
 Explicit selection and document actions send the requested text even when it is indented or contains only code. The model is instructed to preserve code and identifiers. Markdown prose eligibility limits only automatic background translation; the extension does not report the original text as a successful translation without contacting the provider.
 
-The extension submits the extracted comment body, the selected text, or the whole document when you explicitly choose document translation. It does not submit conversation history or write translations back into the source document.
+The extension submits the extracted comment body, the selected text, or the whole document when you explicitly choose document translation. For a term, it also submits the term's line. It does not submit conversation history or write translations back into the source document.

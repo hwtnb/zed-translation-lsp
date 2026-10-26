@@ -69,6 +69,11 @@ relative to the repository root.
   Prompt the model to preserve code, identifiers, URLs, and meaning. Do not require
   JSON translation segments or enforce Markdown structure or byte equality on the
   generated translation. Markdown parsing only determines input eligibility.
+- A selection of up to three words and 64 characters on one line that ends no
+  sentence, other than the whole document, is looked up instead
+  (`text/term.rs`): the term is sent with its line, the model replies
+  with the JSON fields in `providers/dictionary.rs`, and the server renders them
+  as Markdown with every text escaped. Comment Hover always translates.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Hover waiters retain independent cancellation and deadlines, including queue

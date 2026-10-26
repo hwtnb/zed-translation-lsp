@@ -6,7 +6,7 @@ use tokio::{
     time::{sleep_until, timeout},
 };
 
-use crate::providers::Intent;
+use crate::providers::{Intent, Source};
 
 use super::*;
 
@@ -34,7 +34,7 @@ async fn worker_deadline_and_cancellation_stop_overload_backoff() {
                 intent: Intent::Automatic,
                 output: Output::Range,
                 generation: 0,
-                text: "Read this.".into(),
+                source: Source::Passage("Read this.".into()),
                 target_language: "ja".into(),
                 context: provider.context().unwrap(),
             },

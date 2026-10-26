@@ -18,6 +18,7 @@ use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
+    dictionary,
     error::{Cause, Error, Service, credentials::CredentialError},
     prompt, transport,
 };
@@ -198,69 +199,33 @@ impl AnthropicProvider {
         }
         .into())
     }
-}
 
-impl TranslationProvider for AnthropicProvider {
-    /// The key in use: what was translated or refused with one key is not kept
-    /// for another.
-    type Context = KeyId;
-
-    fn context(&self) -> Result<KeyId, Error> {
-        let (_, key) = self.key.read()?;
-        Ok(key)
-    }
-
-    fn admit(&self, key: &KeyId, intent: Intent) -> Result<u64, Error> {
-        self.admission.admit(key, intent)
-    }
-
-    fn check_admission(&self, key: &KeyId, generation: u64) -> Result<(), Error> {
-        self.admission.check(key, generation)
-    }
-
-    fn auth_ui_state(&self) -> AuthUiState {
-        if self.key.read().is_ok() {
-            AuthUiState::Ready
-        } else {
-            AuthUiState::SignedOut
-        }
-    }
-
-    fn capabilities() -> Capabilities {
-        Capabilities {
-            server_name: "Translation LSP (Anthropic)",
-            automatic_selection: true,
-            account_menu: Some(key::MENU),
-            commands: &COMMANDS,
-            hover_note: None,
-            comment_notice: None,
-            range_output_bounded: true,
-        }
-    }
-
-    fn account_commands(&self) -> Vec<ProviderCommand> {
-        key_commands(self.key.read().is_ok())
-    }
-
-    async fn translate(
+    /// Sends `message` with the `system` prompt and returns the reply. `texts`
+    /// are the document's texts in the message, the first sizing the reply;
+    /// errors never show them.
+    async fn send(
         &self,
         intent: Intent,
         output: Output,
-        text: &str,
-        target_language: &str,
+        system: String,
+        message: String,
+        texts: &[&str],
         expected: KeyId,
-    ) -> Result<Translated<KeyId>, Error> {
+    ) -> Result<String, Error> {
         let key = self.key_in_use(expected)?;
         let generation = self.admission.admit(&expected, intent)?;
-        let secrets = [&*key.text, text];
+        let secrets: Vec<&str> = [&*key.text]
+            .into_iter()
+            .chain(texts.iter().copied())
+            .collect();
         let options = self.options.get(output);
         let configured = self.options.configured(output);
         let mut request = json!({
             "model": options.model,
-            "max_tokens": max_tokens(output, text, self.output_limit),
+            "max_tokens": max_tokens(output, texts[0], self.output_limit),
             "stream": true,
-            "system": prompt::instructions(target_language, &self.source_language),
-            "messages": [{"role": "user", "content": prompt::message(text)}],
+            "system": system,
+            "messages": [{"role": "user", "content": message}],
             "output_config": {"effort": options.effort},
             "thinking": {"type": if anthropic_thinking(&options.model, options.effort, options.thinking) {
                 "adaptive"
@@ -323,9 +288,96 @@ impl TranslationProvider for AnthropicProvider {
         if let Some(speed) = options.speed {
             response::log_speed(speed, &completed);
         }
+        Ok(completed.text)
+    }
+}
+
+impl TranslationProvider for AnthropicProvider {
+    /// The key in use: what was translated or refused with one key is not kept
+    /// for another.
+    type Context = KeyId;
+
+    fn context(&self) -> Result<KeyId, Error> {
+        let (_, key) = self.key.read()?;
+        Ok(key)
+    }
+
+    fn admit(&self, key: &KeyId, intent: Intent) -> Result<u64, Error> {
+        self.admission.admit(key, intent)
+    }
+
+    fn check_admission(&self, key: &KeyId, generation: u64) -> Result<(), Error> {
+        self.admission.check(key, generation)
+    }
+
+    fn auth_ui_state(&self) -> AuthUiState {
+        if self.key.read().is_ok() {
+            AuthUiState::Ready
+        } else {
+            AuthUiState::SignedOut
+        }
+    }
+
+    fn capabilities() -> Capabilities {
+        Capabilities {
+            server_name: "Translation LSP (Anthropic)",
+            automatic_selection: true,
+            account_menu: Some(key::MENU),
+            commands: &COMMANDS,
+            hover_note: None,
+            comment_notice: None,
+            range_output_bounded: true,
+        }
+    }
+
+    fn account_commands(&self) -> Vec<ProviderCommand> {
+        key_commands(self.key.read().is_ok())
+    }
+
+    async fn translate(
+        &self,
+        intent: Intent,
+        output: Output,
+        text: &str,
+        target_language: &str,
+        expected: KeyId,
+    ) -> Result<Translated<KeyId>, Error> {
+        let system = prompt::instructions(target_language, &self.source_language);
+        let reply = self
+            .send(
+                intent,
+                output,
+                system,
+                prompt::message(text),
+                &[text],
+                expected,
+            )
+            .await?;
         Ok(Translated {
-            text: prompt::translation(completed.text),
+            text: prompt::translation(reply),
             context: expected,
+            entry: false,
+        })
+    }
+
+    async fn look_up(
+        &self,
+        intent: Intent,
+        output: Output,
+        term: &str,
+        line: &str,
+        target_language: &str,
+        expected: KeyId,
+    ) -> Result<Translated<KeyId>, Error> {
+        let system = dictionary::instructions(target_language, &self.source_language);
+        let message = dictionary::message(term, line);
+        let reply = self
+            .send(intent, output, system, message, &[line, term], expected)
+            .await?;
+        Ok(Translated {
+            text: dictionary::entry(term, &reply, SERVICE)?,
+            context: expected,
+            entry: true,
         })
     }
 

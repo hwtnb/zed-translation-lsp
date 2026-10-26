@@ -527,7 +527,7 @@ impl<C> Scheduler<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{Intent, mock::MockContext};
+    use crate::providers::{Intent, Source, mock::MockContext};
 
     fn add(
         s: &mut Scheduler<MockContext>,
@@ -550,7 +550,7 @@ mod tests {
             intent: Intent::Explicit,
             output: Output::Range,
             generation: 0,
-            text: "source".into(),
+            source: Source::Passage("source".into()),
             target_language: "ja".into(),
             context: MockContext,
         };
@@ -701,7 +701,7 @@ mod tests {
 #[cfg(test)]
 mod shared_outputs_tests {
     use super::*;
-    use crate::providers::{Intent, mock::MockContext};
+    use crate::providers::{Intent, Source, mock::MockContext};
 
     #[test]
     fn a_tab_subscriber_shares_a_running_range_without_another_slot() {
@@ -721,7 +721,7 @@ mod shared_outputs_tests {
                 intent: Intent::Explicit,
                 output: Output::Range,
                 generation: 0,
-                text: "source".into(),
+                source: Source::Passage("source".into()),
                 target_language: "ja".into(),
                 context: MockContext,
             };
@@ -770,7 +770,7 @@ mod separate_outputs_tests {
     use std::iter;
 
     use super::*;
-    use crate::providers::{Intent, anthropic::key::KeyId};
+    use crate::providers::{Intent, Source, anthropic::key::KeyId};
 
     fn settings(separate: bool) -> Settings {
         let mut provider = serde_json::json!({"name": "anthropic"});
@@ -806,7 +806,7 @@ mod separate_outputs_tests {
             intent: Intent::Explicit,
             output: request.output(),
             generation: 0,
-            text: "source".into(),
+            source: Source::Passage("source".into()),
             target_language: "ja".into(),
             context: KeyId::SYNTHETIC,
         };

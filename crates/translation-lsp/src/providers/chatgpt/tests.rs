@@ -373,6 +373,51 @@ async fn server_retry_delay_is_honored_or_left_for_manual_retry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_term_is_sent_with_its_line_and_its_entry_is_rendered() {
+    let fixture = Fixture::new().await;
+    let auth = fixture.auth();
+    fixture.connected(&auth, 3600).await;
+    let provider = ChatGptProvider::synthetic(
+        auth,
+        format!("{}/v1", fixture.base),
+        "synthetic-model".into(),
+    );
+    let line = "Keep `retry_count` unchanged.";
+    let look_up = || async {
+        provider
+            .look_up(
+                Intent::Automatic,
+                Output::Range,
+                "retry_count",
+                line,
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+    };
+    let entry = look_up().await.unwrap();
+    assert!(entry.entry);
+    assert_eq!(entry.text, "**retry\\_count** — 語\n\n1. 訳retry\\_count\n");
+    let body: Value =
+        serde_json::from_str(&fixture.state.lock().unwrap().records.last().unwrap().body).unwrap();
+    assert_eq!(
+        body["input"][0]["content"],
+        dictionary::message("retry_count", line)
+    );
+    let instructions = body["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are a dictionary for a reader of Japanese (ja). "));
+
+    fixture.state.lock().unwrap().translation = Some("再試行の回数".into());
+    let Err(error) = look_up().await else {
+        panic!("A reply that is not an entry was accepted");
+    };
+    assert_eq!(
+        error.to_string(),
+        "OpenAI reply is not a dictionary entry; retry"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn complete_translation_is_returned_as_text_without_reassembly_or_repeated_tags() {
     let source = "- Use named module files, such as `providers.rs` and `providers/chatgpt.rs`. Do not introduce `mod.rs` files.\r\n- Keep providers replaceable through `TranslationProvider`.";
     let translation = "- `providers.rs` や `providers/chatgpt.rs` のような名前付きモジュールファイルを使用してください。\n  `mod.rs` ファイルを導入しないでください。\n- `TranslationProvider` を通じてプロバイダーを交換可能にしてください。";

@@ -4,9 +4,11 @@ use lsp_types::{Position, Range, TextDocumentContentChangeEvent, Uri};
 
 use crate::{
     language::Language,
+    providers::Source,
     text::{
         comments::{Comments, Failure},
         markdown::prose_ranges,
+        term::{is_term, line},
     },
 };
 
@@ -15,7 +17,7 @@ mod indexed_text;
 use indexed_text::IndexedText;
 
 pub(crate) struct TranslationInput {
-    pub text: String,
+    pub source: Source,
     pub is_comment: bool,
 }
 
@@ -199,14 +201,28 @@ impl Document {
             && comments.range(group.clone()) == bytes
         {
             return Ok(TranslationInput {
-                text: comments.body(text, group),
+                source: Source::Passage(comments.body(text, group)),
                 is_comment: true,
             });
         }
         // Exact comment groups use the same body for Hover and Code Action, so
         // coalescing cannot depend on which operation arrived first.
+        let selection = &text[bytes.clone()];
+        // The whole document is what `Translate document` sends; a selection
+        // of all of it is the same target, so it is translated too.
+        let whole = bytes == (0..text.len());
+        let source = if !whole && is_term(selection) {
+            let start = bytes.start + (selection.len() - selection.trim_start().len());
+            let term = selection.trim();
+            Source::Term {
+                term: term.to_owned(),
+                line: line(text, start..start + term.len()).to_owned(),
+            }
+        } else {
+            Source::Passage(selection.to_owned())
+        };
         Ok(TranslationInput {
-            text: text[bytes].to_owned(),
+            source,
             is_comment: false,
         })
     }
@@ -229,8 +245,11 @@ mod tests {
             .unwrap();
         assert_eq!(group, Range::new(Position::new(1, 2), Position::new(2, 11)));
         assert_eq!(
-            document.translation_input(&uri, group, LIMIT).unwrap().text,
-            "first\r\nsecond"
+            document
+                .translation_input(&uri, group, LIMIT)
+                .unwrap()
+                .source,
+            Source::Passage("first\r\nsecond".into())
         );
         assert_eq!(document.text(), Some(original));
         assert!(matches!(document.comments, Reading::Done(_)));
@@ -239,8 +258,11 @@ mod tests {
             .unwrap();
         assert_eq!(block.start, Position::new(0, 6));
         assert_eq!(
-            document.translation_input(&uri, block, LIMIT).unwrap().text,
-            "`id` "
+            document
+                .translation_input(&uri, block, LIMIT)
+                .unwrap()
+                .source,
+            Source::Passage("`id` ".into())
         );
         for character in 0..=8 {
             let point = Position::new(0, character);
@@ -282,8 +304,8 @@ mod tests {
             document
                 .translation_input(&uri, new_range, LIMIT)
                 .unwrap()
-                .text,
-            "new"
+                .source,
+            Source::Passage("new".into())
         );
         assert!(document.change(2, Vec::new()).is_err());
         assert!(matches!(document.comments, Reading::Pending));
@@ -311,7 +333,7 @@ mod tests {
         document.change(2, changed(text)).unwrap();
         assert!(document.comment_range(&uri, 0, LIMIT).is_none());
         let input = document.translation_input(&uri, comment, LIMIT).unwrap();
-        assert_eq!(input.text, "# Read.");
+        assert_eq!(input.source, Source::Passage("# Read.".into()));
         assert!(!input.is_comment);
         assert!(document.change(2, Vec::new()).is_err());
         document.change(3, changed(text)).unwrap();
@@ -321,7 +343,7 @@ mod tests {
         let mut reopened = Document::new(1, 2, "python".into(), text.into());
         assert_eq!(reopened.comment_range(&uri, 0, LIMIT), Some(comment));
         let input = reopened.translation_input(&uri, comment, LIMIT).unwrap();
-        assert_eq!(input.text, "Read.");
+        assert_eq!(input.source, Source::Passage("Read.".into()));
         assert!(input.is_comment);
         assert_eq!(reopened.take_comment_failure(), None);
     }
@@ -397,10 +419,39 @@ mod tests {
                 format!("// `id`{ending}  // keep 🚀")
             );
             assert_eq!(
-                document.translation_input(&uri, range, LIMIT).unwrap().text,
-                format!("`id`{ending}keep 🚀")
+                document
+                    .translation_input(&uri, range, LIMIT)
+                    .unwrap()
+                    .source,
+                Source::Passage(format!("`id`{ending}keep 🚀"))
             );
         }
+    }
+
+    #[test]
+    fn a_term_is_looked_up_unless_it_is_the_whole_document() {
+        let uri = "file:///term.md".parse().unwrap();
+        let text = "Welcome\n";
+        let mut document = Document::new(1, 1, "markdown".into(), text.into());
+        let whole = document.full_range().unwrap();
+        assert_eq!(
+            document
+                .translation_input(&uri, whole, LIMIT)
+                .unwrap()
+                .source,
+            Source::Passage(text.into())
+        );
+        let word = Range::new(Position::new(0, 0), Position::new(0, 7));
+        assert_eq!(
+            document
+                .translation_input(&uri, word, LIMIT)
+                .unwrap()
+                .source,
+            Source::Term {
+                term: "Welcome".into(),
+                line: "Welcome".into(),
+            }
+        );
     }
 
     #[test]
@@ -418,8 +469,11 @@ mod tests {
             Range::new(Position::new(139_999, 0), Position::new(139_999, 7))
         );
         assert_eq!(
-            document.translation_input(&uri, range, LIMIT).unwrap().text,
-            "doc"
+            document
+                .translation_input(&uri, range, LIMIT)
+                .unwrap()
+                .source,
+            Source::Passage("doc".into())
         );
     }
 

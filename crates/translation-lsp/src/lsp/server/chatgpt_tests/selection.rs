@@ -7,6 +7,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::{providers::dictionary, text::term::is_term};
 
 #[tokio::test(flavor = "current_thread")]
 async fn markdown_repeated_selections_report_failure_and_recover_manually() {
@@ -314,8 +315,13 @@ async fn automatic_selection_uses_document_code_context_and_sends_only_selected_
             let state = fixture.state.lock().unwrap();
             assert_eq!(state.records.len(), before + 1, "{selected:?}");
             let body: Value = serde_json::from_str(&state.records.last().unwrap().body).unwrap();
-            let sent = prompt::source(body["input"][0]["content"].as_str().unwrap());
-            assert_eq!(sent, selected);
+            let sent = body["input"][0]["content"].as_str().unwrap();
+            if is_term(selected) {
+                // A term is sent with its line, which is the whole text here.
+                assert_eq!(sent, dictionary::message(selected, text));
+            } else {
+                assert_eq!(prompt::source(sent), selected);
+            }
             for literal in ["retry_count", "https://example.test/path"] {
                 if selected.contains(literal) {
                     assert!(

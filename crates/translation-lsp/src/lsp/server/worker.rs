@@ -2,7 +2,7 @@ use std::future::Future;
 
 use tokio::time::sleep_until;
 
-use crate::providers::Intent;
+use crate::providers::{Intent, Source};
 
 use super::*;
 
@@ -22,7 +22,7 @@ pub(super) enum Task<C> {
         intent: Intent,
         output: Output,
         generation: u64,
-        text: String,
+        source: Source,
         target_language: String,
         context: C,
     },
@@ -124,16 +124,32 @@ pub(super) async fn run_job<P: TranslationProvider>(
             intent,
             output,
             generation,
-            text,
+            source,
             target_language,
             context,
         } => {
             let started = || finished.send(WorkerEvent::Started(ticket)).is_ok();
             let result = until_deadline(&mut deadline, started, async {
                 provider.check_admission(&context, generation)?;
-                provider
-                    .translate(intent, output, &text, &target_language, context.clone())
-                    .await
+                match &source {
+                    Source::Passage(text) => {
+                        provider
+                            .translate(intent, output, text, &target_language, context.clone())
+                            .await
+                    }
+                    Source::Term { term, line } => {
+                        provider
+                            .look_up(
+                                intent,
+                                output,
+                                term,
+                                line,
+                                &target_language,
+                                context.clone(),
+                            )
+                            .await
+                    }
+                }
             })
             .await;
             Finished::Translation(Completion { ticket, result })

@@ -22,7 +22,8 @@ use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
-    error::{Error, ErrorKind},
+    dictionary,
+    error::{Error, ErrorKind, Service},
     prompt, transport,
 };
 use auth::{AccountKey, Auth, account_changed};
@@ -140,14 +141,18 @@ impl ChatGptProvider {
         }
     }
 
+    /// Sends `message` with the `instructions` and returns the reply with the
+    /// account it was made with. `texts` are the document's texts in the
+    /// message; errors never show them.
     async fn request(
         &self,
-        body: &str,
-        target: &str,
+        instructions: String,
+        message: String,
+        texts: &[&str],
         expected: &AccountKey,
         intent: Intent,
         output: Output,
-    ) -> Result<Translated<AccountKey>, Error> {
+    ) -> Result<(String, AccountKey), Error> {
         let generation = self.admission.admit(expected, intent)?;
         let access = match self.auth.access(expected).await {
             Ok(access) => access,
@@ -158,19 +163,21 @@ impl ChatGptProvider {
             }
         };
         let key = &access.key;
-        let secrets = [
+        let secrets: Vec<&str> = [
             access.credentials.access_token.as_str(),
             access.credentials.refresh_token.as_str(),
             access.credentials.id_token.as_str(),
-            body,
-        ];
+        ]
+        .into_iter()
+        .chain(texts.iter().copied())
+        .collect();
         let options = self.options.get(output);
         let mut request = json!({
             "model": options.model,
             "store": false,
             "stream": true,
-            "instructions": prompt::instructions(target, &self.source_language),
-            "input": [{"role": "user", "content": prompt::message(body)}],
+            "instructions": instructions,
+            "input": [{"role": "user", "content": message}],
             "reasoning": {"effort": options.effort},
         });
         if let Some(speed) = options.speed {
@@ -219,10 +226,7 @@ impl ChatGptProvider {
             result = Err(error);
         }
         self.admission.settle(key, intent, generation, &mut result);
-        Ok(Translated {
-            text: prompt::translation(result?),
-            context: access.key,
-        })
+        Ok((result?, access.key))
     }
 }
 
@@ -269,7 +273,43 @@ impl TranslationProvider for ChatGptProvider {
         target: &str,
         key: AccountKey,
     ) -> Result<Translated<AccountKey>, Error> {
-        self.request(text, target, &key, intent, output).await
+        let instructions = prompt::instructions(target, &self.source_language);
+        let (reply, context) = self
+            .request(
+                instructions,
+                prompt::message(text),
+                &[text],
+                &key,
+                intent,
+                output,
+            )
+            .await?;
+        Ok(Translated {
+            text: prompt::translation(reply),
+            context,
+            entry: false,
+        })
+    }
+
+    async fn look_up(
+        &self,
+        intent: Intent,
+        output: Output,
+        term: &str,
+        line: &str,
+        target: &str,
+        key: AccountKey,
+    ) -> Result<Translated<AccountKey>, Error> {
+        let instructions = dictionary::instructions(target, &self.source_language);
+        let message = dictionary::message(term, line);
+        let (reply, context) = self
+            .request(instructions, message, &[line, term], &key, intent, output)
+            .await?;
+        Ok(Translated {
+            text: dictionary::entry(term, &reply, Service::OpenAi)?,
+            context,
+            entry: true,
+        })
     }
 
     async fn administer(&self, command: &str, ui: &impl Interaction) -> Result<String, Error> {

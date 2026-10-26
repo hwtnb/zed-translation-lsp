@@ -5,7 +5,7 @@ use crate::providers::{
         key::KeyId,
         test_support::{Fixture, Reply, started, text_block},
     },
-    prompt,
+    dictionary, prompt,
 };
 use serde_json::json;
 use tokio::task::spawn_blocking;
@@ -165,6 +165,63 @@ async fn worker_translation_is_cached_and_read_by_hover() {
     assert_eq!(
         request["messages"],
         json!([{"role": "user", "content": prompt::message("Read this.")}])
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_selected_term_is_shown_as_an_entry_and_a_one_word_comment_as_a_translation() {
+    let fixture = Fixture::new().await;
+    let (mut server, connection, client, completions) =
+        server(fixture.provider(), Settings::default());
+    let uri: Uri = "file:///term.rs".parse().unwrap();
+    let source = "// Retain\nlet retain_completed = 1;";
+    server.documents.insert(
+        uri.clone(),
+        Document::new(1, 1, "rust".into(), source.into()),
+    );
+    let hover = |line: u32, character: u32| {
+        parse(json!({"textDocument":{"uri":uri},"position":{"line":line,"character":character}}))
+            .unwrap()
+    };
+
+    assert!(server.hover(1.into(), hover(0, 4)).unwrap().is_none());
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected Hover response");
+    };
+    let comment = response.response_result.unwrap();
+    assert!(
+        comment["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .ends_with("```text\n訳Retain\n```")
+    );
+
+    let target = TranslationTarget {
+        uri: uri.clone(),
+        version: 1,
+        session: 1,
+        range: Range::new(Position::new(1, 4), Position::new(1, 20)),
+        target_language: "ja".into(),
+    };
+    server
+        .queue(2.into(), target, PendingReply::Command)
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    let entry = server.hover(3.into(), hover(1, 8)).unwrap().unwrap();
+    assert_eq!(
+        entry["contents"]["value"],
+        "> **Translation LSP**\n\n---\n\n**retain\\_completed** — 語\n\n1. 訳retain\\_completed\n"
+    );
+    let state = fixture.state.lock().unwrap();
+    let request: Value = serde_json::from_str(&state.records[1].body).unwrap();
+    assert_eq!(
+        request["messages"][0]["content"],
+        dictionary::message("retain_completed", "let retain_completed = 1;")
     );
 }
 

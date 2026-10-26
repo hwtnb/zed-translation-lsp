@@ -2,6 +2,7 @@ pub(crate) mod admission;
 pub(crate) mod anthropic;
 pub(crate) mod chatgpt;
 pub(crate) mod credential_directory;
+pub(crate) mod dictionary;
 pub(crate) mod error;
 pub(crate) mod mock;
 pub(crate) mod prompt;
@@ -83,6 +84,16 @@ pub(crate) enum Intent {
     Explicit,
 }
 
+/// What a request sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Text to translate.
+    Passage(String),
+    /// A word, short phrase or identifier to look up, with the line it was
+    /// selected from.
+    Term { term: String, line: String },
+}
+
 /// What a translation is for: a range read in place, or a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Output {
@@ -123,6 +134,8 @@ impl<T> OutputOptions<T> {
 pub(crate) struct Translated<C> {
     pub text: String,
     pub context: C,
+    /// The text is a dictionary entry in Markdown, not a translation.
+    pub entry: bool,
 }
 
 pub(crate) trait TranslationProvider: Clone + Send + 'static {
@@ -162,6 +175,20 @@ pub(crate) trait TranslationProvider: Clone + Send + 'static {
         target_language: &str,
         context: Self::Context,
     ) -> impl Future<Output = Result<Translated<Self::Context>, Error>>;
+    /// Describes `term` as a dictionary entry for a reader of
+    /// `target_language`. `line` is the line the term was selected from. A
+    /// provider without entries translates the term.
+    fn look_up(
+        &self,
+        intent: Intent,
+        output: Output,
+        term: &str,
+        _line: &str,
+        target_language: &str,
+        context: Self::Context,
+    ) -> impl Future<Output = Result<Translated<Self::Context>, Error>> {
+        self.translate(intent, output, term, target_language, context)
+    }
     fn administer(
         &self,
         _command: &str,

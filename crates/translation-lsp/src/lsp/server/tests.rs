@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use super::*;
-use crate::providers::{AccountChange, Intent, mock::MockContext};
+use crate::providers::{AccountChange, Intent, Source, mock::MockContext};
 
 #[tokio::test(flavor = "current_thread")]
 async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
@@ -40,6 +40,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
             Ok(Translated {
                 text: (*text).clone(),
                 context,
+                entry: false,
             })
         }
         async fn administer(&self, _: &str, _: &impl Interaction) -> Result<String, ProviderError> {
@@ -71,7 +72,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
                 intent: Intent::Automatic,
                 output: Output::Range,
                 generation: 0,
-                text: format!("source {ticket}"),
+                source: Source::Passage(format!("source {ticket}")),
                 target_language: "ja".into(),
                 context: MockContext,
             }
@@ -154,6 +155,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
             Ok(Translated {
                 text: format!("fake: {text}"),
                 context,
+                entry: false,
             })
         }
     }
@@ -290,6 +292,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 result: Ok(Translated {
                     text: "stale result".into(),
                     context: MockContext,
+                    entry: false,
                 }),
             }),
         )
@@ -305,6 +308,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 result: Ok(Translated {
                     text: "current result".into(),
                     context: MockContext,
+                    entry: false,
                 }),
             }),
         )
@@ -362,6 +366,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
             Ok(Translated {
                 text: text.into(),
                 context,
+                entry: false,
             })
         }
         async fn administer(

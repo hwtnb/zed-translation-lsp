@@ -114,6 +114,7 @@ These settings sit next to `provider` in `initialization_options`. Each can be o
 | Comment Hover | Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. |
 | Markdown selection | With ChatGPT connected and plan use enabled, or with an Anthropic API key saved, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
 | `Translate selection to …` | To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. |
+| Word lookup | Select up to three words or one identifier on one line, such as `retain` or `retain_completed`. Hover shows a dictionary entry instead of a translation. |
 | `… and open in tab` | In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. |
 | Cancel | To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. `Cancel all translations` stops all translation work without canceling an account menu. |
 
@@ -124,6 +125,7 @@ The rules of these operations are described under [Usage](docs/usage.md).
 - Merely passing over a comment can consume provider usage once Zed sends a Hover request.
 - If a comment contains a credential, the credential is sent with it.
 - With `features.automatic_selection` set to `true`, selecting Markdown prose just to copy it can also send it for translation.
+- Looking up a word also sends the line it is on.
 
 What each request contains is described under [What is sent](docs/usage.md#what-is-sent). Cost is described on each provider's page.
 
@@ -132,7 +134,7 @@ What each request contains is described under [What is sent](docs/usage.md#what-
 - [Configuration](docs/configuration.md): the full settings example, the server path, languages, features, timing, size limits, work and cache limits, and changing the model.
 - [ChatGPT](docs/providers/chatgpt.md): the settings of the ChatGPT provider and connecting your account.
 - [Anthropic API](docs/providers/anthropic.md): the settings of the Anthropic provider and its API key.
-- [Usage](docs/usage.md): Hover, selections, translations opened in a tab, status, canceling and retrying, and what is sent.
+- [Usage](docs/usage.md): Hover, selections, looking up words, translations opened in a tab, status, canceling and retrying, and what is sent.
 - [Behavior](docs/behavior.md): admission, what keeps work running, automatic selection, the cache, deadlines, retries, and pauses.
 - [Languages](docs/languages.md): supported languages, comment extraction, and language server settings.
 - [Development](docs/development.md): checks, the mock provider and its samples, CI, and the dependency policy.

@@ -963,6 +963,30 @@ fn a_notice_names_the_file_as_it_is_written_and_not_as_its_uri_encodes_it() {
 }
 
 #[test]
+fn a_selected_term_is_shown_as_a_dictionary_entry() {
+    let mut client = Client::new(&[]);
+    let uri = "file:///paragraph.md";
+    client.open(uri, "markdown", MARKDOWN_DOCUMENT, 1);
+    let range = range_for(MARKDOWN_DOCUMENT, "retry_count");
+    let action = client.action(uri, range.clone());
+    let execution = client.execute(action);
+    assert!(client.receive(execution, TIMEOUT).unwrap().is_null());
+    client.notice();
+    let hover = client.hover(uri, range["start"].clone());
+    assert_eq!(hover["range"], range);
+    assert_eq!(
+        hover["contents"]["value"],
+        concat!(
+            "> **Translation LSP**\n>\n> Mock translation (fixed sample)\n\n---\n\n",
+            "**retry\\_count** — 識別子\n\n1. 再試行の回数\n\n",
+            "retry (再試行) + count (回数) → 再試行した回数\n\n",
+            "*Example:* The retry\\_count value is preserved. — retry\\_count の値は保持される。\n"
+        )
+    );
+    client.finish(true);
+}
+
+#[test]
 fn whole_line_whitespace_is_preserved_and_multiple_ranges_remain_readable() {
     let mut client = Client::new(&[]);
     let uri = "file:///two-selections.md";
