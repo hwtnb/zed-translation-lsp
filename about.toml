@@ -180,5 +180,5 @@ git = [{ path = "LICENSE", checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539
 # updating the crate.
 [ra-ap-rustc_lexer.clarify]
 license = "MIT OR Apache-2.0"
-override-git-commit = "33295d734447c7a2c22c44190f11bce6164a035a"
+override-git-commit = "dc44e7f2c436b6041742e138b9c2176f093196d5"
 git = [{ path = "LICENSE-MIT", license = "MIT", checksum = "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1" }]
