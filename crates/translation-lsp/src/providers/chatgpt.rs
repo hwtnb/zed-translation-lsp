@@ -169,7 +169,7 @@ impl ChatGptProvider {
             "store": false,
             "stream": true,
             "instructions": prompt::instructions(target, &self.source_language),
-            "input": [{"role": "user", "content": body}],
+            "input": [{"role": "user", "content": prompt::message(body)}],
             "reasoning": {"effort": options.effort},
         });
         if let Some(speed) = options.speed {
@@ -219,7 +219,7 @@ impl ChatGptProvider {
         }
         self.admission.settle(key, intent, generation, &mut result);
         Ok(Translated {
-            text: result?,
+            text: prompt::translation(result?),
             context: access.key,
         })
     }

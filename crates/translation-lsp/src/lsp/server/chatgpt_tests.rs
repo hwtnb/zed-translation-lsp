@@ -1,7 +1,10 @@
 use super::*;
-use crate::providers::chatgpt::{
-    auth::AccountKey,
-    test_support::{Fixture, StreamTailGate},
+use crate::providers::{
+    chatgpt::{
+        auth::AccountKey,
+        test_support::{Fixture, StreamTailGate},
+    },
+    prompt,
 };
 use serde_json::json;
 
@@ -79,7 +82,7 @@ async fn manual_indented_selections_translate_in_code_plain_text_and_markdown() 
             .collect();
         assert_eq!(requests.len(), 1);
         let request: Value = serde_json::from_str(&requests[0].body).unwrap();
-        assert_eq!(request["input"][0]["content"], source);
+        assert_eq!(request["input"][0]["content"], prompt::message(source));
         assert!(client.receiver.try_iter().any(|message| matches!(message,
             Message::Notification(n) if n.params["message"].as_str().is_some_and(|m| m.contains("Translation ready")))));
     }
@@ -311,7 +314,9 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
                 body["instructions"]
                     .as_str()
                     .unwrap()
-                    .starts_with("Translate the text into English (en). Source language: auto.")
+                    .starts_with(
+                        "Translate the text inside the source_text tags into English (en). Source language: auto."
+                    )
             );
         }
         assert!(client.receiver.is_empty());
@@ -498,7 +503,7 @@ async fn documentation_comments_reach_http_and_return_translated_hover() {
             .collect();
         assert_eq!(requests.len(), 1);
         let request: Value = serde_json::from_str(&requests[0].body).unwrap();
-        assert_eq!(request["input"][0]["content"], body);
+        assert_eq!(request["input"][0]["content"], prompt::message(body));
         let Message::Response(reply) = client.receiver.try_recv().unwrap() else {
             panic!("Expected Hover response");
         };

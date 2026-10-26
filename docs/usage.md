@@ -63,7 +63,7 @@ To retry a failed range without selecting its text again, place the cursor insid
 
 ## What is sent
 
-Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
+Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The passage is marked as the text to translate, and the model is instructed to translate any instructions or questions in it instead of following or answering them. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy.
 
 Explicit selection and document actions send the requested text even when it is indented or contains only code. The model is instructed to preserve code and identifiers. Markdown prose eligibility limits only automatic background translation; the extension does not report the original text as a successful translation without contacting the provider.
 

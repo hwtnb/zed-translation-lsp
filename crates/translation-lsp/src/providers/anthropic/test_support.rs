@@ -409,7 +409,7 @@ async fn endpoint(
         let request: Value = serde_json::from_str(&body).unwrap();
         Reply::stream(completed(&format!(
             "訳{}",
-            request["messages"][0]["content"].as_str().unwrap()
+            crate::providers::prompt::source(request["messages"][0]["content"].as_str().unwrap())
         )))
     };
     let mut response = hyper::Response::builder().status(reply.status).header(

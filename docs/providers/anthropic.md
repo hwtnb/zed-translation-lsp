@@ -107,7 +107,7 @@ The `Anthropic API key…` menu saves, replaces, and removes the key. It has no 
 
 The text submitted for translation is described under [What is sent](../usage.md#what-is-sent).
 
-Each request contains the translation instructions as the system prompt and the text to translate as a single user message. Conversation history is not sent. The request asks for at most 64,000 output tokens, or fewer when `translation_limits.output_kib` is smaller. A translation read in Hover also asks for at most 16,384 tokens plus 4 tokens per byte of the source, so that text in a comment cannot make the model write at length; thinking counts toward this limit. A translation that reaches its limit is reported as an error instead of being shown incomplete.
+Each request contains the translation instructions as the system prompt and the text to translate, between `<source_text>` tags, as a single user message. Conversation history is not sent. The request asks for at most 64,000 output tokens, or fewer when `translation_limits.output_kib` is smaller. A translation read in Hover also asks for at most 16,384 tokens plus 4 tokens per byte of the source, so that text in a comment cannot make the model write at length; thinking counts toward this limit. A translation that reaches its limit is reported as an error instead of being shown incomplete.
 
 ## Errors and pauses
 

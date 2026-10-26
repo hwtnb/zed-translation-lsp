@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::key::ApiKey;
-use super::test_support::{Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
+use super::test_support::{self, Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
 use super::*;
 use crate::config::AnthropicEffort;
 use crate::providers::error::{ErrorKind, Notification};
@@ -100,12 +100,12 @@ async fn request_sends_only_the_documented_headers_and_fields() {
         assert_eq!(request["stream"], true);
         assert!(
             request["system"].as_str().unwrap().starts_with(
-                "Translate the text into Japanese (ja). Source language: English (en)."
+                "Translate the text inside the source_text tags into Japanese (ja). Source language: English (en)."
             )
         );
         assert_eq!(
             request["messages"],
-            json!([{"role": "user", "content": source}])
+            json!([{"role": "user", "content": prompt::message(source)}])
         );
         assert_eq!(
             request["output_config"],
@@ -116,6 +116,19 @@ async fn request_sends_only_the_documented_headers_and_fields() {
             json!({"type": if thinking { "adaptive" } else { "disabled" }})
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tags_the_model_repeats_around_the_translation_are_removed() {
+    let fixture = Fixture::new().await;
+    let provider = fixture.provider();
+    fixture.reply(Reply::stream(test_support::completed(
+        "<source_text>\n訳文\n</source_text>",
+    )));
+    assert_eq!(
+        translate(&provider, Intent::Explicit).await.unwrap(),
+        "訳文"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -5,6 +5,7 @@ use crate::providers::{
         key::KeyId,
         test_support::{Fixture, Reply, started, text_block},
     },
+    prompt,
 };
 use serde_json::json;
 
@@ -162,7 +163,7 @@ async fn worker_translation_is_cached_and_read_by_hover() {
     let request: Value = serde_json::from_str(&state.records[0].body).unwrap();
     assert_eq!(
         request["messages"],
-        json!([{"role": "user", "content": "Read this."}])
+        json!([{"role": "user", "content": prompt::message("Read this.")}])
     );
 }
 

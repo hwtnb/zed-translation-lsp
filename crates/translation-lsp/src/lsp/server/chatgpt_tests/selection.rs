@@ -307,7 +307,7 @@ async fn automatic_selection_uses_document_code_context_and_sends_only_selected_
             let state = fixture.state.lock().unwrap();
             assert_eq!(state.records.len(), before + 1, "{selected:?}");
             let body: Value = serde_json::from_str(&state.records.last().unwrap().body).unwrap();
-            let sent = body["input"][0]["content"].as_str().unwrap();
+            let sent = prompt::source(body["input"][0]["content"].as_str().unwrap());
             assert_eq!(sent, selected);
             for literal in ["retry_count", "https://example.test/path"] {
                 if selected.contains(literal) {

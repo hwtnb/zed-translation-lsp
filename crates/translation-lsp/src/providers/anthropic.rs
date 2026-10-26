@@ -258,7 +258,7 @@ impl TranslationProvider for AnthropicProvider {
             "max_tokens": max_tokens(output, text, self.output_limit),
             "stream": true,
             "system": prompt::instructions(target_language, &self.source_language),
-            "messages": [{"role": "user", "content": text}],
+            "messages": [{"role": "user", "content": prompt::message(text)}],
             "output_config": {"effort": options.effort},
             "thinking": {"type": if anthropic_thinking(&options.model, options.effort, options.thinking) {
                 "adaptive"
@@ -322,7 +322,7 @@ impl TranslationProvider for AnthropicProvider {
             response::log_speed(speed, &completed);
         }
         Ok(Translated {
-            text: completed.text,
+            text: prompt::translation(completed.text),
             context: expected,
         })
     }
