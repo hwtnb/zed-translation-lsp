@@ -1,6 +1,6 @@
 id = "translation-lsp"
 name = "Translation LSP"
-version = "0.1.1"
+version = "0.2.0"
 schema_version = 1
 description = "Translate code comments and selected text with ChatGPT or the Anthropic API while keeping the original source unchanged."
 authors = ["hwtnb"]
