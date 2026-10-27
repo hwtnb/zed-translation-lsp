@@ -147,10 +147,14 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | C++ | `cpp` |
 | Python | `python` |
 | Go | `go` |
+| Java | `java` |
+| Kotlin | `kotlin` |
+| Swift | `swift` |
 | Ruby | `ruby` |
 | PHP | `php` |
 | HTML | `html` |
 | CSS | `css` |
+| SQL | `sql` |
 | JSON | `json` |
 | JSONC | `jsonc` |
 | YAML | `yaml` |

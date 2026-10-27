@@ -80,7 +80,7 @@ mod tests {
         *,
     };
 
-    const LANGUAGE_IDS: [&str; 23] = [
+    const LANGUAGE_IDS: [&str; 27] = [
         "rust",
         "javascript",
         "typescript",
@@ -90,10 +90,14 @@ mod tests {
         "cpp",
         "python",
         "go",
+        "java",
+        "kotlin",
+        "swift",
         "ruby",
         "php",
         "html",
         "css",
+        "sql",
         "json",
         "jsonc",
         "yaml",
@@ -283,16 +287,16 @@ mod tests {
                 assert_eq!(
                     error.to_string(),
                     "features.languages keys must be one of rust, javascript, typescript, \
-                     typescriptreact, csharp, c, cpp, python, go, ruby, php, html, css, json, \
-                     jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, \
-                     markdown, plaintext"
+                     typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, \
+                     php, html, css, sql, json, jsonc, yaml, toml, shellscript, powershell, \
+                     dockerfile, dockercompose, markdown, plaintext"
                 );
                 assert_eq!(format!("{error:?}"), error.to_string());
             }
         }
         // The named check reports before the generic error.
         let error = Settings::from_options(Some(json!({
-            "features": {"languages": {"kotlin": {}}, "unknown": true},
+            "features": {"languages": {"lua": {}}, "unknown": true},
             "translation_limits": []
         })))
         .err()
@@ -354,9 +358,9 @@ mod tests {
         assert_eq!(
             message(json!({"languages": {"markdown": {"comment_hover": false}}})),
             "features.languages.markdown.comment_hover is not available; comment_hover applies \
-             to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, ruby, \
-             php, html, css, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, \
-             dockercompose"
+             to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, java, \
+             kotlin, swift, ruby, php, html, css, sql, json, jsonc, yaml, toml, shellscript, \
+             powershell, dockerfile, dockercompose"
         );
     }
 }

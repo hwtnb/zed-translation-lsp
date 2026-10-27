@@ -1546,6 +1546,22 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         ),
         ("file:///general.ts", "typescript", "const n: number = 1;"),
         ("file:///general.go", "go", "var s = \"// string\""),
+        (
+            "file:///general.java",
+            "java",
+            "String s = \"// string\" + '/';",
+        ),
+        (
+            "file:///general.kt",
+            "kotlin",
+            "val s = \"// string ${\"/* string */\"}\"",
+        ),
+        ("file:///general.swift", "swift", "let s = #\"// string\"#"),
+        (
+            "file:///general.sql",
+            "sql",
+            "SELECT '-- string', E'\\'' AS s;",
+        ),
         ("file:///general.rb", "ruby", "s = \"# string\""),
         ("file:///general.php", "php", "<?php $s = \"// string\";"),
         ("file:///general.cs", "csharp", "var s = @\"// string\";"),
@@ -1563,21 +1579,13 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
         ("file:///Dockerfile", "dockerfile", "ENV s=\"# string\""),
         ("file:///compose.yaml", "dockercompose", "s: \"# string\""),
     ] {
-        let hash = matches!(
-            language,
-            "ruby"
-                | "yaml"
-                | "toml"
-                | "shellscript"
-                | "powershell"
-                | "dockerfile"
-                | "dockercompose"
-        );
-        let comment = if hash {
-            COMMENT.replace("//", "#")
-        } else {
-            COMMENT.to_owned()
+        let marker = match language {
+            "ruby" | "yaml" | "toml" | "shellscript" | "powershell" | "dockerfile"
+            | "dockercompose" => "#",
+            "sql" => "--",
+            _ => "//",
         };
+        let comment = COMMENT.replace("//", marker);
         let source = format!("{lead}\n    {comment}\n");
         let range = range_for(&source, &comment);
         client.open(uri, language, &source, 1);
@@ -1603,6 +1611,10 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "rust" => format!("let t = r#\"{comment}\"#;"),
             "csharp" => format!("var t = @\"{comment}\";"),
             "go" => format!("var t = `{comment}`"),
+            "java" => format!("String t = \"\"\"\n{comment}\"\"\";"),
+            "kotlin" => format!("val t = \"\"\"{comment}\"\"\""),
+            "swift" => format!("let t = \"\"\"\n{comment}\n\"\"\""),
+            "sql" => format!("SELECT '{comment}';"),
             "ruby" => format!("t = \"{comment}\""),
             "php" => format!("<?php $t = \"{comment}\";"),
             // JSON strings cannot span lines.
@@ -1644,6 +1656,10 @@ fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
         ("file:///blocks.rs", "rust", "/*", "*/"),
         ("file:///blocks.js", "javascript", "/*", "*/"),
         ("file:///blocks.go", "go", "/*", "*/"),
+        ("file:///blocks.java", "java", "/*", "*/"),
+        ("file:///blocks.kt", "kotlin", "/*", "*/"),
+        ("file:///blocks.swift", "swift", "/*", "*/"),
+        ("file:///blocks.sql", "sql", "/*", "*/"),
         ("file:///blocks.css", "css", "/*", "*/"),
         ("file:///blocks.html", "html", "<!--", "-->"),
     ] {
@@ -2550,6 +2566,10 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
         ("file:///comment.yaml", "yaml", sample!("comment.yaml")),
         ("file:///comment.toml", "toml", sample!("comment.toml")),
         ("file:///comment.go", "go", sample!("comment.go")),
+        ("file:///comment.java", "java", sample!("comment.java")),
+        ("file:///comment.kt", "kotlin", sample!("comment.kt")),
+        ("file:///comment.swift", "swift", sample!("comment.swift")),
+        ("file:///comment.sql", "sql", sample!("comment.sql")),
         ("file:///comment.rb", "ruby", sample!("comment.rb")),
         ("file:///comment.php", "php", sample!("comment.php")),
         ("file:///comment.sh", "shellscript", sample!("comment.sh")),
@@ -2563,7 +2583,7 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
     ] {
         for ending in ["\n", "\r\n", "\r"] {
             let source = source.replace('\n', ending);
-            let start = source.find(['/', '#']).unwrap();
+            let start = source.find(['/', '#', '-']).unwrap();
             let end = source.find("failure.").unwrap() + "failure.".len();
             let original = &source[start..end];
             let range = range_for(
@@ -2825,8 +2845,9 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
         (
             json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
             "features.languages keys must be one of rust, javascript, typescript, \
-             typescriptreact, csharp, c, cpp, python, go, ruby, php, html, css, json, jsonc, \
-             yaml, toml, shellscript, powershell, dockerfile, dockercompose, markdown, plaintext",
+             typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, php, html, \
+             css, sql, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, \
+             dockercompose, markdown, plaintext",
         ),
         (
             json!({"features": {"languages": {"rust": {"document_action": false}}}}),

@@ -13,7 +13,7 @@ path = ["hwtnb", "zed-translation-lsp", "releases", "download", "**"]
 
 [language_servers.translation-lsp]
 name = "Translation LSP"
-languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "Go", "Ruby", "PHP", "HTML", "CSS", "JSON", "JSONC", "YAML", "TOML", "Shell Script", "PowerShell", "Dockerfile", "Docker Compose", "Markdown", "Plain Text"]
+languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "Go", "Java", "Kotlin", "Swift", "Ruby", "PHP", "HTML", "CSS", "SQL", "JSON", "JSONC", "YAML", "TOML", "Shell Script", "PowerShell", "Dockerfile", "Docker Compose", "Markdown", "Plain Text"]
 
 [language_servers.translation-lsp.language_ids]
 Rust = "rust"
@@ -25,10 +25,14 @@ C = "c"
 "C++" = "cpp"
 Python = "python"
 Go = "go"
+Java = "java"
+Kotlin = "kotlin"
+Swift = "swift"
 Ruby = "ruby"
 PHP = "php"
 HTML = "html"
 CSS = "css"
+SQL = "sql"
 JSON = "json"
 JSONC = "jsonc"
 YAML = "yaml"

@@ -1733,6 +1733,16 @@ fn readers_take_time_in_proportion_to_the_text() {
         "$a-> /**/ __halt_compiler ",
         "1%url(",
         "&#x2f;",
+        "/**/",
+        "\"\\(",
+        "#\"\"\"",
+        "#\"\"\"a",
+        "#\"\\#(",
+        "#/",
+        "#/ \n",
+        "$$\"",
+        "\"${",
+        "E'\\",
     ];
     let pieces: Vec<_> = signs.iter().map(String::as_str).chain(openings).collect();
     let size = 64 << 10;
@@ -1749,6 +1759,10 @@ fn readers_take_time_in_proportion_to_the_text() {
         "html",
         "ruby",
         "php",
+        "java",
+        "kotlin",
+        "swift",
+        "sql",
     ] {
         // A Dockerfile reads words only in an instruction that can have a here-document.
         let heads: &[&str] = if language == "dockerfile" {
@@ -1792,6 +1806,29 @@ fn dockerfile_decides_once_what_a_word_is() {
     // build on a slow machine. Reading the word again at each `${name ... }`
     // took three minutes.
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+#[test]
+fn swift_looks_for_the_end_of_a_raw_string_on_a_line_once() {
+    // Whether `#"""` closes on its line depends on the `#` of each string,
+    // and strings in interpolations can open many on one line.
+    for (text, hidden) in [
+        ("##\"\"\"a\"#b\"##\n//c", false),
+        ("##\"\"\"a\"##b\"#\n//c", false),
+        ("##\"\"\"a\"#b\n//c\n\"\"\"##", true),
+        ("#\"\"\"\\#(##\"\"\"a\"#)\"#\n//c\n\"\"\"#", true),
+    ] {
+        assert_eq!(swift(text).is_empty(), hidden, "{text:?}");
+    }
+    let size = 512 << 10;
+    for piece in ["#\"\"\"\\#(", "##\"\"\"\\##(#\"\"\"\\#("] {
+        let text = piece.repeat(size / piece.len());
+        let started = Instant::now();
+        assert!(swift(&text).is_empty());
+        // Tens of milliseconds in a debug build. Looking from each `"""` to
+        // the end of the line took over five minutes.
+        assert!(started.elapsed() < Duration::from_secs(5), "{piece:?}");
+    }
 }
 
 #[test]
@@ -1909,6 +1946,11 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
         "in {a:, ",
         "/(?<a>)/ =~ ",
         "\r\n",
+        "\"\\(",
+        "#\"",
+        "#/",
+        "\"${",
+        "E'",
     ];
     // A fixed sequence, so that every run reads the same texts.
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -1933,6 +1975,10 @@ fn readers_take_time_in_proportion_to_texts_of_several_parts() {
         "html",
         "ruby",
         "php",
+        "java",
+        "kotlin",
+        "swift",
+        "sql",
     ] {
         for _ in 0..160 {
             let size = (16 + below(49)) << 10;
@@ -2368,6 +2414,167 @@ fn php_comments_are_read_in_code_and_exclude_strings_and_attributes() {
     }
 }
 
+fn java(text: &str) -> Vec<String> {
+    sources("java", "untitled:comment", text)
+}
+
+#[test]
+fn java_comments_exclude_strings_text_blocks_and_characters() {
+    let text = concat!(
+        "/** Doc. */\n",
+        "/// Markdown doc.\n",
+        "// line\n",
+        "String s = \"// not\" + '/' + \"/* not */\"; // trailing\n",
+        "char c = '\\''; /* after char */\n",
+        "String t = \"\\\" // not\"; /**/\n",
+        "String b = \"\"\"\n    // not\n    \\\"\"\" /* not */\n    \"\"\"; // after block\n",
+        "String u = \"unclosed // not\n",
+        "// after unclosed\n",
+        "/* unclosed",
+    );
+    assert_eq!(
+        java(text),
+        [
+            "/** Doc. */",
+            "/// Markdown doc.",
+            "// line",
+            "// trailing",
+            "/* after char */",
+            "/**/",
+            "// after block",
+            "// after unclosed",
+        ]
+    );
+    // `///` lines are documentation, apart from the `//` lines after them.
+    assert_eq!(
+        bodies("java", "/// One\n/// two\n// Three\nclass A {}\n"),
+        ["One\ntwo", "Three"]
+    );
+    assert_eq!(bodies("java", "/** Doc */"), ["Doc "]);
+}
+
+fn kotlin(text: &str) -> Vec<String> {
+    sources("kotlin", "untitled:comment", text)
+}
+
+#[test]
+fn kotlin_comments_nest_and_include_those_in_templates() {
+    let text = concat!(
+        "#!/usr/bin/env kotlin\n",
+        "/** KDoc. */\n",
+        "/* outer /* nested */ end */\n",
+        "val s = \"// not ${a /* in template */ + \"// not\"} $b\" // trailing\n",
+        "val r = \"\"\"// not ${ \"\"\"/* not */\"\"\" } \"\"\"\" // after raw\n",
+        "val m = $$\"${a} // not $${b /* in */}\" // after dollars\n",
+        "val c = '\"' // after char\n",
+        "fun `name // not`() {} // after name\n",
+        "val u = \"unclosed // not\n",
+        "// after unclosed\n",
+        "/* unclosed /* */",
+    );
+    assert_eq!(
+        kotlin(text),
+        [
+            "/** KDoc. */",
+            "/* outer /* nested */ end */",
+            "/* in template */",
+            "// trailing",
+            "// after raw",
+            "/* in */",
+            "// after dollars",
+            "// after char",
+            "// after name",
+            "// after unclosed",
+            "/* unclosed /* */",
+        ]
+    );
+    assert_eq!(
+        bodies("kotlin", "// One\n// two\nfun f() {}\n/** Doc */"),
+        ["One\ntwo", "Doc "]
+    );
+}
+
+fn swift(text: &str) -> Vec<String> {
+    sources("swift", "untitled:comment", text)
+}
+
+#[test]
+fn swift_comments_nest_and_include_those_in_interpolations() {
+    let text = concat!(
+        "#!/usr/bin/swift\n",
+        "/// Doc.\n",
+        "/* outer /* nested */ end */\n",
+        "let s = \"// not \\(a /* in interpolation */ + \"// not\") \\\" // not\" // trailing\n",
+        "let m = \"\"\"\n    // not \\(b) \"\" \n    \"\"\" // after multiline\n",
+        "let r = #\"// not \\(c) \\#(d /* in raw */) \"# // after raw\n",
+        "let q = #\"\"\"# // after quote\n",
+        "let x = #/https?:\\/\\/[a-z]+ // not/# // after regex\n",
+        "func `name // not`() {} // after name\n",
+        "let u = \"unclosed // not\n",
+        "// after unclosed\n",
+        "/* unclosed /* */",
+    );
+    assert_eq!(
+        swift(text),
+        [
+            "/// Doc.",
+            "/* outer /* nested */ end */",
+            "/* in interpolation */",
+            "// trailing",
+            "// after multiline",
+            "/* in raw */",
+            "// after raw",
+            "// after quote",
+            "// after regex",
+            "// after name",
+            "// after unclosed",
+            "/* unclosed /* */",
+        ]
+    );
+    // A line break after `#/` and blanks opens a regular expression of several lines.
+    assert_eq!(swift("let x = #/ \n  // not\n  /#\n// after"), ["// after"]);
+    assert_eq!(
+        bodies("swift", "/// One\n/// two\n// Three\nfunc f() {}\n"),
+        ["One\ntwo", "Three"]
+    );
+}
+
+fn sql(text: &str) -> Vec<String> {
+    sources("sql", "untitled:comment", text)
+}
+
+#[test]
+fn sql_comments_exclude_strings_and_names_and_include_those_in_dollar_quotes() {
+    let text = concat!(
+        "-- Header\n",
+        "SELECT 'it''s -- not' AS a, \"col -- not\", `b /* not */` -- trailing\n",
+        "FROM t /* block */ WHERE x = E'\\'' -- after escape\n",
+        "  AND y = E'\\\\' -- after backslash\n",
+        "  AND z = 'a\\' -- after plain backslash\n",
+        "/* not /* nested */ -- after block\n",
+        "CREATE FUNCTION f() RETURNS int AS $$\n",
+        "BEGIN\n  -- in body\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;\n",
+        "SELECT 'unclosed -- seen\n",
+        "/* unclosed",
+    );
+    assert_eq!(
+        sql(text),
+        [
+            "-- Header",
+            "-- trailing",
+            "/* block */",
+            "-- after escape",
+            "-- after backslash",
+            "-- after plain backslash",
+            "/* not /* nested */",
+            "-- after block",
+            "-- in body",
+            "-- seen",
+        ]
+    );
+    assert_eq!(bodies("sql", "-- One\n-- two\nSELECT 1;\n"), ["One\ntwo"]);
+}
+
 #[test]
 fn rust_tokens_ignore_literals_and_shebang_and_wait_for_closed_blocks() {
     let text = concat!(
@@ -2641,29 +2848,15 @@ fn the_limit_stops_the_tree_sitter_languages_and_no_other() {
             "{language}"
         );
     }
-    for language in [
-        "rust",
-        "javascript",
-        "typescript",
-        "json",
-        "jsonc",
-        "yaml",
-        "toml",
-        "dockercompose",
-        "shellscript",
-        "powershell",
-        "dockerfile",
-        "markdown",
-    ] {
+    for language in Language::ALL.into_iter().filter(|language| {
+        !matches!(
+            language,
+            Language::C | Language::Cpp | Language::CSharp | Language::Python
+        )
+    }) {
         assert!(
-            Comments::parse(
-                Language::from_id(language).unwrap(),
-                &uri,
-                text,
-                Duration::ZERO
-            )
-            .is_ok(),
-            "{language}"
+            Comments::parse(language, &uri, text, Duration::ZERO).is_ok(),
+            "{language:?}"
         );
     }
 }

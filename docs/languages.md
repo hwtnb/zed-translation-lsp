@@ -6,7 +6,7 @@ This page lists the languages whose comments are translated on Hover, the rules 
 
 ## Supported languages
 
-Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Ruby, PHP, HTML, CSS, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
+Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, CSS, SQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
 
 ## Comment extraction
 
@@ -21,7 +21,7 @@ Where the text is unfinished, or where the server cannot read it as the language
 - An unclosed block comment is not translated, and no comment after it is found, until it is closed.
 - An unclosed string or other literal hides the comments after it, or ends at the end of its line, as the language reads it.
 - Around a syntax error, or where the language can read the text in more than one way, a comment is left out, or extraction stops there. The comments before that point remain available.
-- In the forms described under Ruby and HTML, text that the language does not read as a comment can be taken as one.
+- In the forms described under Java, Ruby, HTML, and SQL, text that the language does not read as a comment can be taken as one.
 
 In all of these cases, select the text and use `Translate selection to …` to translate it.
 
@@ -57,6 +57,22 @@ Python supports `#` comments and docstrings at the beginning of a module, class,
 
 Go supports `//` and `/* ... */`. Text inside strings, runes, and raw strings is not treated as a comment. Directives are skipped by the rule of Go's own `go/ast`: a `//` comment whose text right after the slashes is `line `, `extern `, `export `, or lowercase letters and digits followed by a colon and another such character, as in `//go:build` and `//nolint:errcheck`. An unclosed string or rune ends at the end of its line. An unclosed raw string or block comment hides everything after it.
 
+### Java
+
+Java supports `//` and `/* ... */`, and the documentation comments `/** ... */` and `///`. Consecutive `///` lines are translated together, apart from `//` lines. Text inside strings, text blocks, and character literals is not treated as a comment. An unclosed string or character literal ends at the end of its line. An unclosed text block or block comment hides everything after it.
+
+Java reads Unicode escapes such as `\u002F` before it reads tokens; the server does not. A comment written with them is not found, and a quote written as one neither opens nor closes a string.
+
+### Kotlin
+
+Kotlin supports `//` and `/* ... */`, which nest, including KDoc comments `/** ... */`. Text inside strings, raw strings `"""..."""`, character literals, and names between backticks is not treated as a comment. A comment inside `${ ... }` of a string is a comment; in a string that starts with several `$`, such as `$$"..."`, a template starts with as many `$`. A shebang on the first line is skipped. An unclosed string or character literal ends at the end of its line. An unclosed raw string or block comment hides everything after it.
+
+### Swift
+
+Swift supports `//` and `/* ... */`, which nest, including the documentation comments `///` and `/** ... */`. Text inside strings, multi-line strings, raw strings such as `#"..."#`, regular expressions between `#/` and `/#`, and names between backticks is not treated as a comment. A comment inside `\( ... )` of a string is a comment. A shebang on the first line is skipped. An unclosed string ends at the end of its line. An unclosed multi-line string or block comment hides everything after it. An unclosed `#/` hides the rest of its line, or everything after it when only blanks and a line break follow `#/`.
+
+A regular expression between single slashes, as in `/a+/`, is not followed, because Swift decides whether `/` starts one by the code before it. A quote inside one can hide the comments after it on its line.
+
 ### Ruby
 
 Ruby supports `#` comments and `=begin` ... `=end` blocks. A shebang on the first line is skipped, and so is everything after `__END__`.
@@ -82,6 +98,14 @@ Text inside tags and their attribute values, and inside `<textarea>`, `<title>`,
 The server reads HTML without building the tree of the document. Where the tree changes how a browser reads the text, the server reads it as in the body of a document, with these exceptions. `<![CDATA[` runs to `]]>`, as in SVG and MathML, also elsewhere. The text of `<script>` and `<style>` inside SVG and MathML is read as JavaScript and CSS. An element such as `<textarea>` inside `<select>`, which a browser ignores there, still holds no comment. An unclosed comment or tag hides everything after it, and so does `<plaintext>`.
 
 CSS supports `/* ... */`. Text inside strings and inside an unquoted `url( ... )` is not treated as a comment. An unclosed comment hides everything after it.
+
+### SQL
+
+SQL is read by the token rules of Zed's SQL extension, whatever the dialect. It supports `--` and `/* ... */`, which do not nest. Text inside strings in single quotes, and inside names in double quotes or backticks, is not treated as a comment. A quote doubled inside them stands for itself, and in `E'...'` a backslash escapes the next character. A quote or `/*` that is never closed opens no string or comment, so the comments after it remain available.
+
+Text between `$$` or `$tag$`, such as the body of a PostgreSQL function, is read as SQL, so the comments in a function body are found. A string written between `$$` that holds a quote or `--` can therefore hide the comments after it or have part of its text taken as a comment.
+
+The forms of other dialects are not followed. A MySQL `#` comment is not found. MySQL escapes a quote with a backslash before it; the server closes the string there. A `/*` inside a block comment does not nest as it does in PostgreSQL.
 
 ### JSON, YAML, and TOML
 
@@ -171,6 +195,8 @@ C and C++ are built into Zed. If you list their language servers explicitly, add
 Python is built into Zed. If you configure `languages.Python.language_servers`, add `"translation-lsp"` to that list alongside your existing Python servers.
 
 Go and CSS are built into Zed, and Zed installs its HTML extension by default. For Ruby and PHP files, install Zed's [Ruby extension](https://github.com/zed-extensions/ruby) and [PHP extension](https://github.com/zed-extensions/php). The settings keys are `Go`, `Ruby`, `PHP`, `HTML`, and `CSS`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
+
+For Java, Kotlin, Swift, and SQL files, install Zed's [Java extension](https://github.com/zed-extensions/java), [Kotlin extension](https://github.com/zed-extensions/kotlin), [Swift extension](https://github.com/zed-extensions/swift), and [SQL extension](https://github.com/zed-extensions/sql). The settings keys are `Java`, `Kotlin`, `Swift`, and `SQL`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 JSON, JSONC, and YAML are built into Zed. For TOML files, install Zed's [TOML extension](https://github.com/zed-extensions/toml). The settings keys are `JSON`, `JSONC`, `YAML`, and `TOML`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 

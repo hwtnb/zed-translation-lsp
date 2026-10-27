@@ -23,11 +23,15 @@ mod data;
 mod dockerfile;
 mod go;
 mod html;
+mod java;
+mod kotlin;
 mod php;
 mod powershell;
 mod python;
 mod ruby;
 mod shell;
+mod sql;
+mod swift;
 mod syntax;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,9 +157,13 @@ impl Comments {
             Language::CSharp => csharp::parse(text, deadline),
             Language::Rust => Some(rust::parse(text)),
             Language::Go => Some(go::parse(text)),
+            Language::Java => Some(java::parse(text)),
+            Language::Kotlin => Some(kotlin::parse(text)),
+            Language::Swift => Some(swift::parse(text)),
             Language::Html => Some(html::parse(text)),
             Language::Css => Some(css::parse(text)),
             Language::Php => Some(php::parse(text)),
+            Language::Sql => Some(sql::parse(text)),
             Language::Ruby => Some(ruby::parse(text)),
             Language::Json
             | Language::Jsonc

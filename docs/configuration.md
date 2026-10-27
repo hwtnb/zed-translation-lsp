@@ -147,10 +147,14 @@ The keys of `languages` are the following language IDs, in lowercase:
 | C++ | `cpp` |
 | Python | `python` |
 | Go | `go` |
+| Java | `java` |
+| Kotlin | `kotlin` |
+| Swift | `swift` |
 | Ruby | `ruby` |
 | PHP | `php` |
 | HTML | `html` |
 | CSS | `css` |
+| SQL | `sql` |
 | JSON | `json` |
 | JSONC | `jsonc` |
 | YAML | `yaml` |
