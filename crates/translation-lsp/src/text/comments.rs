@@ -7,6 +7,7 @@ use std::{
     ops::Range,
     panic::{self, AssertUnwindSafe},
     sync::Once,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -83,6 +84,12 @@ thread_local! {
     static PANICKED_AT: Cell<Option<String>> = const { Cell::new(None) };
 }
 
+/// The stack of the thread that reads comments. Oxc parses nested code by
+/// recursion, with no limit of its own on the depth, so a deeply nested
+/// script would overflow the stack of the thread that handles requests,
+/// which is 1 MiB on Windows. Only the part of the stack in use takes memory.
+const READING_STACK: usize = 256 << 20;
+
 /// A panic message can quote the text being read. While a thread reads
 /// comments, keep only the place of its panic; report every other panic as before.
 fn keep_reading_panics_quiet() {
@@ -114,15 +121,28 @@ impl Comments {
     ) -> Result<Self, Failure> {
         let deadline = Instant::now() + limit;
         keep_reading_panics_quiet();
-        READING.set(true);
-        let read = panic::catch_unwind(AssertUnwindSafe(|| {
-            Self::read(language, uri, text, deadline)
-        }));
-        READING.set(false);
+        // Reads, and gives the place of a panic if the reading raised one.
+        let read = move || {
+            READING.set(true);
+            let read = panic::catch_unwind(AssertUnwindSafe(|| {
+                Self::read(language, uri, text, deadline)
+            }));
+            READING.set(false);
+            read.map_err(|_| PANICKED_AT.take())
+        };
+        let read = thread::scope(|scope| {
+            thread::Builder::new()
+                .name("comments".into())
+                .stack_size(READING_STACK)
+                .spawn_scoped(scope, read)
+                .map(|reader| reader.join().unwrap_or(Err(None)))
+        })
+        // Where no such thread can start, read with the stack there is.
+        .unwrap_or_else(|_| read());
         match read {
             Ok(Some(comments)) => Ok(Self(comments)),
             Ok(None) => Err(Failure::TimedOut),
-            Err(_) => Err(Failure::Panicked(PANICKED_AT.take())),
+            Err(place) => Err(Failure::Panicked(place)),
         }
     }
 

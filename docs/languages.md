@@ -39,7 +39,7 @@ Rust supports `//` and `/* ... */`, which nest, and the documentation comments `
 
 JavaScript, JSX, TypeScript, and TSX support `//` and `/* ... */`, including JSDoc comments `/** ... */` and comments in JSX such as `{/* ... */}`. The file name gives the rules of modules and declarations, as for `.mjs`, `.cjs`, `.mts`, `.cts`, and `.d.ts`. Text inside strings, template literals, and regular expressions is not treated as a comment. A hashbang on the first line is skipped.
 
-A syntax error that stops the parser hides the comments after it.
+A syntax error that stops the parser hides the comments after it. Code nested more than about 100,000 levels deep, such as that many `[` in a row, stops the language server, because the parser reads each level of nesting by recursion. This also holds for the scripts of an HTML document.
 
 ### C#
 

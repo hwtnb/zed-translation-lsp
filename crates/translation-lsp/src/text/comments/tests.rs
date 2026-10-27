@@ -2117,6 +2117,23 @@ fn html_comments_exclude_tags_and_raw_text_and_read_scripts_and_styles() {
 }
 
 #[test]
+fn deeply_nested_scripts_are_read_on_a_stack_of_their_own() {
+    // Oxc reads each level by recursion. 20,000 levels take tens of
+    // megabytes of stack in a debug build, more than the thread of a test
+    // or the main thread of a server on Windows has.
+    let uri = "file:///nested.js".parse().unwrap();
+    let depth = 20_000;
+    let script = format!(
+        "let v = {}0{}; // after\n",
+        "[".repeat(depth),
+        "]".repeat(depth)
+    );
+    let html = format!("<script>{script}</script><!-- after -->");
+    assert_eq!(parsed("javascript", &uri, &script).0.len(), 1);
+    assert_eq!(parsed("html", &uri, &html).0.len(), 2);
+}
+
+#[test]
 fn html_scripts_end_where_the_tokenizer_ends_them() {
     // After `<!--`, `<script>` makes the next `</script>` part of the script.
     let text = concat!(
