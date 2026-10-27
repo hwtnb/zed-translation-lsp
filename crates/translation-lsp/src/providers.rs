@@ -1,11 +1,17 @@
 pub(crate) mod admission;
 pub(crate) mod anthropic;
+pub(crate) mod api_key;
 pub(crate) mod chatgpt;
 pub(crate) mod credential_directory;
 pub(crate) mod dictionary;
 pub(crate) mod error;
+#[cfg(test)]
+pub(crate) mod http_fixture;
 pub(crate) mod mock;
+pub(crate) mod openai_api;
+pub(crate) mod openai_compatible;
 pub(crate) mod prompt;
+pub(crate) mod responses;
 pub(crate) mod sse;
 pub(crate) mod transport;
 pub(crate) mod unset;
@@ -76,6 +82,19 @@ impl AuthUiState {
     pub fn needs_account(self) -> bool {
         matches!(self, Self::SignedOut | Self::PlanDisabled)
     }
+}
+
+/// Output tokens a range translation may use besides those that grow with its
+/// source. Reasoning counts toward the limit, so this leaves room for it.
+const RANGE_OUTPUT_ALLOWANCE: usize = 16_384;
+/// Output tokens a range translation may use for each byte of its source.
+const RANGE_OUTPUT_PER_SOURCE_BYTE: usize = 4;
+
+/// The output tokens a provider asks for at most when it translates `source`
+/// for a range, so that text in a comment cannot make the model write at
+/// length when the pointer only passes over it.
+pub(crate) fn range_output_tokens(source: &str) -> usize {
+    RANGE_OUTPUT_ALLOWANCE.saturating_add(source.len().saturating_mul(RANGE_OUTPUT_PER_SOURCE_BYTE))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

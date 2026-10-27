@@ -770,7 +770,7 @@ mod separate_outputs_tests {
     use std::iter;
 
     use super::*;
-    use crate::providers::{Intent, Source, anthropic::key::KeyId};
+    use crate::providers::{Intent, Source, api_key::KeyId};
 
     fn settings(separate: bool) -> Settings {
         let mut provider = serde_json::json!({"name": "anthropic"});

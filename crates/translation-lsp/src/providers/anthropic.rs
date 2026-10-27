@@ -1,14 +1,15 @@
-pub(crate) mod key;
 mod response;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 #[cfg(test)]
 use std::path::Path;
-use std::{env, mem, path::PathBuf};
+use std::{mem, path::PathBuf};
 
-use key::{ApiKey, KeyFile, KeyId, terminal};
 use serde_json::json;
+
+#[cfg(test)]
+use super::api_key::test_support::Terminal as SyntheticTerminal;
 
 #[cfg(test)]
 use crate::config::{AnthropicEffort, limits::TranslationLimits};
@@ -18,9 +19,10 @@ use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
+    api_key::{KeyFile, KeyId, KeySpec, Terminal},
     dictionary,
-    error::{Cause, Error, Service, credentials::CredentialError},
-    prompt, transport,
+    error::{Error, Service, credentials::CredentialError},
+    prompt, range_output_tokens, transport,
 };
 
 const API: &str = "https://api.anthropic.com/v1";
@@ -28,12 +30,25 @@ const VERSION: &str = "2023-06-01";
 /// `speed` is a beta field, so it is sent with this header whatever its value.
 const SPEED_BETA: &str = "fast-mode-2026-02-01";
 const MAX_OUTPUT_TOKENS: usize = 64_000;
-/// Output tokens a range translation may use besides those that grow with its
-/// source. Thinking counts toward `max_tokens`, so this leaves room for it.
-const RANGE_OUTPUT_ALLOWANCE: usize = 16_384;
-/// Output tokens a range translation may use for each byte of its source.
-const RANGE_OUTPUT_PER_SOURCE_BYTE: usize = 4;
 const SERVICE: Service = Service::Anthropic;
+
+macro_rules! menu {
+    () => {
+        "Anthropic API key…"
+    };
+}
+const MENU: &str = menu!();
+const SEVERAL_WORKSPACES: &str = concat!(
+    "The API key works in more than one workspace, and the server does not send a workspace ",
+    "ID. Create a key for a single workspace in the Claude Console, then run \"",
+    menu!(),
+    "\" from the code actions to replace the key"
+);
+const REJECTED: &str = concat!(
+    "The API key was rejected. Run \"",
+    menu!(),
+    "\" from the code actions to replace it"
+);
 
 const SAVE: &str = "translation-lsp.save-anthropic-key";
 const REMOVE: &str = "translation-lsp.remove-anthropic-key";
@@ -51,7 +66,6 @@ const COMMANDS: [ProviderCommand; 2] = [
     },
 ];
 const REMOVAL: &str = "Remove the saved Anthropic API key from this computer? The key stays valid until you delete it in the Claude Console.";
-const CONFIRM: &str = "Remove";
 
 /// The `max_tokens` a request asks for. A range translation is also bounded by
 /// the size of its source, so that text in a comment cannot make the model write
@@ -59,10 +73,7 @@ const CONFIRM: &str = "Remove";
 fn max_tokens(output: Output, source: &str, output_limit: SizeLimit) -> usize {
     let limit = MAX_OUTPUT_TOKENS.min(output_limit.bytes());
     match output {
-        Output::Range => limit.min(
-            RANGE_OUTPUT_ALLOWANCE
-                .saturating_add(source.len().saturating_mul(RANGE_OUTPUT_PER_SOURCE_BYTE)),
-        ),
+        Output::Range => limit.min(range_output_tokens(source)),
         Output::Document => limit,
     }
 }
@@ -75,14 +86,6 @@ fn key_commands(usable: bool) -> Vec<ProviderCommand> {
     } else {
         vec![save]
     }
-}
-
-#[derive(Clone)]
-enum Terminal {
-    System,
-    /// Records the executable instead, and answers whether a window opened.
-    #[cfg(test)]
-    Synthetic(test_support::Terminal),
 }
 
 #[derive(Clone)]
@@ -110,7 +113,7 @@ impl AnthropicProvider {
             client: transport::client_builder()
                 .build()
                 .map_err(|_| Error::failed("Could not prepare the Anthropic HTTP client"))?,
-            key: KeyFile::new(key_directory),
+            key: KeyFile::new(KeySpec::anthropic(MENU), key_directory),
             terminal: Terminal::System,
             options,
             source_language,
@@ -144,7 +147,7 @@ impl AnthropicProvider {
     }
 
     #[cfg(test)]
-    pub fn with_terminal(mut self, terminal: test_support::Terminal) -> Self {
+    pub fn with_terminal(mut self, terminal: SyntheticTerminal) -> Self {
         self.terminal = Terminal::Synthetic(terminal);
         self
     }
@@ -153,51 +156,6 @@ impl AnthropicProvider {
     pub fn with_options(mut self, options: OutputOptions<AnthropicModel>) -> Self {
         self.options = options;
         self
-    }
-
-    /// The notice names the command either way: the window may be on a machine
-    /// the user is not sitting at.
-    async fn open_terminal(&self) -> Result<String, Error> {
-        let executable = env::current_exe()
-            .map_err(|_| Error::failed("Could not locate the language server executable"))?;
-        let command = terminal::manual_command(&executable);
-        let opened = match &self.terminal {
-            Terminal::System => terminal::open(&executable).await,
-            #[cfg(test)]
-            Terminal::Synthetic(terminal) => terminal.open(&executable),
-        };
-        if opened {
-            Ok(format!(
-                "A terminal window was opened. Enter the Anthropic API key there. If no window appeared, run this in a terminal: {command}"
-            ))
-        } else {
-            Err(Cause::Terminal {
-                purpose: "save the Anthropic API key",
-                command,
-            }
-            .into())
-        }
-    }
-
-    fn key_in_use(&self, expected: KeyId) -> Result<ApiKey, Error> {
-        let (key, current) = self.key.read()?;
-        if current != expected {
-            return Err(Cause::Modified("Anthropic API key").into());
-        }
-        Ok(key)
-    }
-
-    async fn remove_key(&self, ui: &impl Interaction) -> Result<String, Error> {
-        let directory = self.key.directory()?;
-        if ui.choose(REMOVAL, &[CONFIRM.into()]).await?.is_none() {
-            return Ok("The Anthropic API key was not removed.".into());
-        }
-        Ok(if key::remove(directory).map_err(key::unusable)? {
-            "The Anthropic API key was removed."
-        } else {
-            "No Anthropic API key is saved."
-        }
-        .into())
     }
 
     /// Sends `message` with the `system` prompt and returns the reply. `texts`
@@ -212,7 +170,7 @@ impl AnthropicProvider {
         texts: &[&str],
         expected: KeyId,
     ) -> Result<String, Error> {
-        let key = self.key_in_use(expected)?;
+        let key = self.key.in_use(expected)?;
         let generation = self.admission.admit(&expected, intent)?;
         let secrets: Vec<&str> = [&*key.text]
             .into_iter()
@@ -247,7 +205,7 @@ impl AnthropicProvider {
             .retrying(&expected, intent, async || {
                 // The key may have been replaced or removed during the wait.
                 if mem::replace(&mut sent, true)
-                    && let Err(error) = self.key_in_use(expected)
+                    && let Err(error) = self.key.in_use(expected)
                 {
                     unsent = Some(error.clone());
                     return Attempt::without_response(error);
@@ -322,7 +280,7 @@ impl TranslationProvider for AnthropicProvider {
         Capabilities {
             server_name: "Translation LSP (Anthropic)",
             automatic_selection: true,
-            account_menu: Some(key::MENU),
+            account_menu: Some(MENU),
             commands: &COMMANDS,
             hover_note: None,
             comment_notice: None,
@@ -383,8 +341,8 @@ impl TranslationProvider for AnthropicProvider {
 
     async fn administer(&self, command: &str, ui: &impl Interaction) -> Result<String, Error> {
         match command {
-            SAVE => self.open_terminal().await,
-            REMOVE => self.remove_key(ui).await,
+            SAVE => self.key.ask_in_terminal(&self.terminal).await,
+            REMOVE => self.key.remove(ui, REMOVAL).await,
             _ => Err(Error::failed("Unknown Anthropic command")),
         }
     }

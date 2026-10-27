@@ -30,7 +30,7 @@ async fn sent(provider: Value) -> (Value, Value) {
         "replaced-by-the-settings".into(),
     )
     .with_options(OutputOptions::new(
-        ChatgptModel {
+        OpenAiModel {
             model,
             effort,
             speed,

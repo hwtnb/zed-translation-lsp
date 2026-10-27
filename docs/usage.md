@@ -12,7 +12,7 @@ Zed controls Hover placement and width. The extension cannot guarantee placement
 
 ## Markdown selection
 
-With ChatGPT connected and plan use enabled, or with an Anthropic API key saved, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
+With a provider ready, as described under [Set up a provider](../README.md#set-up-a-provider), and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. The default native wait is 450 ms after Zed reports the selection; Zed also waits before reporting it. Translation starts in the background; Hover over that range to read it. There is no background completion notification.
 
 Selections containing only code, link destinations, or whitespace do not start translation. A fragment that changes the interpretation of Markdown by cutting through a code delimiter or another protected span is also excluded. Include the complete delimiters when selecting, or use the manual action.
 
@@ -20,7 +20,7 @@ Selecting prose just to copy it can also send it for translation.
 
 ## Manual selection translation
 
-To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. With the Anthropic provider, if no key is saved, save one through `Anthropic API key…` first. The Hover translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. With the Anthropic API or OpenAI API provider, if no key is saved, save one through `Anthropic API key…` or `OpenAI API key…` first. The Hover translation action is hidden when there is no selection.
 
 ## Looking up a word
 
@@ -46,7 +46,7 @@ Reopening the same cached tab translation reuses its temporary file and focuses 
 
 ## Status and notifications
 
-While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Its tab translation counts separately with `provider.document`, and with Anthropic when the range request was already sent. Other language-server activity can take priority in this shared area.
+While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Its tab translation counts separately with `provider.document`, and with the Anthropic API, OpenAI API, and OpenAI-compatible providers when the range request was already sent. Other language-server activity can take priority in this shared area.
 
 The spinner disappears when work ends, including cancellation and timeout. Hover over the original text to check the result. On clients that support server status, translation failures and timeouts leave a warning that clears on retry, editing, or closing the document. Clients without these display capabilities retain Hover and explicit-operation notifications.
 

@@ -6,6 +6,7 @@
 //! without its value. The checks on the decoded settings cover ranges, text,
 //! and combinations.
 
+use reqwest::Url;
 use serde::{
     Deserialize,
     de::{self, DeserializeOwned},
@@ -13,13 +14,14 @@ use serde::{
 use serde_json::Value;
 
 use super::{
-    AnthropicEffort, AnthropicSpeed, ChatgptSpeed, ProviderSettings, ReasoningEffort, Settings,
+    AnthropicEffort, AnthropicSpeed, OpenAiSpeed, ProviderSettings, ReasoningEffort, Settings,
     error::{ConfigError, bounded_number},
     features::Feature,
 };
-use crate::language::Language;
+use crate::{language::Language, providers::api_key::Origin};
 
 pub(super) fn before_decoding(options: &Value) -> Result<(), ConfigError> {
+    compatible_service(options)?;
     document_model(options)?;
     choices(options)?;
     feature_languages(options)?;
@@ -77,6 +79,9 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
         ProviderSettings::Unset | ProviderSettings::Mock {} => (),
         ProviderSettings::Chatgpt {
             model, document, ..
+        }
+        | ProviderSettings::OpenAiApi {
+            model, document, ..
         } => {
             check_model("provider.model", model)?;
             if let Some(document) = document {
@@ -97,6 +102,38 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
                 check_thinking("provider.document", document.effort, document.thinking)?;
             }
         }
+        ProviderSettings::OpenAiCompatible {
+            base_url,
+            model,
+            effort,
+            document,
+        } => {
+            check_base_url(base_url)?;
+            check_model("provider.model", model)?;
+            check_effort("provider.effort", effort.as_deref())?;
+            if let Some(document) = document {
+                check_model("provider.document.model", &document.model)?;
+                check_effort("provider.document.effort", document.effort.as_deref())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Names the fields that a service of `provider.base_url` requires: it has no
+/// model of its own to fall back on.
+fn compatible_service(options: &Value) -> Result<(), ConfigError> {
+    let provider = &options["provider"];
+    if provider["name"] != "openai_compatible" {
+        return Ok(());
+    }
+    for (field, setting) in [
+        ("base_url", "provider.base_url"),
+        ("model", "provider.model"),
+    ] {
+        if provider.get(field).is_none() {
+            return Err(ConfigError::Required { setting });
+        }
     }
     Ok(())
 }
@@ -104,7 +141,9 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
 /// Names the one field that `provider.document` requires.
 fn document_model(options: &Value) -> Result<(), ConfigError> {
     let provider = &options["provider"];
-    if (provider["name"] == "chatgpt" || provider["name"] == "anthropic")
+    if ["chatgpt", "anthropic", "openai_api", "openai_compatible"]
+        .iter()
+        .any(|name| provider["name"] == *name)
         && let Value::Object(document) = &provider["document"]
         && !document.contains_key("model")
     {
@@ -121,9 +160,9 @@ fn document_model(options: &Value) -> Result<(), ConfigError> {
 fn choices(options: &Value) -> Result<(), ConfigError> {
     let provider = &options["provider"];
     match provider["name"].as_str() {
-        Some("chatgpt") => {
+        Some("chatgpt" | "openai_api") => {
             EFFORT.check::<ReasoningEffort>(provider, ReasoningEffort::CHOICES)?;
-            SPEED.check::<ChatgptSpeed>(provider, ChatgptSpeed::CHOICES)
+            SPEED.check::<OpenAiSpeed>(provider, OpenAiSpeed::CHOICES)
         }
         Some("anthropic") => {
             EFFORT.check::<AnthropicEffort>(provider, AnthropicEffort::CHOICES)?;
@@ -227,7 +266,48 @@ fn check_model(setting: &'static str, model: &str) -> Result<(), ConfigError> {
         });
     }
     if model.chars().any(char::is_whitespace) {
-        return Err(ConfigError::ModelWhitespace { setting });
+        return Err(ConfigError::Whitespace { setting });
+    }
+    Ok(())
+}
+
+/// The URL that requests go to with `/chat/completions` after it. Texts and
+/// keys cross a network only encrypted. A query or fragment would be lost when
+/// the path is extended, and a user name or password would be sent with every
+/// request.
+fn check_base_url(base_url: &str) -> Result<(), ConfigError> {
+    if !bounded(base_url, 2048) {
+        return Err(ConfigError::Text {
+            setting: "provider.base_url",
+            maximum_bytes: 2048,
+        });
+    }
+    let accepted = Url::parse(base_url).is_ok_and(|url| {
+        Origin::of(&url).is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    });
+    if !accepted {
+        return Err(ConfigError::BaseUrl);
+    }
+    Ok(())
+}
+
+/// Each service takes reasoning efforts of its own, so only the form is checked.
+fn check_effort(setting: &'static str, effort: Option<&str>) -> Result<(), ConfigError> {
+    let Some(effort) = effort else {
+        return Ok(());
+    };
+    if !bounded(effort, 64) {
+        return Err(ConfigError::Text {
+            setting,
+            maximum_bytes: 64,
+        });
+    }
+    if effort.chars().any(char::is_whitespace) {
+        return Err(ConfigError::Whitespace { setting });
     }
     Ok(())
 }

@@ -367,7 +367,7 @@ fn anthropic_settings_default_to_light_haiku_and_name_rejected_values() {
     }
     assert!(matches!(
         anthropic(json!({"model": "claude haiku"})).err().unwrap(),
-        ConfigError::ModelWhitespace { .. }
+        ConfigError::Whitespace { .. }
     ));
     for fields in [
         json!({"api_key": "synthetic-secret"}),
@@ -463,6 +463,8 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
         ("chatgpt", "speed", CHATGPT_SPEED),
         ("anthropic", "speed", ANTHROPIC_SPEED),
         ("chatgpt", "effort", CHATGPT_EFFORT),
+        ("openai_api", "speed", CHATGPT_SPEED),
+        ("openai_api", "effort", CHATGPT_EFFORT),
     ] {
         for value in accepted.split(", ") {
             for inside in [false, true] {
@@ -492,8 +494,11 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
             json!("synthetic-secret"),
             ANTHROPIC_SPEED,
         ),
+        ("openai_api", "speed", json!("standard"), CHATGPT_SPEED),
+        ("openai_api", "effort", json!("ultra"), CHATGPT_EFFORT),
         // `null` is no way to write that no speed is requested.
         ("chatgpt", "speed", Value::Null, CHATGPT_SPEED),
+        ("openai_api", "speed", Value::Null, CHATGPT_SPEED),
         ("anthropic", "speed", Value::Null, ANTHROPIC_SPEED),
     ] {
         for (inside, scope) in [(false, "provider"), (true, "provider.document")] {
@@ -505,7 +510,7 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
             );
         }
     }
-    for name in ["chatgpt", "anthropic"] {
+    for name in ["chatgpt", "anthropic", "openai_api"] {
         for value in [json!(1), json!(true), json!({"tier": "fast"})] {
             for inside in [false, true] {
                 assert!(matches!(
@@ -621,4 +626,185 @@ fn timing_options_accept_inclusive_bounds_and_reject_wrong_types_and_names() {
         }
     }
     assert!(Settings::from_options(Some(json!({"unknown_setting":true}))).is_err());
+}
+
+#[test]
+fn openai_api_settings_default_like_chatgpt_and_take_no_endpoint() {
+    let ProviderSettings::OpenAiApi {
+        model,
+        effort,
+        speed,
+        document,
+    } = Settings::from_options(Some(json!({"provider": {"name": "openai_api"}})))
+        .unwrap()
+        .provider
+    else {
+        panic!("Expected the OpenAI API provider")
+    };
+    assert_eq!(model, "gpt-6-luna");
+    assert_eq!(effort, ReasoningEffort::Low);
+    assert_eq!(speed, None);
+    assert!(document.is_none());
+
+    let error = Settings::from_options(Some(json!({
+        "provider": {"name": "openai_api", "document": {"effort": "high"}}
+    })))
+    .err()
+    .unwrap();
+    assert_eq!(error.to_string(), "provider.document.model is required");
+    for field in ["base_url", "thinking", "api_key", "key"] {
+        let mut provider = json!({"name": "openai_api"});
+        provider[field] = json!("https://api.openai.com/v1");
+        assert!(matches!(
+            Settings::from_options(Some(json!({"provider": provider})))
+                .err()
+                .unwrap(),
+            ConfigError::Decode(_)
+        ));
+    }
+}
+
+fn compatible(fields: Value) -> Result<ProviderSettings, ConfigError> {
+    let mut provider = json!({
+        "name": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "synthetic/model",
+    });
+    for (field, value) in fields.as_object().unwrap() {
+        if value.is_null() {
+            provider.as_object_mut().unwrap().remove(field);
+        } else {
+            provider[field] = value.clone();
+        }
+    }
+    Settings::from_options(Some(json!({"provider": provider}))).map(|settings| settings.provider)
+}
+
+#[test]
+fn openai_compatible_settings_need_a_service_and_a_model() {
+    let ProviderSettings::OpenAiCompatible {
+        base_url,
+        model,
+        effort,
+        document,
+    } = compatible(json!({})).unwrap()
+    else {
+        panic!("Expected the OpenAI-compatible provider")
+    };
+    assert_eq!(base_url, "https://openrouter.ai/api/v1");
+    assert_eq!(model, "synthetic/model");
+    assert_eq!(effort, None);
+    assert!(document.is_none());
+
+    for (field, setting) in [
+        ("base_url", "provider.base_url"),
+        ("model", "provider.model"),
+    ] {
+        let error = compatible(json!({(field): null})).err().unwrap();
+        assert_eq!(error.to_string(), format!("{setting} is required"));
+    }
+    let error = compatible(json!({"document": {"effort": "low"}}))
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), "provider.document.model is required");
+
+    let ProviderSettings::OpenAiCompatible {
+        effort, document, ..
+    } = compatible(json!({
+        "effort": "Ultra",
+        "document": {"model": "synthetic/large", "effort": "max"}
+    }))
+    .unwrap()
+    else {
+        panic!("Expected the OpenAI-compatible provider")
+    };
+    // Any value a service may take is sent as written.
+    assert_eq!(effort.as_deref(), Some("Ultra"));
+    let document = document.unwrap();
+    assert_eq!(document.model, "synthetic/large");
+    assert_eq!(document.effort.as_deref(), Some("max"));
+    // A document without effort sends none, whatever `provider.effort` is.
+    let ProviderSettings::OpenAiCompatible { document, .. } = compatible(json!({
+        "effort": "low",
+        "document": {"model": "synthetic/large"}
+    }))
+    .unwrap() else {
+        panic!("Expected the OpenAI-compatible provider")
+    };
+    assert_eq!(document.unwrap().effort, None);
+}
+
+#[test]
+fn openai_compatible_settings_name_rejected_values_without_repeating_them() {
+    for (fields, message) in [
+        (json!({"model": " "}), "provider.model must be nonempty"),
+        (
+            json!({"model": "a b"}),
+            "provider.model must not contain whitespace",
+        ),
+        (
+            json!({"effort": "very high"}),
+            "provider.effort must not contain whitespace",
+        ),
+        (json!({"effort": ""}), "provider.effort must be nonempty"),
+        (
+            json!({"document": {"model": "m", "effort": "a\tb"}}),
+            "provider.document.effort must be nonempty",
+        ),
+        (
+            json!({"document": {"model": "a b"}}),
+            "provider.document.model must not contain whitespace",
+        ),
+    ] {
+        let error = compatible(fields.clone()).err().unwrap().to_string();
+        assert!(error.starts_with(message), "{fields}: {error}");
+    }
+    for fields in [
+        json!({"effort": null, "speed": "fast"}),
+        json!({"thinking": true}),
+        json!({"document": {"model": "m", "base_url": "https://example.com"}}),
+        json!({"effort": 1}),
+    ] {
+        assert!(
+            matches!(compatible(fields.clone()), Err(ConfigError::Decode(_))),
+            "{fields}"
+        );
+    }
+}
+
+#[test]
+fn openai_compatible_services_are_https_or_this_computer() {
+    for base_url in [
+        "https://openrouter.ai/api/v1",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "https://llm.example:8443",
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://[::1]:8080/v1",
+    ] {
+        assert!(
+            compatible(json!({"base_url": base_url})).is_ok(),
+            "{base_url}"
+        );
+    }
+    for base_url in [
+        "http://openrouter.ai/api/v1",
+        "http://192.168.1.20:11434/v1",
+        "https://user:synthetic-secret@openrouter.ai/api/v1",
+        "https://openrouter.ai/api/v1?key=synthetic-secret",
+        "https://openrouter.ai/api/v1#synthetic-secret",
+        "ftp://localhost/v1",
+        "openrouter.ai/api/v1",
+    ] {
+        let error = compatible(json!({"base_url": base_url})).err().unwrap();
+        assert!(matches!(error, ConfigError::BaseUrl), "{base_url}");
+        assert!(!error.to_string().contains("synthetic-secret"));
+    }
+    let error = compatible(json!({"base_url": format!("https://{}.example", "a".repeat(2048))}))
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "provider.base_url must be nonempty, without control characters, and at most 2048 bytes"
+    );
 }

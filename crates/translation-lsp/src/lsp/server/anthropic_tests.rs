@@ -1,10 +1,8 @@
 use super::*;
 use crate::providers::{
     Intent,
-    anthropic::{
-        key::KeyId,
-        test_support::{Fixture, Reply, started, text_block},
-    },
+    anthropic::test_support::{Fixture, Reply, started, text_block},
+    api_key::KeyId,
     dictionary, prompt,
 };
 use serde_json::json;

@@ -9,11 +9,13 @@ use std::{
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, time::timeout};
 
-use super::key::ApiKey;
 use super::test_support::{self, Fixture, KEY, KeyDirectory, Reply, event, started, text_block};
 use super::*;
 use crate::config::AnthropicEffort;
-use crate::providers::error::{ErrorKind, Notification};
+use crate::providers::{
+    api_key::ApiKey,
+    error::{ErrorKind, Notification},
+};
 
 mod document;
 mod key;

@@ -48,7 +48,8 @@ use tokio::sync::watch;
 use crate::providers::mock::MockContext;
 use crate::{
     config::{
-        AnthropicModel, ChatgptModel, ProviderSettings, Settings, features::Feature, language,
+        AnthropicModel, CompatibleModel, OpenAiModel, ProviderSettings, Settings,
+        features::Feature, language,
     },
     language::Language,
     providers::{
@@ -59,6 +60,8 @@ use crate::{
         credential_directory,
         error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
         mock::{MockOptions, MockProvider},
+        openai_api::OpenAiApiProvider,
+        openai_compatible::CompatibleProvider,
         unset::UnsetProvider,
     },
     text::comments::Failure,
@@ -149,8 +152,9 @@ pub fn run_stdio() -> ServerResult<()> {
     Ok(())
 }
 
-/// `key_directory` is where the Anthropic provider looks for its key file. Tests
-/// pass a directory of their own, so that none reads the key of the user.
+/// `key_directory` is where the providers that take API keys look for their key
+/// files. Tests pass a directory of their own, so that none reads the key of the
+/// user.
 fn serve(
     connection: &Connection,
     options: MockOptions,
@@ -175,6 +179,8 @@ fn serve(
         ProviderSettings::Mock {} => capabilities::<MockProvider>(),
         ProviderSettings::Chatgpt { .. } => capabilities::<ChatGptProvider>(),
         ProviderSettings::Anthropic { .. } => capabilities::<AnthropicProvider>(),
+        ProviderSettings::OpenAiApi { .. } => capabilities::<OpenAiApiProvider>(),
+        ProviderSettings::OpenAiCompatible { .. } => capabilities::<CompatibleProvider>(),
     };
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
 
@@ -196,7 +202,7 @@ fn serve(
         } => {
             let provider = ChatGptProvider::new(
                 OutputOptions::new(
-                    ChatgptModel {
+                    OpenAiModel {
                         model,
                         effort,
                         speed,
@@ -225,6 +231,42 @@ fn serve(
                     },
                     document,
                 ),
+                settings.source_language.clone(),
+                settings.translation_limits.output_kib,
+                key_directory,
+            )?;
+            serve_initialized(connection, settings, ui, provider)
+        }
+        ProviderSettings::OpenAiApi {
+            model,
+            effort,
+            speed,
+            document,
+        } => {
+            let provider = OpenAiApiProvider::new(
+                OutputOptions::new(
+                    OpenAiModel {
+                        model,
+                        effort,
+                        speed,
+                    },
+                    document,
+                ),
+                settings.source_language.clone(),
+                settings.translation_limits.output_kib,
+                key_directory,
+            )?;
+            serve_initialized(connection, settings, ui, provider)
+        }
+        ProviderSettings::OpenAiCompatible {
+            base_url,
+            model,
+            effort,
+            document,
+        } => {
+            let provider = CompatibleProvider::new(
+                &base_url,
+                OutputOptions::new(CompatibleModel { model, effort }, document),
                 settings.source_language.clone(),
                 settings.translation_limits.output_kib,
                 key_directory,
@@ -966,6 +1008,8 @@ fn respond(
 
 #[cfg(test)]
 mod anthropic_tests;
+#[cfg(test)]
+mod api_key_tests;
 #[cfg(test)]
 mod chatgpt_options_tests;
 #[cfg(test)]

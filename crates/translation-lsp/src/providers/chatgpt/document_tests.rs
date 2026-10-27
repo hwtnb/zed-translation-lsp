@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::{ChatGptProvider, auth::AccountKey, test_support::Fixture};
 use crate::{
-    config::{ChatgptModel, ChatgptSpeed, ReasoningEffort},
+    config::{OpenAiModel, OpenAiSpeed, ReasoningEffort},
     providers::{
         Intent, Output, OutputOptions, TranslationProvider,
         error::{Error, ErrorKind},
@@ -12,8 +12,8 @@ use crate::{
 const RANGE_MODEL: &str = "synthetic-range-model";
 const TAB_MODEL: &str = "synthetic-tab-model";
 
-fn options(model: &str, effort: ReasoningEffort, speed: Option<ChatgptSpeed>) -> ChatgptModel {
-    ChatgptModel {
+fn options(model: &str, effort: ReasoningEffort, speed: Option<OpenAiSpeed>) -> OpenAiModel {
+    OpenAiModel {
         model: model.into(),
         effort,
         speed,
@@ -22,8 +22,8 @@ fn options(model: &str, effort: ReasoningEffort, speed: Option<ChatgptSpeed>) ->
 
 async fn provider(
     fixture: &Fixture,
-    range: ChatgptModel,
-    document: Option<ChatgptModel>,
+    range: OpenAiModel,
+    document: Option<OpenAiModel>,
 ) -> (ChatGptProvider, AccountKey) {
     let auth = fixture.auth();
     fixture.connected(&auth, 3600).await;
@@ -67,7 +67,7 @@ fn sent(fixture: &Fixture) -> Vec<Value> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn each_output_sends_its_own_model_reasoning_and_speed() {
-    use ChatgptSpeed::{Fast, Flex, Priority};
+    use OpenAiSpeed::{Fast, Flex, Priority};
     use ReasoningEffort::{High, Low, Medium};
     for (range, document, range_sent, tab_sent) in [
         (

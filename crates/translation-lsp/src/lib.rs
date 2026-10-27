@@ -5,4 +5,4 @@ mod providers;
 mod text;
 
 pub use lsp::server::run_stdio;
-pub use providers::anthropic::key::command::from_arguments as anthropic_key_command;
+pub use providers::api_key::command::from_arguments as key_command;

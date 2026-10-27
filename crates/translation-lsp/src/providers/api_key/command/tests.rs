@@ -29,8 +29,12 @@ impl Typed {
 
     /// Runs the command for `directory`. Nothing typed may be shown.
     fn run(lines: &[&str], directory: &Path) -> (bool, Self) {
+        Self::run_for(None, lines, directory)
+    }
+
+    fn run_for(destination: Option<&Origin>, lines: &[&str], directory: &Path) -> (bool, Self) {
         let mut console = Self::new(lines);
-        let saved = super::run(Ok(directory.into()), &mut console);
+        let saved = super::run(Ok(directory.into()), destination, &mut console);
         for line in lines.iter().filter(|line| !line.trim().is_empty()) {
             assert!(!console.shown.contains(line.trim()), "{}", console.shown);
         }
@@ -212,7 +216,7 @@ fn input_that_is_not_a_key_is_asked_for_again_and_saves_nothing() {
 /// it asks for the key, and wait for the user to have read it.
 fn refused(directory: Result<&Path, CredentialError>) -> String {
     let mut console = Typed::new(&[NEW_KEY]);
-    let saved = super::run(directory.map(Path::to_owned), &mut console);
+    let saved = super::run(directory.map(Path::to_owned), None, &mut console);
     assert!(!saved);
     assert!(!console.shown.contains("Paste the Anthropic API key"));
     assert!(!console.shown.contains(NEW_KEY));
@@ -287,7 +291,7 @@ fn loose_directory_symbolic_links_and_named_pipe_are_refused_and_left_alone() {
     let key = ApiKey::parse(NEW_KEY).unwrap();
     for directory in [&loose, &links, &pipe] {
         assert!(matches!(
-            save(&directory.path, &key),
+            save(&directory.path, "anthropic-api-key", &key),
             Err(CredentialError::Permissions)
         ));
     }
@@ -300,23 +304,67 @@ fn loose_directory_symbolic_links_and_named_pipe_are_refused_and_left_alone() {
 
 #[test]
 fn every_text_for_the_terminal_is_ascii() {
+    let origin = Origin::openai();
     for text in [
-        INTRODUCTION,
-        REPLACES,
-        PROMPT,
-        MALFORMED,
-        TOO_LONG,
-        CANCELLED,
-        SAVED,
-        NOT_SAVED,
-        NOT_PRIVATE,
-        NO_DIRECTORY,
-        FINISH,
-        NO_TERMINAL,
-        ARGUMENTS,
-        #[cfg(unix)]
-        NO_INTERRUPTIONS,
+        introduction(None),
+        introduction(Some(&origin)),
+        prompt(Some(&origin)),
+        not_private("api-key-https-api.openai.com-443"),
+        REPLACES.into(),
+        MALFORMED.into(),
+        TOO_LONG.into(),
+        CANCELLED.into(),
+        SAVED.into(),
+        NOT_SAVED.into(),
+        NO_DIRECTORY.into(),
+        FINISH.into(),
+        ORIGIN_ARGUMENT.into(),
     ] {
         assert!(text.is_ascii(), "{text}");
     }
+}
+
+#[test]
+fn key_for_an_origin_is_saved_in_a_file_of_its_own_and_names_where_it_goes() {
+    let directory = KeyDirectory::with_key(KEY);
+    let openrouter = Origin::parse("https://openrouter.ai/api/v1").unwrap();
+    let (saved, console) = Typed::run_for(Some(&openrouter), &[NEW_KEY], &directory.path);
+    assert!(saved);
+    for expected in [
+        "Translation LSP: API key for https://openrouter.ai\n",
+        "The key is saved in the file api-key-https-openrouter.ai-443 in ",
+        "The language server sends it to https://openrouter.ai and nowhere else.",
+        "Paste the API key and press Enter (input is hidden)",
+    ] {
+        assert!(console.shown.contains(expected), "{}", console.shown);
+    }
+    assert!(!console.shown.contains("replaces"));
+    assert!(!console.shown.contains("OpenAI Platform"));
+    assert_eq!(
+        directory.names(),
+        ["anthropic-api-key", "api-key-https-openrouter.ai-443"]
+    );
+    assert_eq!(
+        fs::read(directory.path.join("api-key-https-openrouter.ai-443")).unwrap(),
+        NEW_KEY.as_bytes()
+    );
+    // The Anthropic key is another file.
+    assert_eq!(fs::read(directory.file()).unwrap(), KEY.as_bytes());
+
+    // The OpenAI key is told where to be created, and replaced like any other.
+    let openai = Origin::openai();
+    for (key, replaces) in [(NEW_KEY, false), (KEY, true)] {
+        let (saved, console) = Typed::run_for(Some(&openai), &[key], &directory.path);
+        assert!(saved);
+        assert!(
+            console
+                .shown
+                .contains("https://platform.openai.com/api-keys")
+        );
+        assert_eq!(console.shown.contains("replaces it"), replaces);
+    }
+    assert_eq!(
+        fs::read(directory.path.join("api-key-https-api.openai.com-443")).unwrap(),
+        KEY.as_bytes()
+    );
 }

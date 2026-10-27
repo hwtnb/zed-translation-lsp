@@ -2,7 +2,7 @@
 
 [日本語](ja/configuration.md)
 
-This page describes the settings under `lsp.translation-lsp`. The fields of each provider are listed on the [ChatGPT](providers/chatgpt.md) and [Anthropic API](providers/anthropic.md) pages.
+This page describes the settings under `lsp.translation-lsp`. The fields of each provider are listed on the [ChatGPT](providers/chatgpt.md), [Anthropic API](providers/anthropic.md), [OpenAI API](providers/openai-api.md), and [OpenAI-compatible API](providers/openai-compatible.md) pages.
 
 ## Full example
 
@@ -236,12 +236,12 @@ Restart the language server after changing these settings. Settings changes do n
 
 1. Open Zed's Command Palette and run `zed: open settings file`.
 2. Edit `lsp.translation-lsp.initialization_options.provider.model` with the model slug you want to use.
-3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings) and [Anthropic API](providers/anthropic.md#settings) pages.
+3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings), [Anthropic API](providers/anthropic.md#settings), [OpenAI API](providers/openai-api.md#settings), and [OpenAI-compatible API](providers/openai-compatible.md#settings) pages.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model, effort, and speed are available to your account.
 
-Translation requests use ordinary text output. Choose a model available to your ChatGPT account or Anthropic API key; the extension does not switch to another model when a request fails.
+Translation requests use ordinary text output. Choose a model available to your ChatGPT account, your API key, or the service; the extension does not switch to another model when a request fails.
 
 ### Tab translations with another model
 
@@ -251,4 +251,4 @@ To use a different model only for translations opened in a tab, add `provider.do
 
 `provider.document` cannot select another provider. Setting it also keeps tab translations separate from range translations, as described under [Admission and execution slots](behavior.md#admission-and-execution-slots).
 
-The values that `provider.document` accepts, and an example, are on each provider's page: [ChatGPT](providers/chatgpt.md#tab-translations-with-another-model) and [Anthropic API](providers/anthropic.md#tab-translations-with-another-model).
+The values that `provider.document` accepts, and an example, are on each provider's page: [ChatGPT](providers/chatgpt.md#tab-translations-with-another-model), [Anthropic API](providers/anthropic.md#tab-translations-with-another-model), [OpenAI API](providers/openai-api.md#tab-translations-with-another-model), and [OpenAI-compatible API](providers/openai-compatible.md#tab-translations-with-another-model).

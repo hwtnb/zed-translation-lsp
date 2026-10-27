@@ -20,10 +20,10 @@ use crate::{
         AccountChange, AuthUiState, Intent, Interaction, Output, OutputOptions,
         TranslationProvider,
         anthropic::{
-            AnthropicProvider, REMOVE, SAVE,
-            key::{KeyFile, terminal},
+            AnthropicProvider, MENU as KEY_MENU, REMOVE, SAVE,
             test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal, completed},
         },
+        api_key::{KeyFile, KeySpec, terminal},
         error::{Error, ErrorKind, Notification, credentials::CredentialError},
     },
 };
@@ -244,7 +244,9 @@ fn unlocated_directory_and_read_failure_are_settings_errors() {
             "Anthropic API key file could not be read.",
         ),
     ] {
-        let error = KeyFile::new(Err(error)).read().unwrap_err();
+        let error = KeyFile::new(KeySpec::anthropic(KEY_MENU), Err(error))
+            .read()
+            .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Configuration);
         assert!(error.to_string().starts_with(expected), "{error}");
         assert!(!format!("{error:?}").contains("synthetic failure"));
@@ -286,7 +288,7 @@ fn settled_file_with_the_same_attributes_is_not_opened_again() {
     assert_eq!(FILE_KEY.len(), NEXT_KEY.len());
     let directory = KeyDirectory::with_key(FILE_KEY);
     let written = age(&directory.file());
-    let file = KeyFile::new(Ok(directory.path.clone()));
+    let file = KeyFile::new(KeySpec::anthropic(KEY_MENU), Ok(directory.path.clone()));
     let (_, first) = file.read().unwrap();
 
     // Nothing writes a file like this: another key of the same length in the
@@ -310,7 +312,7 @@ fn settled_file_with_the_same_attributes_is_not_opened_again() {
 #[test]
 fn file_written_a_moment_ago_is_opened_every_time() {
     let directory = KeyDirectory::with_key(FILE_KEY);
-    let file = KeyFile::new(Ok(directory.path.clone()));
+    let file = KeyFile::new(KeySpec::anthropic(KEY_MENU), Ok(directory.path.clone()));
     // Two keys of one length written in turn, faster than the modification
     // time of some file systems ticks: neither the time nor the size has to
     // differ from one to the next.
@@ -334,7 +336,7 @@ fn file_written_a_moment_ago_is_opened_every_time() {
 #[test]
 fn remembered_key_gives_way_to_a_file_replaced_or_written_in_place() {
     let directory = KeyDirectory::with_key(FILE_KEY);
-    let file = KeyFile::new(Ok(directory.path.clone()));
+    let file = KeyFile::new(KeySpec::anthropic(KEY_MENU), Ok(directory.path.clone()));
     let remember = |key: &str| {
         age(&directory.file());
         assert_eq!(held(&file).unwrap(), key);
@@ -364,7 +366,7 @@ fn remembered_key_gives_way_to_a_file_replaced_or_written_in_place() {
 #[test]
 fn remembered_key_is_not_used_once_the_file_is_gone_or_of_another_kind() {
     let directory = KeyDirectory::with_key(FILE_KEY);
-    let file = KeyFile::new(Ok(directory.path.clone()));
+    let file = KeyFile::new(KeySpec::anthropic(KEY_MENU), Ok(directory.path.clone()));
     age(&directory.file());
     let (_, first) = file.read().unwrap();
 
@@ -393,7 +395,7 @@ fn remembered_key_is_not_used_once_the_file_or_its_directory_stops_being_private
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     let directory = KeyDirectory::with_key(FILE_KEY);
-    let file = KeyFile::new(Ok(directory.path.clone()));
+    let file = KeyFile::new(KeySpec::anthropic(KEY_MENU), Ok(directory.path.clone()));
     let set = |path: &Path, mode| {
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     };
@@ -780,7 +782,7 @@ async fn saving_opens_a_terminal_for_this_executable_and_names_the_command_to_ru
     let provider = fixture.provider().with_terminal(terminal.clone());
     let editor = Editor::default();
     let executable = env::current_exe().unwrap();
-    let command = terminal::manual_command(&executable);
+    let command = terminal::manual_command(&executable, None);
     assert!(command.ends_with(" anthropic-key"), "{command}");
 
     let notice = provider.administer(SAVE, &editor).await.unwrap();

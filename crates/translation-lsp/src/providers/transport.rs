@@ -7,6 +7,8 @@ use reqwest::{
     retry,
 };
 
+use serde_json::Value;
+
 use super::error::{Cause, Error, Service};
 
 pub(crate) fn client_builder() -> reqwest::ClientBuilder {
@@ -24,6 +26,23 @@ pub(crate) fn network_error(service: Service) -> impl Fn(reqwest::Error) -> Erro
         }
         .into()
     }
+}
+
+/// The JSON of an error response, or its text when it is not JSON. A body
+/// over 1 MiB is `Null`, so that its status alone tells the failure.
+pub(crate) async fn error_body(
+    mut response: reqwest::Response,
+    service: Service,
+) -> Result<Value, Error> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error(service))? {
+        if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
+            return Ok(Value::Null);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
 }
 
 /// A date or invalid delay must not cause a retry earlier than requested.

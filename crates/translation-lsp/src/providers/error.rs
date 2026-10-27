@@ -2,7 +2,7 @@ pub(crate) mod credentials;
 
 use crate::config::error::SizeExceeded;
 use credentials::CredentialError;
-use std::{fmt, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
@@ -21,21 +21,26 @@ pub(crate) enum ErrorKind {
 /// The remote service named in user-visible diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Service {
+    /// OpenAI through a ChatGPT plan.
     OpenAi,
+    /// OpenAI through an API key.
+    OpenAiApi,
     Anthropic,
+    /// A service that `provider.base_url` names.
+    Compatible,
 }
 
 impl Service {
     fn network_advice(self) -> &'static str {
         match self {
             Self::OpenAi => "credentials are retained, retry later",
-            Self::Anthropic => "retry later",
+            Self::OpenAiApi | Self::Anthropic | Self::Compatible => "retry later",
         }
     }
 
     fn code_label(self) -> &'static str {
         match self {
-            Self::OpenAi => "code",
+            Self::OpenAi | Self::OpenAiApi | Self::Compatible => "code",
             Self::Anthropic => "type",
         }
     }
@@ -44,8 +49,9 @@ impl Service {
 impl fmt::Display for Service {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::OpenAi => "OpenAI",
+            Self::OpenAi | Self::OpenAiApi => "OpenAI",
             Self::Anthropic => "Anthropic",
+            Self::Compatible => "OpenAI-compatible API",
         })
     }
 }
@@ -85,9 +91,9 @@ pub(crate) struct Error {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Cause {
     #[error("{0}")]
-    Failed(&'static str),
+    Failed(Cow<'static, str>),
     #[error("{0}")]
-    Configuration(&'static str),
+    Configuration(Cow<'static, str>),
     #[error("{service} {problem}")]
     Protocol {
         service: Service,
@@ -101,10 +107,7 @@ pub(crate) enum Cause {
     #[error("{0} changed; retry the translation")]
     Modified(&'static str),
     #[error("No terminal window could be opened. To {purpose}, run this in a terminal: {command}")]
-    Terminal {
-        purpose: &'static str,
-        command: String,
-    },
+    Terminal { purpose: String, command: String },
     #[error("{0}")]
     Credentials(#[source] CredentialError),
     #[error(transparent)]
@@ -157,7 +160,7 @@ pub(crate) struct RemoteError {
     pub code: Option<String>,
     pub param: Option<String>,
     pub request_id: Option<String>,
-    pub advice: Option<&'static str>,
+    pub advice: Option<Cow<'static, str>>,
 }
 
 impl std::error::Error for RemoteError {}
@@ -174,7 +177,7 @@ impl fmt::Display for RemoteError {
                 write!(f, " ({name}={value})")?;
             }
         }
-        if let Some(advice) = self.advice {
+        if let Some(advice) = &self.advice {
             write!(f, ". {advice}")?;
         }
         Ok(())
@@ -283,11 +286,11 @@ impl Error {
     pub fn cancelled() -> Self {
         Cause::Cancelled.into()
     }
-    pub fn failed(message: &'static str) -> Self {
-        Cause::Failed(message).into()
+    pub fn failed(message: impl Into<Cow<'static, str>>) -> Self {
+        Cause::Failed(message.into()).into()
     }
-    pub fn configuration(message: &'static str) -> Self {
-        Cause::Configuration(message).into()
+    pub fn configuration(message: impl Into<Cow<'static, str>>) -> Self {
+        Cause::Configuration(message.into()).into()
     }
     pub fn protocol(service: Service, problem: &'static str) -> Self {
         Cause::Protocol { service, problem }.into()

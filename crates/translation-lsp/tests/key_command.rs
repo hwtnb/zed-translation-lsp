@@ -1,6 +1,7 @@
-//! `translation-lsp anthropic-key` as the process the server starts in a new
-//! terminal window. A pseudo-terminal stands for the window, and the process
-//! gets no standard stream, as when the server starts it.
+//! `translation-lsp anthropic-key` and `translation-lsp api-key <origin>` as the
+//! process the server starts in a new terminal window. A pseudo-terminal stands
+//! for the window, and the process gets no standard stream, as when the server
+//! starts it.
 //!
 //! The command saves in the credential directory of the user who runs it, so
 //! every process here gets a home directory of the test's own. Windows takes the
@@ -344,6 +345,27 @@ fn typed_key_is_saved_without_being_shown() {
 }
 
 #[test]
+fn key_for_an_origin_is_saved_in_its_own_file() {
+    let home = Home::new();
+    let (mut window, child) =
+        Window::start(home.command(&["api-key", "http://localhost:11434/v1"]));
+    window.wait_for("Translation LSP: API key for http://localhost:11434");
+    window.wait_for("The key is saved in the file api-key-http-localhost-11434 in ");
+    window.wait_for("Paste the API key and press Enter (input is hidden).");
+    window.type_hidden(&format!("{KEY}\r"));
+    window.wait_for(FINISH);
+    window.type_hidden("\r");
+    let (status, shown, left) = window.finish(child);
+    assert!(status.success(), "{shown}");
+    assert_eq!(left, USUAL);
+    assert!(!shown.contains(KEY), "{shown}");
+    let file = home.directory().join("api-key-http-localhost-11434");
+    assert_eq!(fs::read(&file).unwrap(), KEY.as_bytes());
+    assert_eq!(mode(&file), 0o600);
+    assert!(!home.key_file().exists());
+}
+
+#[test]
 fn giving_up_saves_nothing_fails_and_leaves_the_terminal_as_it_was() {
     // Enter alone, the end of the input, and Ctrl+C. The command ends by
     // itself each time, so that it gives the terminal back as it found it:
@@ -407,6 +429,17 @@ fn key_command_is_only_the_first_argument_alone() {
             &["--stdio", "anthropic-key"],
             "Unknown argument: anthropic-key",
         ),
+        (&["api-key"], "api-key takes one argument"),
+        (
+            &["api-key", "https://openrouter.ai", "extra"],
+            "api-key takes one argument",
+        ),
+        // Plain http is only for this computer.
+        (
+            &["api-key", "http://openrouter.ai"],
+            "api-key takes one argument",
+        ),
+        (&["api-key", "openrouter.ai"], "api-key takes one argument"),
     ] {
         let mut command = home.command(arguments);
         command.stderr(Stdio::piped());

@@ -7,9 +7,9 @@ use serde_json::{Value, json};
 use super::{actions, next, target};
 use crate::{
     lsp::server::*,
-    providers::anthropic::{
-        key::KeyId,
-        test_support::{Fixture, Reply, completed},
+    providers::{
+        anthropic::test_support::{Fixture, Reply, completed},
+        api_key::KeyId,
     },
 };
 

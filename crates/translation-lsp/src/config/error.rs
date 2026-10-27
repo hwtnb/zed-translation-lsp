@@ -39,7 +39,11 @@ pub(crate) enum ConfigError {
         maximum_bytes: usize,
     },
     #[error("{setting} must not contain whitespace")]
-    ModelWhitespace { setting: &'static str },
+    Whitespace { setting: &'static str },
+    #[error(
+        "provider.base_url must be an https URL, or an http URL of this computer (localhost, 127.0.0.1, or ::1), without a user name, password, query, or fragment"
+    )]
+    BaseUrl,
     #[error("{setting} is required")]
     Required { setting: &'static str },
     #[error("{setting} must be one of {choices}")]

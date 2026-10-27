@@ -163,11 +163,16 @@ fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
     match provider(name, fields).unwrap().provider {
         ProviderSettings::Chatgpt {
             speed, document, ..
+        }
+        | ProviderSettings::OpenAiApi {
+            speed, document, ..
         } => (value(speed), document.map(|tab| value(tab.speed))),
         ProviderSettings::Anthropic {
             speed, document, ..
         } => (value(speed), document.map(|tab| value(tab.speed))),
-        ProviderSettings::Unset | ProviderSettings::Mock {} => panic!("Expected provider settings"),
+        ProviderSettings::Unset
+        | ProviderSettings::Mock {}
+        | ProviderSettings::OpenAiCompatible { .. } => panic!("Expected provider settings"),
     }
 }
 
@@ -176,6 +181,7 @@ fn speed_is_requested_only_where_it_is_written() {
     for (name, range, tab) in [
         ("chatgpt", "fast", "flex"),
         ("anthropic", "fast", "standard"),
+        ("openai_api", "priority", "flex"),
     ] {
         for (fields, sent) in [
             (json!({}), (None, None)),

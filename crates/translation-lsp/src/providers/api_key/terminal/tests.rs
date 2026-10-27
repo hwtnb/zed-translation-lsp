@@ -1,7 +1,12 @@
 use super::*;
+use crate::providers::api_key::Origin;
 
 fn launch(program: &str, arguments: &[&str]) -> Launch {
-    Launch::new(program, arguments, &[])
+    Launch::new::<&str>(program, arguments, &[])
+}
+
+fn openrouter() -> Origin {
+    Origin::parse("https://openrouter.ai").unwrap()
 }
 
 #[test]
@@ -17,6 +22,11 @@ fn each_os_is_given_the_command_the_way_its_terminal_takes_it() {
 
     let executable = Path::new("/opt/synthetic server/translation-lsp");
     let command = ["/opt/synthetic server/translation-lsp", "anthropic-key"];
+    let origin = [
+        "/opt/synthetic server/translation-lsp",
+        "api-key",
+        "https://openrouter.ai",
+    ];
     let expected: Vec<_> = [
         ("xdg-terminal-exec", &[][..]),
         ("x-terminal-emulator", &["-e"]),
@@ -33,14 +43,25 @@ fn each_os_is_given_the_command_the_way_its_terminal_takes_it() {
     .into_iter()
     .map(|(program, options)| launch(program, &[options, &command].concat()))
     .collect();
-    assert_eq!(linux(executable), expected);
+    assert_eq!(linux(executable, &["anthropic-key"]), expected);
+    let last = linux(executable, &["api-key", "https://openrouter.ai"])
+        .pop()
+        .unwrap();
+    assert_eq!(last, launch("xterm", &[&["-e"][..], &origin].concat()));
 
     let executable = Path::new(r"C:\Synthetic Server\translation-lsp.exe");
     assert_eq!(
-        windows(executable),
+        windows(executable, &["anthropic-key"]),
         [launch(
             r"C:\Synthetic Server\translation-lsp.exe",
             &["anthropic-key"]
+        )]
+    );
+    assert_eq!(
+        windows(executable, &["api-key", "https://openrouter.ai"]),
+        [launch(
+            r"C:\Synthetic Server\translation-lsp.exe",
+            &["api-key", "https://openrouter.ai"]
         )]
     );
 }
@@ -48,19 +69,35 @@ fn each_os_is_given_the_command_the_way_its_terminal_takes_it() {
 #[test]
 fn script_removes_itself_and_runs_the_quoted_executable() {
     assert_eq!(
-        script("/opt/translation-lsp"),
+        script("/opt/translation-lsp", &["anthropic-key"]),
         "#!/bin/sh\nrm -f \"$0\"\nexec '/opt/translation-lsp' anthropic-key\n"
     );
     // Nothing in a path is read by the shell.
     assert_eq!(
-        script("/opt/it's $HOME `id`/translation \"lsp\""),
+        script(
+            "/opt/it's $HOME `id`/translation \"lsp\"",
+            &["anthropic-key"]
+        ),
         "#!/bin/sh\nrm -f \"$0\"\nexec '/opt/it'\\''s $HOME `id`/translation \"lsp\"' anthropic-key\n"
+    );
+    // Nor in an origin: the brackets of an IPv6 address are a pattern.
+    assert_eq!(
+        script(
+            "/opt/translation-lsp",
+            &["api-key", "https://openrouter.ai"]
+        ),
+        "#!/bin/sh\nrm -f \"$0\"\nexec '/opt/translation-lsp' api-key https://openrouter.ai\n"
+    );
+    assert_eq!(
+        script("/opt/translation-lsp", &["api-key", "http://[::1]:8080"]),
+        "#!/bin/sh\nrm -f \"$0\"\nexec '/opt/translation-lsp' api-key 'http://[::1]:8080'\n"
     );
 }
 
 #[test]
 fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
-    let command = |path: &str| manual_command(Path::new(path));
+    let command = |path: &str| manual_command(Path::new(path), None);
+    let local = Origin::parse("http://[::1]:8080").unwrap();
     if cfg!(windows) {
         assert_eq!(
             command(r"C:\Users\synthetic\translation-lsp.exe"),
@@ -69,6 +106,15 @@ fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
         assert_eq!(
             command(r"C:\Users\synthetic user\translation-lsp.exe"),
             r#""C:\Users\synthetic user\translation-lsp.exe" anthropic-key"#
+        );
+        let executable = Path::new(r"C:\Users\synthetic\translation-lsp.exe");
+        assert_eq!(
+            manual_command(executable, Some(&openrouter())),
+            r"C:\Users\synthetic\translation-lsp.exe api-key https://openrouter.ai"
+        );
+        assert_eq!(
+            manual_command(executable, Some(&local)),
+            r#"C:\Users\synthetic\translation-lsp.exe api-key "http://[::1]:8080""#
         );
     } else {
         assert_eq!(
@@ -82,6 +128,15 @@ fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
         assert_eq!(
             command("/opt/it's/translation-lsp"),
             "'/opt/it'\\''s/translation-lsp' anthropic-key"
+        );
+        let executable = Path::new("/opt/translation-lsp");
+        assert_eq!(
+            manual_command(executable, Some(&openrouter())),
+            "/opt/translation-lsp api-key https://openrouter.ai"
+        );
+        assert_eq!(
+            manual_command(executable, Some(&local)),
+            "/opt/translation-lsp api-key 'http://[::1]:8080'"
         );
     }
 }
@@ -182,7 +237,7 @@ mod started {
     #[test]
     fn script_file_is_private_and_gone_once_it_has_run() {
         // `echo` stands for the executable: the script runs it with the command.
-        let path = write_script(Path::new("/bin/echo")).unwrap();
+        let path = write_script(Path::new("/bin/echo"), &["anthropic-key"]).unwrap();
         assert_eq!(path.parent().unwrap(), env::temp_dir());
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("translation-lsp-anthropic-key-") && name.ends_with(".command"));
@@ -190,10 +245,20 @@ mod started {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        assert_eq!(fs::read_to_string(&path).unwrap(), script("/bin/echo"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            script("/bin/echo", &["anthropic-key"])
+        );
         let output = Command::new(&path).output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"anthropic-key\n");
         assert!(!path.exists());
+
+        let arguments = ["api-key", "http://[::1]:8080"];
+        let path = write_script(Path::new("/bin/echo"), &arguments).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("translation-lsp-api-key-"), "{name}");
+        let output = Command::new(&path).output().unwrap();
+        assert_eq!(output.stdout, b"api-key http://[::1]:8080\n");
     }
 }

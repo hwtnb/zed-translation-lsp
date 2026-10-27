@@ -1,5 +1,3 @@
-mod response;
-use response::response_text;
 pub(crate) mod auth;
 pub(crate) mod auth_store;
 pub(crate) mod http;
@@ -14,7 +12,7 @@ use std::time::Instant;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::config::{ChatgptModel, limits::SizeLimit};
+use crate::config::{OpenAiModel, limits::SizeLimit};
 #[cfg(test)]
 use crate::config::{ReasoningEffort, limits::TranslationLimits};
 
@@ -24,10 +22,21 @@ use super::{
     admission::{Admission, Attempt},
     dictionary,
     error::{Error, ErrorKind, Service},
-    prompt, transport,
+    prompt,
+    responses::{self, Reading},
+    transport,
 };
 use auth::{AccountKey, Auth, account_changed};
 use http::{Http, response_error, temporary_network};
+
+const READING: Reading = Reading {
+    service: Service::OpenAi,
+    not_text: "ChatGPT did not return translation text",
+    failure: response_error,
+    incomplete: |_| {
+        Error::failed("ChatGPT response is incomplete; no partial translation was saved")
+    },
+};
 
 const CONNECT: &str = "translation-lsp.connect";
 const ENABLE: &str = "translation-lsp.enable";
@@ -80,7 +89,7 @@ pub(crate) fn management_commands(state: AuthUiState) -> Vec<ProviderCommand> {
 pub(crate) struct ChatGptProvider {
     auth: Auth,
     responses: reqwest::Client,
-    options: OutputOptions<ChatgptModel>,
+    options: OutputOptions<OpenAiModel>,
     source_language: String,
     output_limit: SizeLimit,
     api: String,
@@ -89,7 +98,7 @@ pub(crate) struct ChatGptProvider {
 
 impl ChatGptProvider {
     pub fn new(
-        options: OutputOptions<ChatgptModel>,
+        options: OutputOptions<OpenAiModel>,
         source_language: String,
         output_limit: SizeLimit,
     ) -> Result<Self, Error> {
@@ -112,7 +121,7 @@ impl ChatGptProvider {
             responses: Http::responses_client().unwrap(),
             api,
             options: OutputOptions::new(
-                ChatgptModel {
+                OpenAiModel {
                     model,
                     effort: ReasoningEffort::Low,
                     speed: None,
@@ -126,7 +135,7 @@ impl ChatGptProvider {
     }
 
     #[cfg(test)]
-    pub fn with_options(mut self, options: OutputOptions<ChatgptModel>) -> Self {
+    pub fn with_options(mut self, options: OutputOptions<OpenAiModel>) -> Self {
         self.options = options;
         self
     }
@@ -208,7 +217,7 @@ impl ChatGptProvider {
                 };
                 let retry_after = transport::retry_delay(response.headers());
                 let result = if response.status().is_success() {
-                    response_text(response, &secrets, self.output_limit).await
+                    responses::response_text(response, &secrets, self.output_limit, &READING).await
                 } else {
                     Err(self.auth.http.failure(response, &secrets).await)
                 };

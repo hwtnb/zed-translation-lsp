@@ -7,7 +7,7 @@ use serde::{
 };
 use serde_json::Value;
 
-use super::{SERVICE, key};
+use super::{REJECTED, SERVICE, SEVERAL_WORKSPACES};
 use crate::{
     config::{
         AnthropicSpeed,
@@ -38,8 +38,8 @@ impl Advice {
     /// `configured` is the output whose settings named the request's model.
     fn text(self, configured: Output) -> &'static str {
         match (self, configured) {
-            (Self::Key, _) => key::REJECTED,
-            (Self::Workspace, _) => key::SEVERAL_WORKSPACES,
+            (Self::Key, _) => REJECTED,
+            (Self::Workspace, _) => SEVERAL_WORKSPACES,
             (Self::Billing, _) => BILLING_ADVICE,
             (Self::Model, Output::Range) => "Check provider.model",
             (Self::Model, Output::Document) => "Check provider.document.model",
@@ -117,7 +117,7 @@ fn remote_error(
         code: error_type.map(|value| safe(value, secrets, 128)),
         param: None,
         request_id: request_id.map(|value| safe(value, secrets, 128)),
-        advice: advice.map(|advice| advice.text(configured)),
+        advice: advice.map(|advice| advice.text(configured).into()),
     }
     .into()
 }

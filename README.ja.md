@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。ChatGPTまたはAnthropicが利用可能な状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
+ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。プロバイダーが使える状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
 
-ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropicを使う場合は、本人のAPIキーでAnthropic APIを呼びます。プロバイダーを選ぶまでは、文章を外部へ送りません。
+ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropic APIとOpenAI APIのプロバイダーは、本人のAPIキーでそれぞれのAPIを呼びます。OpenAI互換のプロバイダーは、OpenRouter、Gemini API、Ollama、LM Studioなど、指定したサービスを呼びます。APIキーは、保存した場合にだけ送ります。プロバイダーを選ぶまでは、文章を外部へ送りません。
 
 ## 導入
 
@@ -94,6 +94,48 @@ C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOM
 
 対応する文書でZedのコマンドパレットから `editor: toggle code actions` を実行し、`Anthropic API key…` から `Save Anthropic API key` を実行します。開いた端末のウィンドウにキーを貼り付けて、Enterを押してください。キーの作り方、ほかの設定、費用は[Anthropic API](docs/ja/providers/anthropic.md)で説明します。
 
+### OpenAI API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "openai_api",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
+      }
+    }
+  }
+}
+```
+
+対応する文書でZedのコマンドパレットから `editor: toggle code actions` を実行し、`OpenAI API key…` から `Save OpenAI API key` を実行します。開いた端末のウィンドウにキーを貼り付けて、Enterを押してください。ほかの設定と費用は[OpenAI API](docs/ja/providers/openai-api.md)で説明します。
+
+### OpenAI互換API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "openai_compatible",
+          "base_url": "http://localhost:11434/v1",
+          "model": "gemma3"
+        }
+      }
+    }
+  }
+}
+```
+
+`base_url` にはサービスのアドレスを、`model` にはそのサービスのモデル名を指定します。上の例は、このコンピューターのOllamaに取り込んだモデルを使います。Ollamaのように、このコンピューターで動きキーの要らないサービスは、キーなしで使えます。キーが要るサービスでは、コードアクションの `OpenAI-compatible API key…` から `Save OpenAI-compatible API key` を実行します。いくつかのサービスのアドレスとほかの設定は[OpenAI互換API](docs/ja/providers/openai-compatible.md)で説明します。
+
 ### ほかのよく使う設定
 
 次の設定は `initialization_options` の中で `provider` と並べて書きます。どれも省略できます。
@@ -112,7 +154,7 @@ C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOM
 | 操作 | 方法 |
 | --- | --- |
 | コメントのホバー | 対応するコードのコメントにマウスポインターを重ねるか、カーソルを置いてZedの `editor: hover` を実行します。 |
-| Markdownの選択 | ChatGPTが利用可能であるか、AnthropicのAPIキーを保存していて、`features.automatic_selection` が `true` の場合、Markdownの文章を選択して安定させるとバックグラウンドで翻訳します。その範囲でホバーを開いて訳文を読みます。 |
+| Markdownの選択 | [プロバイダーの設定](#プロバイダーの設定)のとおりプロバイダーが使える状態で、`features.automatic_selection` が `true` の場合、Markdownの文章を選択して安定させるとバックグラウンドで翻訳します。その範囲でホバーを開いて訳文を読みます。 |
 | `Translate selection to …` | すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。 |
 | 単語を辞書で引く | 1行で3語以下の語句か識別子1つ（`retain`、`retain_completed` など）を選択します。ホバーには訳文の代わりに辞書の項目が表示されます。 |
 | `… and open in tab` | Markdownまたはプレーンテキスト（Zedの言語名は `Plain Text`）では、`Translate selection to … and open in tab` で訳文を別タブに開けます。選択がない場合は `Translate document to … and open in tab` となり、文書全体を翻訳します。 |
@@ -134,6 +176,8 @@ C#、C、C++、Python、Go、Ruby、PHP、HTML、CSS、JSON、JSONC、YAML、TOM
 - [設定](docs/ja/configuration.md): 設定の全体例、サーバーのパス、翻訳する言語、機能の切り替え、タイミング、サイズの上限、受付とキャッシュの上限、モデルの変更。
 - [ChatGPT](docs/ja/providers/chatgpt.md): ChatGPTプロバイダーの設定と、アカウントへの接続。
 - [Anthropic API](docs/ja/providers/anthropic.md): Anthropicプロバイダーの設定と、APIキー。
+- [OpenAI API](docs/ja/providers/openai-api.md): OpenAI APIプロバイダーの設定と、APIキー。
+- [OpenAI互換API](docs/ja/providers/openai-compatible.md): OpenAI互換プロバイダーの設定、いくつかのサービスのアドレス、APIキー。
 - [使い方](docs/ja/usage.md): ホバー、選択、単語を辞書で引く、タブに開く翻訳、状態表示、取り消しと再試行、送信する内容。
 - [動作](docs/ja/behavior.md): 受付、処理が続く条件、自動選択、キャッシュ、期限、再試行、停止。
 - [対応言語](docs/ja/languages.md): 対応する言語、コメントの抽出、言語サーバーの設定。

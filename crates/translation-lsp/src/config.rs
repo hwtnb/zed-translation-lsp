@@ -36,14 +36,14 @@ pub(crate) enum ProviderSettings {
     Unset,
     Mock {},
     Chatgpt {
-        #[serde(default = "default_chatgpt_model")]
+        #[serde(default = "default_openai_model")]
         model: String,
         #[serde(default)]
         effort: ReasoningEffort,
         #[serde(default, deserialize_with = "explicit")]
-        speed: Option<ChatgptSpeed>,
+        speed: Option<OpenAiSpeed>,
         #[serde(default, deserialize_with = "explicit")]
-        document: Option<ChatgptModel>,
+        document: Option<OpenAiModel>,
     },
     Anthropic {
         #[serde(default = "default_anthropic_model")]
@@ -58,6 +58,28 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         document: Option<AnthropicModel>,
     },
+    #[serde(rename = "openai_api")]
+    OpenAiApi {
+        #[serde(default = "default_openai_model")]
+        model: String,
+        #[serde(default)]
+        effort: ReasoningEffort,
+        #[serde(default, deserialize_with = "explicit")]
+        speed: Option<OpenAiSpeed>,
+        #[serde(default, deserialize_with = "explicit")]
+        document: Option<OpenAiModel>,
+    },
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible {
+        base_url: String,
+        model: String,
+        /// Sent as written, and only when written: each service has values of
+        /// its own.
+        #[serde(default, deserialize_with = "explicit")]
+        effort: Option<String>,
+        #[serde(default, deserialize_with = "explicit")]
+        document: Option<CompatibleModel>,
+    },
 }
 
 /// The model and options that one output sends. `provider.document` is one of
@@ -65,15 +87,25 @@ pub(crate) enum ProviderSettings {
 /// default there and inherits nothing from the surrounding provider settings.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChatgptModel {
+pub(crate) struct OpenAiModel {
     pub model: String,
     #[serde(default)]
     pub effort: ReasoningEffort,
     #[serde(default, deserialize_with = "explicit")]
-    pub speed: Option<ChatgptSpeed>,
+    pub speed: Option<OpenAiSpeed>,
 }
 
-/// The Anthropic counterpart of [`ChatgptModel`].
+/// The model and options of a service that `provider.base_url` names, for one
+/// output. Both outputs go to the same service.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompatibleModel {
+    pub model: String,
+    #[serde(default, deserialize_with = "explicit")]
+    pub effort: Option<String>,
+}
+
+/// The Anthropic counterpart of [`OpenAiModel`].
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AnthropicModel {
@@ -95,15 +127,17 @@ impl ProviderSettings {
             Self::Unset | Self::Mock {} => false,
             Self::Chatgpt { document, .. } => document.is_some(),
             Self::Anthropic { document, .. } => document.is_some(),
+            Self::OpenAiApi { document, .. } => document.is_some(),
+            Self::OpenAiCompatible { document, .. } => document.is_some(),
         }
     }
 }
 
-const DEFAULT_CHATGPT_MODEL: &str = "gpt-6-luna";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-6-luna";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-5-5";
 
-fn default_chatgpt_model() -> String {
-    DEFAULT_CHATGPT_MODEL.into()
+fn default_openai_model() -> String {
+    DEFAULT_OPENAI_MODEL.into()
 }
 
 fn default_anthropic_model() -> String {
@@ -147,7 +181,7 @@ impl ReasoningEffort {
 
 #[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum ChatgptSpeed {
+pub(crate) enum OpenAiSpeed {
     Auto,
     Default,
     Flex,
@@ -157,7 +191,7 @@ pub(crate) enum ChatgptSpeed {
     Ultrafast,
 }
 
-impl ChatgptSpeed {
+impl OpenAiSpeed {
     const CHOICES: &str = "auto, default, flex, scale, priority, fast, ultrafast";
 }
 

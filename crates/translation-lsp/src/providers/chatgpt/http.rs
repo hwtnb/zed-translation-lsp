@@ -1,13 +1,14 @@
 use std::time::Duration;
 
 use openidconnect::{HttpRequest, HttpResponse, http::Response, url::form_urlencoded};
-use reqwest::{Request, header::HeaderMap};
+use reqwest::Request;
 use serde_json::Value;
 
 #[cfg(test)]
 use crate::providers::error::ErrorKind;
 use crate::providers::{
     error::{Error, RemoteError, RemoteKind, Service},
+    responses::request_id,
     transport::{self, safe},
 };
 
@@ -16,10 +17,6 @@ pub(crate) struct Http {
     pub client: reqwest::Client,
     #[cfg(test)]
     revocation_fixture: Option<String>,
-}
-
-pub(super) fn request_id(headers: &HeaderMap) -> Option<&str> {
-    headers.get("x-request-id").and_then(|id| id.to_str().ok())
 }
 
 pub(super) fn response_error(
@@ -77,10 +74,11 @@ pub(super) fn response_error(
         request_id: request_id.map(|value| safe(value, secrets, 128)),
         advice: match kind {
             RemoteKind::UsageLimit => {
-                Some("Check ChatGPT usage at https://chatgpt.com/settings/usage")
+                Some("Check ChatGPT usage at https://chatgpt.com/settings/usage".into())
             }
             RemoteKind::RefreshUnusable => Some(
-                "Choose Continue with ChatGPT / Choose account and reconnect the saved account.",
+                "Choose Continue with ChatGPT / Choose account and reconnect the saved account."
+                    .into(),
             ),
             _ => None,
         },

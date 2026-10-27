@@ -4,10 +4,10 @@ use std::{
     collections::VecDeque,
     convert::Infallible,
     env, fs, future, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -31,6 +31,7 @@ use tokio::{
 use uuid::Uuid;
 
 use super::AnthropicProvider;
+pub(crate) use crate::providers::api_key::test_support::Terminal;
 use crate::providers::{credential_directory, dictionary};
 
 pub(crate) const KEY: &str = "sk-ant-synthetic-key";
@@ -90,21 +91,6 @@ impl KeyDirectory {
             .collect();
         names.sort();
         names
-    }
-}
-
-/// Stands for the terminal of the OS. It opens no window: it records the
-/// executable it was given and answers what `fails` says.
-#[derive(Clone, Default)]
-pub(crate) struct Terminal {
-    pub opened: Arc<Mutex<Vec<PathBuf>>>,
-    pub fails: Arc<AtomicBool>,
-}
-
-impl Terminal {
-    pub fn open(&self, executable: &Path) -> bool {
-        self.opened.lock().unwrap().push(executable.into());
-        !self.fails.load(Ordering::SeqCst)
     }
 }
 

@@ -4,7 +4,7 @@
 
 Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Ruby, PHP, HTML, CSS, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
-The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic provider calls the Anthropic API with your API key. Until you select a provider, the extension sends no text to an external service.
+The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic API and OpenAI API providers call those APIs with your API key. The OpenAI-compatible provider calls a service you name, such as OpenRouter, the Gemini API, Ollama, or LM Studio, with an API key only when you save one. Until you select a provider, the extension sends no text to an external service.
 
 ## Installation
 
@@ -94,6 +94,48 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 
 In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `Anthropic API key…`, then run `Save Anthropic API key`. Paste the key in the terminal window that opens and press Enter. See [Anthropic API](docs/providers/anthropic.md) for creating the key, the other settings, and cost.
 
+### OpenAI API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "openai_api",
+          "model": "gpt-6-luna",
+          "effort": "low"
+        }
+      }
+    }
+  }
+}
+```
+
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `OpenAI API key…`, then run `Save OpenAI API key`. Paste the key in the terminal window that opens and press Enter. See [OpenAI API](docs/providers/openai-api.md) for the other settings and cost.
+
+### OpenAI-compatible API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "openai_compatible",
+          "base_url": "http://localhost:11434/v1",
+          "model": "gemma3"
+        }
+      }
+    }
+  }
+}
+```
+
+Set `base_url` to the address of the service and `model` to one of its model names; the example above uses a model pulled into Ollama on this computer. A service on this computer that needs no key, such as Ollama, is ready without one. For a service that needs a key, choose `OpenAI-compatible API key…` from the code actions, then run `Save OpenAI-compatible API key`. See [OpenAI-compatible API](docs/providers/openai-compatible.md) for the addresses of some services and the other settings.
+
 ### Other common settings
 
 These settings sit next to `provider` in `initialization_options`. Each can be omitted.
@@ -112,7 +154,7 @@ These settings sit next to `provider` in `initialization_options`. Each can be o
 | Operation | How |
 | --- | --- |
 | Comment Hover | Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. |
-| Markdown selection | With ChatGPT connected and plan use enabled, or with an Anthropic API key saved, and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
+| Markdown selection | With a provider ready, as described under [Set up a provider](#set-up-a-provider), and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
 | `Translate selection to …` | To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. |
 | Word lookup | Select up to three words or one identifier on one line, such as `retain` or `retain_completed`. Hover shows a dictionary entry instead of a translation. |
 | `… and open in tab` | In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. |
@@ -134,6 +176,8 @@ What each request contains is described under [What is sent](docs/usage.md#what-
 - [Configuration](docs/configuration.md): the full settings example, the server path, languages, features, timing, size limits, work and cache limits, and changing the model.
 - [ChatGPT](docs/providers/chatgpt.md): the settings of the ChatGPT provider and connecting your account.
 - [Anthropic API](docs/providers/anthropic.md): the settings of the Anthropic provider and its API key.
+- [OpenAI API](docs/providers/openai-api.md): the settings of the OpenAI API provider and its API key.
+- [OpenAI-compatible API](docs/providers/openai-compatible.md): the settings of the OpenAI-compatible provider, the addresses of some services, and their API keys.
 - [Usage](docs/usage.md): Hover, selections, looking up words, translations opened in a tab, status, canceling and retrying, and what is sent.
 - [Behavior](docs/behavior.md): admission, what keeps work running, automatic selection, the cache, deadlines, retries, and pauses.
 - [Languages](docs/languages.md): supported languages, comment extraction, and language server settings.

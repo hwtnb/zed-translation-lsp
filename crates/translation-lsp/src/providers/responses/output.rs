@@ -5,8 +5,9 @@ use std::{
     mem,
 };
 
-#[derive(Default)]
 pub(super) struct Output {
+    /// Reported when a message holds something besides output text.
+    not_text: &'static str,
     completed: Option<String>,
     parts: BTreeMap<(u64, u64), TextPart>,
     done_items: BTreeMap<u64, OutputItem>,
@@ -15,6 +16,17 @@ pub(super) struct Output {
 }
 
 impl Output {
+    pub fn new(not_text: &'static str) -> Self {
+        Self {
+            not_text,
+            completed: None,
+            parts: BTreeMap::new(),
+            done_items: BTreeMap::new(),
+            streamed_bytes: 0,
+            item_bytes: 0,
+        }
+    }
+
     pub fn accept(&mut self, kind: &str, value: &Value, limit: SizeLimit) -> Result<(), Error> {
         match kind {
             "response.output_text.delta" => self.text(value, false, limit),
@@ -84,7 +96,7 @@ impl Output {
         let index = value["output_index"]
             .as_u64()
             .ok_or_else(|| Error::failed("OpenAI output item index is invalid"))?;
-        let item = output_item(&value["item"], output_limit)?;
+        let item = output_item(&value["item"], output_limit, self.not_text)?;
         if self.completed.is_some() || self.done_items.contains_key(&index) || item.id.is_none() {
             return Err(Error::failed("OpenAI output item completion is invalid"));
         }
@@ -108,7 +120,10 @@ impl Output {
             .ok_or_else(|| Error::failed("OpenAI completion has no output"))?;
         let mut items = BTreeMap::new();
         for (index, value) in output.iter().enumerate() {
-            items.insert(index as u64, output_item(value, output_limit)?);
+            items.insert(
+                index as u64,
+                output_item(value, output_limit, self.not_text)?,
+            );
         }
         for output in [&self.done_items, &items] {
             let mut ids = HashSet::new();
@@ -180,7 +195,11 @@ struct OutputItem {
     texts: Vec<String>,
 }
 
-fn output_item(value: &Value, output_limit: SizeLimit) -> Result<OutputItem, Error> {
+fn output_item(
+    value: &Value,
+    output_limit: SizeLimit,
+    not_text: &'static str,
+) -> Result<OutputItem, Error> {
     let mut texts = Vec::new();
     match value["type"].as_str() {
         Some("reasoning") => (),
@@ -194,7 +213,7 @@ fn output_item(value: &Value, output_limit: SizeLimit) -> Result<OutputItem, Err
             let mut bytes = 0usize;
             for part in content {
                 if part["type"] != "output_text" {
-                    return Err(Error::failed("ChatGPT did not return translation text"));
+                    return Err(Error::failed(not_text));
                 }
                 let text = part["text"]
                     .as_str()

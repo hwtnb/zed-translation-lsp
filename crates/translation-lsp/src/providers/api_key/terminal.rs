@@ -1,9 +1,9 @@
-//! Opens a terminal window of the OS that runs this executable with the key
+//! Opens a terminal window of the OS that runs this executable with a key
 //! command. The window belongs to the terminal: the server gives it none of its
 //! own streams, and does not wait for what the user does there.
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -15,7 +15,7 @@ use std::{
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use super::command::ARGUMENT;
+use super::{Origin, command};
 
 /// How long a started program has to fail. `open` and the terminals that hand
 /// the window to a running instance end sooner than this; the others are still
@@ -30,13 +30,17 @@ pub(super) struct Launch {
 }
 
 impl Launch {
-    fn new(program: impl Into<OsString>, arguments: &[&str], command: &[&Path]) -> Self {
+    fn new<T: AsRef<OsStr>>(
+        program: impl Into<OsString>,
+        arguments: &[&str],
+        command: &[T],
+    ) -> Self {
         Self {
             program: program.into(),
             arguments: arguments
                 .iter()
                 .map(OsString::from)
-                .chain(command.iter().map(OsString::from))
+                .chain(command.iter().map(|part| part.as_ref().to_owned()))
                 .collect(),
         }
     }
@@ -51,8 +55,11 @@ pub(super) fn macos(script: &Path) -> Vec<Launch> {
 /// Linux has no single way to open a terminal, so the ones below are tried in
 /// this order: the two that stand for the user's choice, then those of the
 /// desktops, then the rest. Each takes the command the way its manual gives.
-pub(super) fn linux(executable: &Path) -> Vec<Launch> {
-    let command = [executable, Path::new(ARGUMENT)];
+pub(super) fn linux(executable: &Path, arguments: &[&str]) -> Vec<Launch> {
+    let command: Vec<&OsStr> = [executable.as_os_str()]
+        .into_iter()
+        .chain(arguments.iter().map(OsStr::new))
+        .collect();
     let terminals: [(&str, &[&str]); 11] = [
         ("xdg-terminal-exec", &[]),
         ("x-terminal-emulator", &["-e"]),
@@ -73,17 +80,22 @@ pub(super) fn linux(executable: &Path) -> Vec<Launch> {
 }
 
 /// Windows gives the command a console of its own; see `spawn`.
-pub(super) fn windows(executable: &Path) -> Vec<Launch> {
-    vec![Launch::new(executable, &[ARGUMENT], &[])]
+pub(super) fn windows(executable: &Path, arguments: &[&str]) -> Vec<Launch> {
+    vec![Launch::new::<&str>(executable, arguments, &[])]
 }
 
 /// The script Terminal runs. It removes itself first, so that it is gone
-/// whatever happens to the command, and it holds nothing but the path of the
-/// executable.
-pub(super) fn script(executable: &str) -> String {
+/// whatever happens to the command, and it holds nothing but the command: the
+/// path of the executable and the arguments.
+pub(super) fn script(executable: &str, arguments: &[&str]) -> String {
+    let arguments: Vec<String> = arguments
+        .iter()
+        .map(|argument| shell_word(argument))
+        .collect();
     format!(
-        "#!/bin/sh\nrm -f \"$0\"\nexec {} {ARGUMENT}\n",
-        quoted(executable)
+        "#!/bin/sh\nrm -f \"$0\"\nexec {} {}\n",
+        quoted(executable),
+        arguments.join(" ")
     )
 }
 
@@ -91,31 +103,60 @@ fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// What the user types to run the command by hand, when no window opens or the
-/// server runs on another machine.
-pub(in crate::providers::anthropic) fn manual_command(executable: &Path) -> String {
-    let path = executable.to_string_lossy();
-    let plain = |extra: &str| {
-        path.chars()
-            .all(|character| character.is_ascii_alphanumeric() || extra.contains(character))
-    };
-    if cfg!(windows) {
-        if plain("\\/:._-") {
-            format!("{path} {ARGUMENT}")
-        } else {
-            format!("\"{path}\" {ARGUMENT}")
-        }
-    } else if plain("/._-+") {
-        format!("{path} {ARGUMENT}")
+/// Whether a shell reads `text` as it is: no quoting, expansion, or pattern.
+fn plain(text: &str, extra: &str) -> bool {
+    text.chars()
+        .all(|character| character.is_ascii_alphanumeric() || extra.contains(character))
+}
+
+/// `text` as one word of a POSIX shell.
+fn shell_word(text: &str) -> String {
+    if plain(text, "/._-+:") {
+        text.into()
     } else {
-        format!("{} {ARGUMENT}", quoted(&path))
+        quoted(text)
     }
 }
 
-fn write_script(executable: &Path) -> io::Result<PathBuf> {
-    let text = script(executable.to_str().ok_or(io::ErrorKind::InvalidInput)?);
+/// What the user types to run the command by hand, when no window opens or the
+/// server runs on another machine.
+pub(crate) fn manual_command(executable: &Path, destination: Option<&Origin>) -> String {
+    let path = executable.to_string_lossy();
+    let words: Vec<String> = if cfg!(windows) {
+        // PowerShell and the console take a quoted word alike.
+        let word = |text: &str| {
+            if plain(text, "\\/:._-") {
+                text.into()
+            } else {
+                format!("\"{text}\"")
+            }
+        };
+        [word(&path)]
+            .into_iter()
+            .chain(command::arguments(destination).into_iter().map(word))
+            .collect()
+    } else {
+        let path = if plain(&path, "/._-+") {
+            path.into_owned()
+        } else {
+            quoted(&path)
+        };
+        [path]
+            .into_iter()
+            .chain(command::arguments(destination).into_iter().map(shell_word))
+            .collect()
+    };
+    words.join(" ")
+}
+
+fn write_script(executable: &Path, arguments: &[&str]) -> io::Result<PathBuf> {
+    let text = script(
+        executable.to_str().ok_or(io::ErrorKind::InvalidInput)?,
+        arguments,
+    );
     let path = env::temp_dir().join(format!(
-        "translation-lsp-anthropic-key-{}.command",
+        "translation-lsp-{}-{}.command",
+        arguments[0],
         Uuid::new_v4()
     ));
     let mut options = fs::OpenOptions::new();
@@ -190,10 +231,12 @@ pub(super) async fn first_started(launches: &[Launch], grace: Duration) -> bool 
     false
 }
 
-/// Returns whether a terminal took the command.
-pub(in crate::providers::anthropic) async fn open(executable: &Path) -> bool {
+/// Returns whether a terminal took the command that saves the key sent to
+/// `destination`, or the Anthropic key.
+pub(crate) async fn open(executable: &Path, destination: Option<&Origin>) -> bool {
+    let arguments = command::arguments(destination);
     if cfg!(target_os = "macos") {
-        let Ok(script) = write_script(executable) else {
+        let Ok(script) = write_script(executable, &arguments) else {
             return false;
         };
         let opened = first_started(&macos(&script), GRACE).await;
@@ -203,9 +246,9 @@ pub(in crate::providers::anthropic) async fn open(executable: &Path) -> bool {
         opened
     } else if cfg!(windows) {
         // A started process has its console; there is no failure to wait for.
-        first_started(&windows(executable), Duration::ZERO).await
+        first_started(&windows(executable, &arguments), Duration::ZERO).await
     } else {
-        first_started(&linux(executable), GRACE).await
+        first_started(&linux(executable, &arguments), GRACE).await
     }
 }
 
