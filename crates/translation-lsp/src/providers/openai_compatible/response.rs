@@ -107,7 +107,13 @@ struct Reply {
 }
 
 impl Reply {
-    fn accept(&mut self, data: &str, output_limit: SizeLimit) -> Result<(), Error> {
+    /// Takes the event `data`, and `value`, its JSON if it is JSON.
+    fn accept(
+        &mut self,
+        data: &str,
+        value: Option<Value>,
+        output_limit: SizeLimit,
+    ) -> Result<(), Error> {
         if self.done {
             return Err(Error::protocol(SERVICE, "stream continued after [DONE]"));
         }
@@ -115,8 +121,8 @@ impl Reply {
             self.done = true;
             return Ok(());
         }
-        let value: Value = serde_json::from_str(data)
-            .map_err(|_| Error::protocol(SERVICE, "SSE event contains invalid JSON"))?;
+        let value =
+            value.ok_or_else(|| Error::protocol(SERVICE, "SSE event contains invalid JSON"))?;
         // A chunk without choices, such as one that only reports usage, adds
         // no text.
         let Some(choices) = value.get("choices").and_then(Value::as_array) else {
@@ -193,9 +199,12 @@ pub(super) async fn text(
     let request_id = request_id(response.headers()).map(str::to_owned);
     let mut reply = Reply::default();
     sse::read_events(response, SERVICE, output_limit, |event| {
+        let value = serde_json::from_str::<Value>(&event.data).ok();
         // A service that fails after it has begun says so in a chunk.
-        if let Ok(value) = serde_json::from_str::<Value>(&event.data)
-            && let Some(error) = value.get("error").filter(|error| !error.is_null())
+        if let Some(error) = value
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .filter(|error| !error.is_null())
         {
             let error = failure(
                 status,
@@ -206,7 +215,7 @@ pub(super) async fn text(
             );
             return Err(error.in_stream(SERVICE, "error".into(), String::new()));
         }
-        reply.accept(&event.data, output_limit)
+        reply.accept(&event.data, value, output_limit)
     })
     .await?;
     reply.finish(secrets)

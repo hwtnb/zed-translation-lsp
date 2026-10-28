@@ -8,7 +8,7 @@ fn limit() -> SizeLimit {
 fn read(chunks: &[&str]) -> Result<String, Error> {
     let mut reply = Reply::default();
     for chunk in chunks {
-        reply.accept(chunk, limit())?;
+        reply.accept(chunk, serde_json::from_str(chunk).ok(), limit())?;
     }
     reply.finish(&["synthetic-secret"])
 }
