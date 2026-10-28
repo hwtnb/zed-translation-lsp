@@ -82,7 +82,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
       "initialization_options": {
         "target_language": "ja",
         "provider": {
-          "name": "anthropic",
+          "name": "anthropic_api",
           "model": "claude-haiku-5-5",
           "effort": "low"
         }

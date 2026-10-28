@@ -773,7 +773,7 @@ mod separate_outputs_tests {
     use crate::providers::{Intent, Source, api_key::KeyId};
 
     fn settings(separate: bool) -> Settings {
-        let mut provider = serde_json::json!({"name": "anthropic"});
+        let mut provider = serde_json::json!({"name": "anthropic_api"});
         if separate {
             provider["document"] = serde_json::json!({"model": "synthetic-model"});
         }

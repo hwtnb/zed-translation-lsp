@@ -141,9 +141,15 @@ fn compatible_service(options: &Value) -> Result<(), ConfigError> {
 /// Names the one field that `provider.document` requires.
 fn document_model(options: &Value) -> Result<(), ConfigError> {
     let provider = &options["provider"];
-    if ["chatgpt", "anthropic", "openai_api", "openai_compatible"]
-        .iter()
-        .any(|name| provider["name"] == *name)
+    if [
+        "chatgpt",
+        "anthropic_api",
+        "anthropic",
+        "openai_api",
+        "openai_compatible",
+    ]
+    .iter()
+    .any(|name| provider["name"] == *name)
         && let Value::Object(document) = &provider["document"]
         && !document.contains_key("model")
     {
@@ -164,7 +170,7 @@ fn choices(options: &Value) -> Result<(), ConfigError> {
             EFFORT.check::<ReasoningEffort>(provider, ReasoningEffort::CHOICES)?;
             SPEED.check::<OpenAiSpeed>(provider, OpenAiSpeed::CHOICES)
         }
-        Some("anthropic") => {
+        Some("anthropic_api" | "anthropic") => {
             EFFORT.check::<AnthropicEffort>(provider, AnthropicEffort::CHOICES)?;
             SPEED.check::<AnthropicSpeed>(provider, AnthropicSpeed::CHOICES)
         }

@@ -92,7 +92,7 @@ impl Client {
 fn anthropic_without_a_key_file_starts_and_reports_the_missing_file() {
     let directory = KeyDirectory::new();
     let mut client = Client::start(&directory.path);
-    let initialized = client.initialize(json!({"name": "anthropic"}));
+    let initialized = client.initialize(json!({"name": "anthropic_api"}));
     assert_eq!(
         initialized["serverInfo"]["name"],
         "Translation LSP (Anthropic)"
@@ -169,10 +169,10 @@ fn anthropic_without_a_key_file_starts_and_reports_the_missing_file() {
 fn anthropic_starts_when_thinking_is_omitted_at_every_effort() {
     let directory = KeyDirectory::new();
     for provider in [
-        json!({"name": "anthropic", "effort": "xhigh"}),
-        json!({"name": "anthropic", "effort": "max"}),
-        json!({"name": "anthropic", "model": "synthetic-model"}),
-        json!({"name": "anthropic", "model": "synthetic-model", "effort": "max"}),
+        json!({"name": "anthropic_api", "effort": "xhigh"}),
+        json!({"name": "anthropic_api", "effort": "max"}),
+        json!({"name": "anthropic_api", "model": "synthetic-model"}),
+        json!({"name": "anthropic_api", "model": "synthetic-model", "effort": "max"}),
     ] {
         let mut client = Client::start(&directory.path);
         let initialized = client.initialize(provider);

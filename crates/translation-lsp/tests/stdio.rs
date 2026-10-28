@@ -557,19 +557,19 @@ fn initialization_rejects_invalid_public_settings_before_mock_override() {
 fn anthropic_settings_errors_name_the_setting_at_initialization() {
     for (provider, message) in [
         (
-            json!({"name": "anthropic", "effort": "minimal"}),
+            json!({"name": "anthropic_api", "effort": "minimal"}),
             "provider.effort must be one of low, medium, high, xhigh, max",
         ),
         (
-            json!({"name": "anthropic", "effort": "max", "thinking": false}),
+            json!({"name": "anthropic_api", "effort": "max", "thinking": false}),
             "provider.thinking must not be false when provider.effort is max",
         ),
         (
-            json!({"name": "anthropic", "model": " "}),
+            json!({"name": "anthropic_api", "model": " "}),
             "provider.model must be nonempty",
         ),
         (
-            json!({"name": "anthropic", "document": {"effort": "high"}}),
+            json!({"name": "anthropic_api", "document": {"effort": "high"}}),
             "provider.document.model is required",
         ),
     ] {
@@ -592,7 +592,7 @@ fn settings_written_as_arrays_are_rejected_at_initialization() {
     for options in [
         json!([]),
         json!({"translation_limits": {"work": []}}),
-        json!({"provider": ["anthropic"]}),
+        json!({"provider": ["anthropic_api"]}),
         json!({"provider": {"name": "chatgpt", "model": "m", "document": ["synthetic-tab", "low"]}}),
     ] {
         let mut client = Client::spawn(&[], false, false);

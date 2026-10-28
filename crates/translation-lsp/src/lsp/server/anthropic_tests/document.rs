@@ -25,7 +25,7 @@ type Editor = (
 );
 
 fn settings(separate: bool, work: Value) -> Settings {
-    let mut provider = json!({"name": "anthropic", "effort": "medium"});
+    let mut provider = json!({"name": "anthropic_api", "effort": "medium"});
     if separate {
         provider["document"] = json!({"model": TAB_MODEL});
     }

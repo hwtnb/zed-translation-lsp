@@ -45,6 +45,8 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         document: Option<OpenAiModel>,
     },
+    /// Also named `anthropic`, its name in v0.2.0.
+    #[serde(rename = "anthropic_api", alias = "anthropic")]
     Anthropic {
         #[serde(default = "default_anthropic_model")]
         model: String,

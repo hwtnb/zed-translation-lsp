@@ -2,7 +2,7 @@
 
 [English](../../providers/anthropic.md)
 
-`anthropic` プロバイダーを選ぶと、Anthropic APIを通じてClaudeで翻訳します。APIキーは、コードアクションの `Anthropic API key…` から保存します。
+`anthropic_api` プロバイダーを選ぶと、Anthropic APIを通じてClaudeで翻訳します。APIキーは、コードアクションの `Anthropic API key…` から保存します。
 
 ## 最小の設定
 
@@ -12,7 +12,7 @@
     "translation-lsp": {
       "initialization_options": {
         "provider": {
-          "name": "anthropic",
+          "name": "anthropic_api",
           "model": "claude-haiku-5-5",
           "effort": "low"
         }
@@ -28,7 +28,7 @@
 
 | 設定 | 既定値 | 規則 |
 | --- | --- | --- |
-| `provider.name` | なし | `"anthropic"` でこのプロバイダーを選びます。 |
+| `provider.name` | なし | `"anthropic_api"` でこのプロバイダーを選びます。v0.2.0までの名前 `"anthropic"` でも選べます。 |
 | `provider.model` | `claude-haiku-5-5` | 省略できます。空の値、空白や制御文字を含む値、256バイトを超える値は設定エラーです。指定した値をそのまま送り、別のモデルへ置き換えません。 |
 | `provider.effort` | `low` | 省略できます。`low`、`medium`、`high`、`xhigh`、`max` のいずれかです。ChatGPT用の `none` と `minimal` は設定エラーです。 |
 | `provider.thinking` | `model` と `effort` で決まる | 省略できます。省略した場合、`model` が `claude-haiku-5-5` で `effort` が `low`、`medium`、`high` のいずれかなら `false`、それ以外は `true` です。明示した `false` と、`effort` の `xhigh` または `max` の組み合わせは設定エラーです。APIがこの組み合わせを拒否するためです。 |
@@ -53,7 +53,7 @@
 
 ```json
 "provider": {
-  "name": "anthropic",
+  "name": "anthropic_api",
   "model": "claude-haiku-5-5",
   "effort": "low",
   "document": { "model": "claude-sonnet-5-5" }

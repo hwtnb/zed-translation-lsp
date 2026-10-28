@@ -12,7 +12,7 @@ fn provider(name: &str, fields: Value) -> Result<Settings, ConfigError> {
 }
 
 fn anthropic(fields: Value) -> Result<Settings, ConfigError> {
-    provider("anthropic", fields)
+    provider("anthropic_api", fields)
 }
 
 fn chatgpt(fields: Value) -> Result<Settings, ConfigError> {
@@ -180,7 +180,7 @@ fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
 fn speed_is_requested_only_where_it_is_written() {
     for (name, range, tab) in [
         ("chatgpt", "fast", "flex"),
-        ("anthropic", "fast", "standard"),
+        ("anthropic_api", "fast", "standard"),
         ("openai_api", "priority", "flex"),
     ] {
         for (fields, sent) in [
@@ -328,7 +328,7 @@ fn malformed_document_settings_report_the_generic_error() {
         json!({"model": SONNET, "unknown": SECRET}),
         json!({"model": SONNET, "reasoning_effort": "low"}),
         json!({"model": SONNET, "document": {"model": SONNET}}),
-        json!({"model": SONNET, "name": "anthropic"}),
+        json!({"model": SONNET, "name": "anthropic_api"}),
         json!({"model": null}),
         json!({"model": 1}),
         json!({"model": SONNET, "effort": null}),

@@ -27,7 +27,7 @@ fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
         json!([]),
         json!([{}]),
         json!([[16, 1024], 4096]),
-        json!({"provider": ["anthropic"]}),
+        json!({"provider": ["anthropic_api"]}),
         json!({"provider": ["chatgpt", "m"]}),
         json!({"provider": ["chatgpt", "m", "low"]}),
         json!({"provider": ["mock"]}),
@@ -35,9 +35,9 @@ fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
         json!({"provider": {"name": "chatgpt", "model": "m", "document": [tab, "low"]}}),
         json!({"provider": {"name": "chatgpt", "model": "m", "document": [tab]}}),
         json!({"provider": {"name": "chatgpt", "model": "m", "document": [{"model": tab}]}}),
-        json!({"provider": {"name": "anthropic", "document": [tab, "low", true]}}),
-        json!({"provider": {"name": "anthropic", "document": [tab]}}),
-        json!({"provider": {"name": "anthropic", "document": []}}),
+        json!({"provider": {"name": "anthropic_api", "document": [tab, "low", true]}}),
+        json!({"provider": {"name": "anthropic_api", "document": [tab]}}),
+        json!({"provider": {"name": "anthropic_api", "document": []}}),
         json!({"translation_limits": []}),
         json!({"translation_limits": [[16, 1024], 4096]}),
         json!({"translation_limits": {"input_kib": [16, 1024]}}),
@@ -51,8 +51,8 @@ fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
         json!({"hover_timeout_ms": [20000]}),
         json!({"translation_limits": {"output_kib": [4096]}}),
         json!({"provider": {"name": "chatgpt", "model": ["m"]}}),
-        json!({"provider": {"name": "anthropic", "effort": ["low"]}}),
-        json!({"provider": {"name": "anthropic", "document": {"model": [tab]}}}),
+        json!({"provider": {"name": "anthropic_api", "effort": ["low"]}}),
+        json!({"provider": {"name": "anthropic_api", "document": {"model": [tab]}}}),
     ] {
         let error = Settings::from_options(Some(options.clone()))
             .err()
@@ -67,7 +67,7 @@ fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
     // The same values written as tables are settings.
     for options in [
         json!({}),
-        json!({"provider": {"name": "anthropic", "document": {"model": tab, "effort": "low", "thinking": true}}}),
+        json!({"provider": {"name": "anthropic_api", "document": {"model": tab, "effort": "low", "thinking": true}}}),
         json!({"provider": {"name": "chatgpt", "model": "m", "document": {"model": tab, "effort": "low", "speed": "fast"}}}),
         json!({"translation_limits": {"input_kib": {"hover": 16, "document": 1024}, "work": {}, "cache": {"entries": 64}}}),
     ] {
@@ -75,7 +75,7 @@ fn no_setting_accepts_an_array_in_place_of_its_table_or_value() {
     }
     // The named checks still report before the generic error.
     let error = Settings::from_options(Some(json!({
-        "provider": {"name": "anthropic", "document": {"effort": "high"}},
+        "provider": {"name": "anthropic_api", "document": {"effort": "high"}},
         "translation_limits": []
     })))
     .err()
@@ -284,7 +284,7 @@ fn an_omitted_provider_is_unset_and_explicit_settings_are_validated() {
 #[test]
 fn anthropic_settings_default_to_light_haiku_and_name_rejected_values() {
     let anthropic = |fields: Value| {
-        let mut provider = json!({"name": "anthropic"});
+        let mut provider = json!({"name": "anthropic_api"});
         provider
             .as_object_mut()
             .unwrap()
@@ -461,7 +461,7 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
     };
     for (name, field, accepted) in [
         ("chatgpt", "speed", CHATGPT_SPEED),
-        ("anthropic", "speed", ANTHROPIC_SPEED),
+        ("anthropic_api", "speed", ANTHROPIC_SPEED),
         ("chatgpt", "effort", CHATGPT_EFFORT),
         ("openai_api", "speed", CHATGPT_SPEED),
         ("openai_api", "effort", CHATGPT_EFFORT),
@@ -478,10 +478,15 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
     for (name, field, value, choices) in [
         // The values of the other provider.
         ("chatgpt", "speed", json!("standard"), CHATGPT_SPEED),
-        ("anthropic", "speed", json!("priority"), ANTHROPIC_SPEED),
-        ("anthropic", "speed", json!("ultrafast"), ANTHROPIC_SPEED),
+        ("anthropic_api", "speed", json!("priority"), ANTHROPIC_SPEED),
         (
-            "anthropic",
+            "anthropic_api",
+            "speed",
+            json!("ultrafast"),
+            ANTHROPIC_SPEED,
+        ),
+        (
+            "anthropic_api",
             "effort",
             json!("minimal"),
             AnthropicEffort::CHOICES,
@@ -489,7 +494,7 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
         ("chatgpt", "effort", json!("ultra"), CHATGPT_EFFORT),
         ("chatgpt", "speed", json!("Fast"), CHATGPT_SPEED),
         (
-            "anthropic",
+            "anthropic_api",
             "speed",
             json!("synthetic-secret"),
             ANTHROPIC_SPEED,
@@ -499,7 +504,7 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
         // `null` is no way to write that no speed is requested.
         ("chatgpt", "speed", Value::Null, CHATGPT_SPEED),
         ("openai_api", "speed", Value::Null, CHATGPT_SPEED),
-        ("anthropic", "speed", Value::Null, ANTHROPIC_SPEED),
+        ("anthropic_api", "speed", Value::Null, ANTHROPIC_SPEED),
     ] {
         for (inside, scope) in [(false, "provider"), (true, "provider.document")] {
             let error = settings(name, field, value.clone(), inside).err().unwrap();
@@ -510,7 +515,7 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
             );
         }
     }
-    for name in ["chatgpt", "anthropic", "openai_api"] {
+    for name in ["chatgpt", "anthropic_api", "openai_api"] {
         for value in [json!(1), json!(true), json!({"tier": "fast"})] {
             for inside in [false, true] {
                 assert!(matches!(
@@ -525,9 +530,37 @@ fn effort_and_speed_take_the_values_of_their_provider_and_name_them() {
 }
 
 #[test]
+fn anthropic_is_the_former_name_of_anthropic_api() {
+    for fields in [
+        json!({}),
+        json!({"model": "claude-opus-5", "effort": "max", "speed": "fast"}),
+        json!({"document": {"model": "claude-sonnet-5-5", "thinking": true}}),
+        json!({"effort": "minimal"}),
+        json!({"speed": "priority"}),
+        json!({"effort": "max", "thinking": false}),
+        json!({"document": {"effort": "high"}}),
+        json!({"base_url": "https://api.anthropic.com"}),
+    ] {
+        let read = |name: &str| {
+            let mut provider = fields.clone();
+            provider["name"] = json!(name);
+            match Settings::from_options(Some(json!({"provider": provider}))) {
+                Ok(Settings {
+                    provider: ProviderSettings::Anthropic { .. },
+                    ..
+                }) => Ok(()),
+                Ok(_) => panic!("Expected Anthropic settings for {name}"),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        assert_eq!(read("anthropic"), read("anthropic_api"), "{fields}");
+    }
+}
+
+#[test]
 fn omitted_anthropic_thinking_follows_the_model_and_effort() {
     let resolved = |fields: Value| {
-        let mut provider = json!({"name": "anthropic"});
+        let mut provider = json!({"name": "anthropic_api"});
         provider
             .as_object_mut()
             .unwrap()

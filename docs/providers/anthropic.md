@@ -2,7 +2,7 @@
 
 [日本語](../ja/providers/anthropic.md)
 
-Select the `anthropic` provider to translate with Claude through the Anthropic API, and save an API key from the `Anthropic API key…` code action.
+Select the `anthropic_api` provider to translate with Claude through the Anthropic API, and save an API key from the `Anthropic API key…` code action.
 
 ## Minimal settings
 
@@ -12,7 +12,7 @@ Select the `anthropic` provider to translate with Claude through the Anthropic A
     "translation-lsp": {
       "initialization_options": {
         "provider": {
-          "name": "anthropic",
+          "name": "anthropic_api",
           "model": "claude-haiku-5-5",
           "effort": "low"
         }
@@ -28,7 +28,7 @@ The other `initialization_options` described under [Configuration](../configurat
 
 | Setting | Default | Rules |
 | --- | --- | --- |
-| `provider.name` | None | `"anthropic"` selects this provider. |
+| `provider.name` | None | `"anthropic_api"` selects this provider. `"anthropic"`, its name up to v0.2.0, also selects it. |
 | `provider.model` | `claude-haiku-5-5` | Optional. Empty values, values that contain whitespace or control characters, and values longer than 256 bytes are settings errors. The value is sent as written, without substituting another model. |
 | `provider.effort` | `low` | Optional. One of `low`, `medium`, `high`, `xhigh`, or `max`. The ChatGPT-only values `none` and `minimal` are settings errors. |
 | `provider.thinking` | Depends on `model` and `effort` | Optional. When omitted, it is `false` if `model` is `claude-haiku-5-5` and `effort` is `low`, `medium`, or `high`, and `true` otherwise. An explicit `false` together with `effort` `xhigh` or `max` is a settings error, because the API rejects that combination. |
@@ -53,7 +53,7 @@ Unknown fields are rejected: there is no setting for the API key or the API endp
 
 ```json
 "provider": {
-  "name": "anthropic",
+  "name": "anthropic_api",
   "model": "claude-haiku-5-5",
   "effort": "low",
   "document": { "model": "claude-sonnet-5-5" }

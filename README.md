@@ -82,7 +82,7 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
       "initialization_options": {
         "target_language": "ja",
         "provider": {
-          "name": "anthropic",
+          "name": "anthropic_api",
           "model": "claude-haiku-5-5",
           "effort": "low"
         }
