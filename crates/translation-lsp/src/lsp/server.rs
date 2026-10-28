@@ -764,6 +764,8 @@ impl<P: TranslationProvider> Server<P> {
     }
 
     fn hover(&mut self, id: RequestId, params: HoverParams) -> RequestResult<Option<Value>> {
+        // The response deadline also covers reading the comments.
+        let received = Instant::now();
         // Invalidate stale previews before reading them. Only translation targets
         // propagate authorization failures; unrelated Hover requests return null.
         let authorization = self.check_cache();
@@ -803,7 +805,7 @@ impl<P: TranslationProvider> Server<P> {
             .scheduler
             .at(&position.text_document.uri, position.position)
         {
-            return self.queue(id, target, PendingReply::Hover(position.position));
+            return self.queue(id, target, PendingReply::Hover(position.position, received));
         }
         if let Some(hover) = self
             .cache
@@ -838,7 +840,7 @@ impl<P: TranslationProvider> Server<P> {
             target_language: self.settings.target_language.clone(),
         };
         // Keep this request open. Its one response arrives from finish/expire/cancel.
-        self.queue(id, target, PendingReply::Hover(position.position))
+        self.queue(id, target, PendingReply::Hover(position.position, received))
     }
 
     fn notification(

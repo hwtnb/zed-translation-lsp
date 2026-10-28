@@ -378,7 +378,11 @@ async fn chatgpt_worker_drops_outbound_on_cancel_deadline_edit_and_shutdown() {
             target_language: "ja".into(),
         };
         server
-            .queue(2.into(), target, PendingReply::Hover(Position::new(0, 5)))
+            .queue(
+                2.into(),
+                target,
+                PendingReply::Hover(Position::new(0, 5), Instant::now()),
+            )
             .unwrap();
         assert_eq!(server.scheduler.pending()[&2.into()].ticket, ticket);
         let execution_deadline = server.scheduler.translations()[&ticket]

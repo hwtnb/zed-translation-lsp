@@ -9,7 +9,9 @@ pub(super) struct Pending {
 }
 
 pub(super) enum PendingReply {
-    Hover(Position),
+    /// A Hover at the position, received at the instant its response
+    /// deadline counts from.
+    Hover(Position, Instant),
     Command,
     Retry,
 }
@@ -43,7 +45,7 @@ impl TranslationRequest {
     fn timeout(&self, settings: &Settings) -> Duration {
         Duration::from_millis(match self {
             Self::Document => settings.document_timeout_ms,
-            Self::Reply(_, PendingReply::Hover(_)) => settings.hover_timeout_ms,
+            Self::Reply(_, PendingReply::Hover(..)) => settings.hover_timeout_ms,
             _ => settings.selection_timeout_ms,
         })
     }
@@ -72,7 +74,7 @@ pub(super) struct Owners {
 impl Owners {
     fn add(&mut self, request: &TranslationRequest, is_comment: bool) {
         match request {
-            TranslationRequest::Reply(_, PendingReply::Hover(_)) => {
+            TranslationRequest::Reply(_, PendingReply::Hover(..)) => {
                 self.comment_hover |= is_comment;
             }
             TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
@@ -365,7 +367,7 @@ impl<C> Scheduler<C> {
         }
         if matches!(
             request,
-            TranslationRequest::Reply(_, PendingReply::Hover(_))
+            TranslationRequest::Reply(_, PendingReply::Hover(..))
         ) && self.pending.len() >= settings.translation_limits.work.hover_waiters
         {
             return Err(failure(
@@ -376,7 +378,7 @@ impl<C> Scheduler<C> {
         // Repeated Hover joins never renew the operation's execution budget.
         if !matches!(
             request,
-            TranslationRequest::Reply(_, PendingReply::Hover(_))
+            TranslationRequest::Reply(_, PendingReply::Hover(..))
         ) {
             work.limit = work.limit.max(request.timeout(settings));
         }
@@ -390,12 +392,12 @@ impl<C> Scheduler<C> {
                 *output = Output::Document;
             }
         }
-        if let TranslationRequest::Reply(id, PendingReply::Hover(position)) = request {
+        if let TranslationRequest::Reply(id, PendingReply::Hover(position, received)) = request {
             self.pending.insert(
                 id,
                 Pending {
                     ticket,
-                    deadline: now + Duration::from_millis(settings.hover_timeout_ms),
+                    deadline: received + Duration::from_millis(settings.hover_timeout_ms),
                     position,
                 },
             );
@@ -609,7 +611,10 @@ mod tests {
         add(
             &mut s,
             1,
-            TranslationRequest::Reply(1.into(), PendingReply::Hover(Position::new(1, 2))),
+            TranslationRequest::Reply(
+                1.into(),
+                PendingReply::Hover(Position::new(1, 2), Instant::now()),
+            ),
             &settings,
             now,
         );
@@ -618,7 +623,10 @@ mod tests {
         for id in 2..10 {
             s.join(
                 1,
-                TranslationRequest::Reply(id.into(), PendingReply::Hover(Position::new(1, 2))),
+                TranslationRequest::Reply(
+                    id.into(),
+                    PendingReply::Hover(Position::new(1, 2), Instant::now()),
+                ),
                 &settings,
                 now + Duration::from_secs(10),
             )
@@ -664,6 +672,33 @@ mod tests {
         s.pending.clear();
         s.update_deadline(1);
         assert!(s.translations.contains_key(&1));
+    }
+
+    #[test]
+    fn hover_waiters_count_their_deadline_from_receipt() {
+        let settings = Settings::default();
+        let received = Instant::now();
+        let mut s = Scheduler::default();
+        // The Hover joins after reading the comments took five seconds.
+        add(
+            &mut s,
+            1,
+            TranslationRequest::Reply(1.into(), PendingReply::Hover(Position::new(1, 2), received)),
+            &settings,
+            received + Duration::from_secs(5),
+        );
+        assert_eq!(
+            s.pending[&1.into()].deadline,
+            received + Duration::from_secs(20)
+        );
+        assert!(
+            s.take_expired_waiters(received + Duration::from_secs(19))
+                .is_empty()
+        );
+        assert_eq!(
+            s.take_expired_waiters(received + Duration::from_secs(20)),
+            [1.into()]
+        );
     }
 
     #[test]
@@ -884,7 +919,10 @@ mod separate_outputs_tests {
         scheduler
             .join(
                 2,
-                TranslationRequest::Reply(7.into(), PendingReply::Hover(Position::new(0, 2))),
+                TranslationRequest::Reply(
+                    7.into(),
+                    PendingReply::Hover(Position::new(0, 2), Instant::now()),
+                ),
                 &separate,
                 now,
             )

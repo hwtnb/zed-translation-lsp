@@ -113,7 +113,7 @@ async fn document_promotion_uses_original_start_and_survives_hover_expiry() {
         .queue(
             1.into(),
             target.clone(),
-            PendingReply::Hover(Position::new(0, 3)),
+            PendingReply::Hover(Position::new(0, 3), Instant::now()),
         )
         .unwrap();
     let ticket = server.scheduler.pending()[&1.into()].ticket;
@@ -173,7 +173,7 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
         .queue(
             1.into(),
             target.clone(),
-            PendingReply::Hover(Position::new(0, 3)),
+            PendingReply::Hover(Position::new(0, 3), Instant::now()),
         )
         .unwrap();
     wait_held(&tail, 1).await;
@@ -186,7 +186,11 @@ async fn late_hover_join_does_not_extend_http_execution_cap() {
         .execution_deadline();
     sleep(Duration::from_millis(60)).await;
     server
-        .queue(2.into(), target, PendingReply::Hover(Position::new(0, 4)))
+        .queue(
+            2.into(),
+            target,
+            PendingReply::Hover(Position::new(0, 4), Instant::now()),
+        )
         .unwrap();
     assert_eq!(
         server

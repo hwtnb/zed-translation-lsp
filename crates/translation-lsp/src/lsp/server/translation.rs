@@ -110,7 +110,7 @@ impl<P: TranslationProvider> Server<P> {
             Stored::Translation(request.output(), preview.clone()),
         );
         match request {
-            TranslationRequest::Reply(_, PendingReply::Hover(position)) => {
+            TranslationRequest::Reply(_, PendingReply::Hover(position, _)) => {
                 to_value(preview.hover(position)).map(Some)
             }
             TranslationRequest::Document => {

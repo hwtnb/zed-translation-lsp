@@ -20,7 +20,7 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
         .queue(
             1.into(),
             target.clone(),
-            PendingReply::Hover(Position::new(0, 3)),
+            PendingReply::Hover(Position::new(0, 3), Instant::now()),
         )
         .unwrap();
     assert_eq!(
