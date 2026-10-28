@@ -131,7 +131,7 @@ fn python_docstring_delimiters_newlines_and_non_docstring_contexts() {
 }
 
 #[test]
-fn python_reads_statements_after_many_comments_in_proportion_to_the_text() {
+fn python_reads_statements_after_many_comments_in_seconds() {
     let uri = "untitled:comment".parse().unwrap();
     let text = format!("{}{}", "# c\n".repeat(20_000), "f()\n".repeat(20_000));
     let started = Instant::now();
@@ -1664,7 +1664,7 @@ fn dockerfile_long_lines_and_many_here_documents_are_read_in_one_pass() {
 }
 
 #[test]
-fn readers_take_time_in_proportion_to_the_text() {
+fn readers_finish_repeated_pieces_in_seconds() {
     // Each sign on its own, and the openings that a reader could read on from.
     let signs = ")]}([{\"'#\\`=,:-|><&*!%@$; \na";
     let signs: Vec<_> = signs.chars().map(String::from).collect();
@@ -1832,7 +1832,7 @@ fn swift_looks_for_the_end_of_a_raw_string_on_a_line_once() {
 }
 
 #[test]
-fn readers_take_time_in_proportion_to_texts_of_several_parts() {
+fn readers_finish_texts_of_several_repeated_parts_in_seconds() {
     // One piece repeated does not show a reader that reads one part again
     // for every piece of another part. Here each text has three to five
     // parts, and each part is a piece repeated once, a few times, or often.
