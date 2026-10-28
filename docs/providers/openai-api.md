@@ -65,7 +65,7 @@ Create the key on the [API keys page](https://platform.openai.com/api-keys) of t
 While no usable key is saved, `OpenAI API key…` is the only code action of the server. While one is saved, the menu has these items instead:
 
 - `Replace OpenAI API key`: open the same terminal to save another key in place of the saved one.
-- `Remove OpenAI API key`: after you confirm, delete the key file from this computer, cancel the translations in progress, and discard the translations already shown. The key stays valid until you delete it in the OpenAI Platform.
+- `Remove OpenAI API key`: after you confirm, delete the key file from your computer, cancel the translations in progress, and discard the translations already shown. The key stays valid until you delete it in the OpenAI Platform.
 
 While a key is saved, the menu appears in Markdown and Plain Text documents, and in other documents only in a range whose translation failed, such as with a rejected key. To replace or remove the key at another time, open a Markdown or Plain Text file.
 

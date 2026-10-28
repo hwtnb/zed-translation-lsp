@@ -134,7 +134,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
 }
 ```
 
-`base_url` にはサービスのアドレスを、`model` にはそのサービスのモデル名を指定します。上の例は、このコンピューターのOllamaに取り込んだモデルを使います。Ollamaのように、このコンピューターで動きキーの要らないサービスは、キーなしで使えます。キーが要るサービスでは、コードアクションの `OpenAI-compatible API key…` から `Save OpenAI-compatible API key` を実行します。いくつかのサービスのアドレスとほかの設定は[OpenAI互換API](docs/ja/providers/openai-compatible.md)で説明します。
+`base_url` にはサービスのアドレスを、`model` にはそのサービスのモデル名を指定します。上の例は、お使いのコンピューターのOllamaに取り込んだモデルを使います。Ollamaのように、キーの要らないサービスは、キーなしで使えます。キーが要るサービスでは、コードアクションの `OpenAI-compatible API key…` から `Save OpenAI-compatible API key` を実行します。いくつかのサービスのアドレスとほかの設定は[OpenAI互換API](docs/ja/providers/openai-compatible.md)で説明します。
 
 ### ほかのよく使う設定
 

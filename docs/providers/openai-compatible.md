@@ -32,7 +32,7 @@ Save a Gemini API key as described under [Authentication](#authentication).
 
 Save an OpenRouter API key. OpenRouter model names start with the name of the company that offers the model, as in `google/gemini-3.8-flash`.
 
-### Ollama on this computer
+### Ollama on your computer
 
 ```json
 "provider": {
@@ -44,7 +44,7 @@ Save an OpenRouter API key. OpenRouter model names start with the name of the co
 
 Replace `MODEL` with the name of a model you pulled into Ollama, as `ollama list` shows it. No key is needed.
 
-### LM Studio on this computer
+### LM Studio on your computer
 
 ```json
 "provider": {
@@ -65,7 +65,7 @@ A key saved for one service is not sent to another: a Gemini API key is not sent
 | Setting | Default | Rules |
 | --- | --- | --- |
 | `provider.name` | None | `"openai_compatible"` selects this provider. |
-| `provider.base_url` | None | Required. The URL that requests go to with `/chat/completions` after it. It must start with `https://`, or with `http://` for a service on this computer: `localhost`, an address from `127.0.0.1` to `127.255.255.255`, or `::1`. A user name, a password, a query, or a fragment is a settings error, as is a value longer than 2,048 bytes. A `/` at the end is ignored. |
+| `provider.base_url` | None | Required. The URL that requests go to with `/chat/completions` after it. It must start with `https://`, or with `http://` for a service on your computer: `localhost`, an address from `127.0.0.1` to `127.255.255.255`, or `::1`. A user name, a password, a query, or a fragment is a settings error, as is a value longer than 2,048 bytes. A `/` at the end is ignored. |
 | `provider.model` | None | Required. Empty values, values that contain whitespace or control characters, and values longer than 256 bytes are settings errors. The value is sent as written, without substituting another model. |
 | `provider.effort` | None | Optional. Sent as the request's `reasoning_effort` as written. When omitted, no `reasoning_effort` is sent. Empty values, values that contain whitespace or control characters, and values longer than 64 bytes are settings errors. |
 | `provider.document` | None | Optional. An object holding the model and options for translations opened in a tab. Its values are not inherited from `provider.model` or `provider.effort`: a value omitted inside it is not sent. Tab translations go to the same `base_url`. Unknown fields inside it are settings errors. |
@@ -93,14 +93,14 @@ What `provider.document` changes for every provider is described under [Tab tran
 
 ## Authentication
 
-A service that needs no key, such as Ollama or LM Studio on this computer, is used without one. Requests carry no `Authorization` header until you save a key.
+A service that needs no key, such as Ollama or LM Studio on your computer, is used without one. Requests carry no `Authorization` header until you save a key.
 
 To save a key, run `editor: toggle code actions` from Zed's Command Palette in a supported document, choose `OpenAI-compatible API key…`, then run `Save OpenAI-compatible API key`. A terminal window of the OS opens, names the address the key will be sent to, and asks for the key. Paste the key there and press Enter; the terminal does not show what you paste. The next translation sends the key as `Authorization: Bearer`, without a language server restart.
 
 While a key is saved, the menu has these items instead:
 
 - `Replace OpenAI-compatible API key`: open the same terminal to save another key in place of the saved one.
-- `Remove OpenAI-compatible API key`: after you confirm, delete the key file of this service from this computer, cancel the translations in progress, and discard the translations already shown. Later requests carry no key. The key stays valid until you delete it at the service.
+- `Remove OpenAI-compatible API key`: after you confirm, delete the key file of this service from your computer, cancel the translations in progress, and discard the translations already shown. Later requests carry no key. The key stays valid until you delete it at the service.
 
 The menu appears in Markdown and Plain Text documents, and in other documents only in a range whose translation failed, such as when the service refused the request without a key. To save, replace, or remove the key at another time, open a Markdown or Plain Text file.
 
@@ -126,7 +126,7 @@ The server does not count usage or cost; check them at the service. With `provid
 
 Automatic comment Hover and Markdown selection translation send requests without a confirmation, as described under [Usage](../usage.md).
 
-A model on this computer may take longer than the default deadlines. Raise `hover_timeout_ms`, `selection_timeout_ms`, or `document_timeout_ms` when translations time out; see [Timing](../configuration.md#timing).
+A model on your computer may take longer than the default deadlines. Raise `hover_timeout_ms`, `selection_timeout_ms`, or `document_timeout_ms` when translations time out; see [Timing](../configuration.md#timing).
 
 ## What is sent
 

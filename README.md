@@ -134,7 +134,7 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 }
 ```
 
-Set `base_url` to the address of the service and `model` to one of its model names; the example above uses a model pulled into Ollama on this computer. A service on this computer that needs no key, such as Ollama, is ready without one. For a service that needs a key, choose `OpenAI-compatible API key…` from the code actions, then run `Save OpenAI-compatible API key`. See [OpenAI-compatible API](docs/providers/openai-compatible.md) for the addresses of some services and the other settings.
+Set `base_url` to the address of the service and `model` to one of its model names; the example above uses a model pulled into Ollama on your computer. A service that needs no key, such as Ollama, is ready without one. For a service that needs a key, choose `OpenAI-compatible API key…` from the code actions, then run `Save OpenAI-compatible API key`. See [OpenAI-compatible API](docs/providers/openai-compatible.md) for the addresses of some services and the other settings.
 
 ### Other common settings
 
