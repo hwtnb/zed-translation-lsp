@@ -1874,9 +1874,11 @@ fn coalesced_commands_acknowledge_once_and_report_one_failure_for_the_range() {
         assert!(client.receive(first, TIMEOUT).unwrap().is_null());
         assert!(client.receive(second, TIMEOUT).unwrap().is_null());
         assert_error(client.receive(hover, TIMEOUT), -32803);
-        assert_eq!(client.notifications.len(), 1);
-        assert_eq!(client.notifications[0]["type"], 1);
-        assert!(!client.notifications[0].to_string().contains(COMMENT));
+        // The Hover deadline counts from receipt and the translation's from
+        // its start, so a Hover with the same limit can time out first.
+        let notice = client.notice();
+        assert_eq!(notice["type"], 1);
+        assert!(!notice.to_string().contains(COMMENT));
         let failed = client.hover(uri, range["start"].clone());
         assert!(
             failed["contents"]["value"]
@@ -1884,6 +1886,7 @@ fn coalesced_commands_acknowledge_once_and_report_one_failure_for_the_range() {
                 .unwrap()
                 .contains("translation failed")
         );
+        assert!(client.notifications.is_empty());
         client.change(uri, 2, json!([{"text":"fn main() {}"}]));
         assert!(client.hover(uri, range["start"].clone()).is_null());
         client.finish(true);
