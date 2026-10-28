@@ -22,7 +22,7 @@
 }
 ```
 
-[設定](../configuration.md)で説明するほかの `initialization_options` は、同じように使えます。APIキーは設定に書きません。[認証](#認証)のとおりに保存してください。
+`initialization_options` 内のほかの項目は、[設定](../configuration.md)で説明するとおりに使えます。APIキーは設定に書きません。[認証](#認証)のとおりに保存してください。
 
 ## 設定項目
 

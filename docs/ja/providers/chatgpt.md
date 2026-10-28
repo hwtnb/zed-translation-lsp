@@ -22,7 +22,7 @@ ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGP
 }
 ```
 
-[設定](../configuration.md)で説明するほかの `initialization_options` は、同じように使えます。
+`initialization_options` 内のほかの項目は、[設定](../configuration.md)で説明するとおりに使えます。
 
 ## 設定項目
 

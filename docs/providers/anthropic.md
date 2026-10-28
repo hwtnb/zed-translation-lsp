@@ -22,7 +22,7 @@ Select the `anthropic_api` provider to translate with Claude through the Anthrop
 }
 ```
 
-The other `initialization_options` described under [Configuration](../configuration.md) apply unchanged. The API key is not part of the settings; save it as described under [Authentication](#authentication).
+The other settings in `initialization_options` work as described under [Configuration](../configuration.md). The API key is not part of the settings; save it as described under [Authentication](#authentication).
 
 ## Settings
 

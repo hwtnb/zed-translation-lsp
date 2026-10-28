@@ -22,7 +22,7 @@ The ChatGPT provider uses your ChatGPT account with permission to use your plan.
 }
 ```
 
-The other `initialization_options` described under [Configuration](../configuration.md) apply unchanged.
+The other settings in `initialization_options` work as described under [Configuration](../configuration.md).
 
 ## Settings
 
