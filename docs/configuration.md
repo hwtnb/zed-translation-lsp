@@ -110,7 +110,7 @@ A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans
 
 | Setting inside `features` | What it turns on or off | Language IDs |
 | --- | --- | --- |
-| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `go`, `ruby`, `php`, `html`, `css`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose` |
+| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `go`, `java`, `kotlin`, `swift`, `ruby`, `php`, `html`, `css`, `sql`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose` |
 | `automatic_selection` | Starting a translation after a stable Markdown selection. | `markdown` |
 | `selection_action` | The `Translate selection to …` Code Action. | Every language ID in the table below |
 | `document_action` | The `Translate selection to … and open in tab` and `Translate document to … and open in tab` Code Actions. | `markdown`, `plaintext` |
