@@ -3063,6 +3063,39 @@ fn comment_hover_switch_stops_new_hover_work_and_keeps_manual_results() {
 }
 
 #[test]
+fn comment_hover_switch_still_tells_a_translation_end_from_a_comment_start() {
+    let mut client = Client::configured(
+        &[],
+        false,
+        false,
+        json!({"features": {"languages": {"rust": {"comment_hover": false}}}}),
+    );
+    let uri = "file:///switch.rs";
+    let first = "/* Retry only if the remote service\nreports a temporary failure. */";
+    let source = format!("{first}/* unknown */");
+    let range = range_for(&source, first);
+    client.open(uri, "rust", &source, 1);
+    let action = client.action(uri, range.clone());
+    let command = client.execute(action);
+    assert!(client.receive(command, TIMEOUT).unwrap().is_null());
+    assert!(
+        client.notice()["message"]
+            .as_str()
+            .unwrap()
+            .ends_with(READY)
+    );
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        first,
+        COMMENT_JA,
+        &range,
+    );
+    // Where the translation ends, the next comment starts.
+    assert!(client.hover(uri, range["end"].clone()).is_null());
+    client.finish(true);
+}
+
+#[test]
 fn selection_action_switch_hides_the_action_and_refuses_its_command() {
     for features in [
         json!({"languages": {"markdown": {"selection_action": false}}}),
@@ -3244,63 +3277,69 @@ fn a_reading_past_its_limit_leaves_the_document_without_comments_until_it_is_reo
     let range = range_for(comment, comment);
     // Reading this much text takes seconds in a debug build.
     let slow = format!("{comment}\n{}", "value = 1\n".repeat(400_000));
-    // The text is read, and the failure reported, with comment Hover off too.
-    for comment_hover in [true, false] {
-        let mut client = Client::configured(
-            &[],
-            false,
-            false,
-            json!({"comment_parse_timeout_ms": 100, "features": {"comment_hover": comment_hover}}),
-        );
-        let uri = "file:///work/slow%20%E8%AA%AD.py";
-        client.open(uri, "python", &slow, 1);
-        let (hover, elapsed) = timed_hover(&mut client, uri, range["start"].clone());
-        assert!(hover.is_null());
-        assert!(elapsed >= limit, "{elapsed:?}");
-        assert_eq!(
-            client.notice(),
-            json!({"type": 2, "message": format!(
-                "Reading comments in slow 読.py timed out. {NOT_RECOGNIZED} To allow more time, adjust comment_parse_timeout_ms in Zed settings."
-            )})
-        );
+    let uri = "file:///work/slow%20%E8%AA%AD.py";
+    // Reading it would take the whole limit each time, so one quick answer
+    // shows that the text was not read.
+    let quick = |client: &mut Client| {
+        (0..3).any(|_| {
+            let (hover, elapsed) = timed_hover(client, uri, range["start"].clone());
+            assert!(hover.is_null());
+            elapsed < limit
+        })
+    };
+    let mut client =
+        Client::configured(&[], false, false, json!({"comment_parse_timeout_ms": 100}));
+    client.open(uri, "python", &slow, 1);
+    let (hover, elapsed) = timed_hover(&mut client, uri, range["start"].clone());
+    assert!(hover.is_null());
+    assert!(elapsed >= limit, "{elapsed:?}");
+    assert_eq!(
+        client.notice(),
+        json!({"type": 2, "message": format!(
+            "Reading comments in slow 読.py timed out. {NOT_RECOGNIZED} To allow more time, adjust comment_parse_timeout_ms in Zed settings."
+        )})
+    );
 
-        // Neither a later request nor an edit reads the text again. Reading it
-        // would take the whole limit each time, so one quick answer is enough.
-        let quick = |client: &mut Client| {
-            (0..3).any(|_| {
-                let (hover, elapsed) = timed_hover(client, uri, range["start"].clone());
-                assert!(hover.is_null());
-                elapsed < limit
-            })
-        };
-        assert!(quick(&mut client));
-        let start = json!({"line": 2, "character": 0});
-        client.change(
-            uri,
-            2,
-            json!([{"range": {"start": start, "end": start}, "text": "value = 1\n"}]),
-        );
-        assert!(quick(&mut client));
+    // Neither a later request nor an edit reads the text again.
+    assert!(quick(&mut client));
+    let start = json!({"line": 2, "character": 0});
+    client.change(
+        uri,
+        2,
+        json!([{"range": {"start": start, "end": start}, "text": "value = 1\n"}]),
+    );
+    assert!(quick(&mut client));
 
-        // Other documents are read as before, and so is this one once reopened.
-        let other = "file:///work/other.py";
-        client.open(other, "python", comment, 1);
-        client.close(uri);
-        client.open(uri, "python", &format!("{comment}\nvalue = 1\n"), 1);
-        for uri in [other, uri] {
-            let hover = client.hover(uri, range["start"].clone());
-            if comment_hover {
-                assert_preview(&hover, comment, COMMENT_JA, &range);
-            } else {
-                assert!(hover.is_null());
-            }
-        }
-        assert!(client.notifications.is_empty());
-        assert_eq!(
-            client.finish(false),
-            "translation-lsp: reading comments timed out (language \"python\")\n"
+    // Other documents are read as before, and so is this one once reopened.
+    let other = "file:///work/other.py";
+    client.open(other, "python", comment, 1);
+    client.close(uri);
+    client.open(uri, "python", &format!("{comment}\nvalue = 1\n"), 1);
+    for uri in [other, uri] {
+        assert_preview(
+            &client.hover(uri, range["start"].clone()),
+            comment,
+            COMMENT_JA,
+            &range,
         );
     }
+    assert!(client.notifications.is_empty());
+    assert_eq!(
+        client.finish(false),
+        "translation-lsp: reading comments timed out (language \"python\")\n"
+    );
+
+    // With comment Hover off, Hover starts no translation and reads nothing.
+    let mut client = Client::configured(
+        &[],
+        false,
+        false,
+        json!({"comment_parse_timeout_ms": 100, "features": {"comment_hover": false}}),
+    );
+    client.open(uri, "python", &slow, 1);
+    assert!(quick(&mut client));
+    assert!(client.notifications.is_empty());
+    client.finish(true);
 }
 
 #[test]

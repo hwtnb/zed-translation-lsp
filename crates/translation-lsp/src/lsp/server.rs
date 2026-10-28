@@ -783,16 +783,10 @@ impl<P: TranslationProvider> Server<P> {
             .chars()
             .next()
             .is_none_or(char::is_whitespace);
-        let range = document.comment_range(
-            &position.text_document.uri,
-            offset,
-            Duration::from_millis(self.settings.comment_parse_timeout_ms),
-        );
-        report_comment_failure(&self.ui, &position.text_document.uri, document)?;
+        // A comment starts at its opening mark, so where the end of a comment
+        // is clear, no other comment starts.
         let eligible = |preview: &Preview<P::Context>| {
-            !preview.is_comment
-                || preview.range.end != position.position
-                || (end_is_clear && !range.is_some_and(|range| range.start == position.position))
+            !preview.is_comment || preview.range.end != position.position || end_is_clear
         };
         if let Some(hover) =
             self.cache
@@ -814,12 +808,22 @@ impl<P: TranslationProvider> Server<P> {
             authorization?;
             return to_value(hover).map(Some);
         }
-        // Turning comment Hover off only stops it from starting a translation.
-        let Some(range) = range.filter(|_| {
-            self.settings
-                .features
-                .enables(Feature::CommentHover, document.language)
-        }) else {
+        // Turning comment Hover off only stops it from starting a translation,
+        // which needs no comments read.
+        if !self
+            .settings
+            .features
+            .enables(Feature::CommentHover, document.language)
+        {
+            return Ok(Some(Value::Null));
+        }
+        let range = document.comment_range(
+            &position.text_document.uri,
+            offset,
+            Duration::from_millis(self.settings.comment_parse_timeout_ms),
+        );
+        report_comment_failure(&self.ui, &position.text_document.uri, document)?;
+        let Some(range) = range else {
             return Ok(Some(Value::Null));
         };
         if let Some(notice) = P::capabilities().comment_notice {

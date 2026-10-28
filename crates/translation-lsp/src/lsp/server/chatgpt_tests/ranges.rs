@@ -102,6 +102,34 @@ async fn distinct_automatic_ranges_persist_and_range_cancel_only_removes_its_tic
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn hover_reads_comments_only_where_comment_hover_can_start() {
+    for (features, read) in [
+        (json!({}), true),
+        (
+            json!({"languages": {"rust": {"comment_hover": false}}}),
+            false,
+        ),
+    ] {
+        let settings = Settings::from_options(Some(json!({"features": features}))).unwrap();
+        let (_fixture, mut server, _connection, _client, _completions, uri) =
+            range_server(settings).await;
+        server.documents.insert(
+            uri.clone(),
+            Document::new(
+                1,
+                1,
+                "rust".into(),
+                "fn main() {}\n// Alpha sentence.".into(),
+            ),
+        );
+        let hover =
+            parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":3}})).unwrap();
+        assert_eq!(server.hover(1.into(), hover).unwrap(), Some(Value::Null));
+        assert_eq!(server.documents[&uri].comments_read(), read, "{features}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn comment_hovers_survive_cancellation_and_waiter_expiry_with_bounded_parallel_http() {
     let (fixture, mut server, connection, client, completions, uri) =
         range_server(Settings::default()).await;

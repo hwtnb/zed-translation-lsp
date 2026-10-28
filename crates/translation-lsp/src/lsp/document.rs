@@ -167,6 +167,12 @@ impl Document {
         };
     }
 
+    /// Whether the comments of this version have been read.
+    #[cfg(test)]
+    pub fn comments_read(&self) -> bool {
+        !matches!(self.comments, Reading::Pending)
+    }
+
     /// A failure to read this document's comments, the first time it is asked for.
     pub fn take_comment_failure(&mut self) -> Option<Failure> {
         self.unreported.take()
