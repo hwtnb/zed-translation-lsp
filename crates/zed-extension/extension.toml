@@ -1,8 +1,8 @@
 id = "translation-lsp"
 name = "Translation LSP"
-version = "0.2.0"
+version = "0.3.0"
 schema_version = 1
-description = "Translate code comments and selected text with ChatGPT or the Anthropic API while keeping the original source unchanged."
+description = "Translate code comments and selected text with ChatGPT, the OpenAI or Anthropic API, or an OpenAI-compatible service while keeping the original source unchanged."
 authors = ["hwtnb"]
 repository = "https://github.com/hwtnb/zed-translation-lsp"
 
