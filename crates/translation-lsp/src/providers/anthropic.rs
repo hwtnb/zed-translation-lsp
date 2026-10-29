@@ -4,7 +4,7 @@ pub(crate) mod test_support;
 
 #[cfg(test)]
 use std::path::Path;
-use std::{mem, path::PathBuf};
+use std::path::PathBuf;
 
 use serde_json::json;
 
@@ -171,7 +171,6 @@ impl AnthropicProvider {
         expected: KeyId,
     ) -> Result<String, Error> {
         let key = self.key.in_use(expected)?;
-        let generation = self.admission.admit(&expected, intent)?;
         let secrets: Vec<&str> = [&*key.text]
             .into_iter()
             .chain(texts.iter().copied())
@@ -194,22 +193,12 @@ impl AnthropicProvider {
         if let Some(speed) = options.speed {
             request["speed"] = json!(speed);
         }
-        let mut sent = false;
-        // A request that was not sent again is no result of its key: it neither
-        // pauses automatic translation nor resumes it.
-        let mut unsent = None;
+        let in_use = || self.key.in_use(expected).map(drop);
         // Dropping this future on cancellation or expiry drops the request or
         // response it is awaiting, which closes the connection.
-        let mut result = self
+        let completed = self
             .admission
-            .retrying(&expected, intent, async || {
-                // The key may have been replaced or removed during the wait.
-                if mem::replace(&mut sent, true)
-                    && let Err(error) = self.key.in_use(expected)
-                {
-                    unsent = Some(error.clone());
-                    return Attempt::without_response(error);
-                }
+            .send(&expected, intent, in_use, async || {
                 let mut sending = self
                     .client
                     .post(format!("{}/messages", self.api))
@@ -236,13 +225,7 @@ impl AnthropicProvider {
                     retry_after,
                 }
             })
-            .await;
-        if let Some(error) = unsent {
-            return Err(error);
-        }
-        self.admission
-            .settle(&expected, intent, generation, &mut result);
-        let completed = result?;
+            .await?;
         if let Some(speed) = options.speed {
             response::log_speed(speed, &completed);
         }

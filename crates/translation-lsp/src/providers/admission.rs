@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -207,6 +208,39 @@ impl<K: Clone + PartialEq> Admission<K> {
                 result => return result,
             }
         }
+    }
+
+    /// Admits a request made with `key`, sends it with `attempt` as
+    /// `retrying` does, and settles the result for `key`. Before the request
+    /// is sent again, `in_use` tells whether `key` is still the one in use: a
+    /// request that is not sent again is no result of its key, so it neither
+    /// pauses automatic translation nor resumes it.
+    pub async fn send<T>(
+        &self,
+        key: &K,
+        intent: Intent,
+        in_use: impl Fn() -> Result<(), Error>,
+        mut attempt: impl AsyncFnMut() -> Attempt<T>,
+    ) -> Result<T, Error> {
+        let generation = self.admit(key, intent)?;
+        let mut sent = false;
+        let mut unsent = None;
+        let mut result = self
+            .retrying(key, intent, async || {
+                if mem::replace(&mut sent, true)
+                    && let Err(error) = in_use()
+                {
+                    unsent = Some(error.clone());
+                    return Attempt::without_response(error);
+                }
+                attempt().await
+            })
+            .await;
+        if let Some(error) = unsent {
+            return Err(error);
+        }
+        self.settle(key, intent, generation, &mut result);
+        result
     }
 }
 

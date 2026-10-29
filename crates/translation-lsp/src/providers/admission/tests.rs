@@ -1,6 +1,9 @@
-use std::time::Instant;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
-use super::Admission;
+use super::{Admission, Attempt};
 use crate::providers::{
     Intent,
     error::{Error, ErrorKind, Notification, RemoteError, RemoteKind, Service},
@@ -239,4 +242,39 @@ fn only_paused_and_stopped_keys_are_remembered() {
     fail(&admission, REPLACED, 0, temporary());
     assert_eq!(keys(&admission), [IN_USE, REPLACED]);
     assert!(admission.check(&IN_USE, stopped).is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_request_not_sent_again_settles_nothing_for_its_key() {
+    for key_in_use in [false, true] {
+        let admission = Admission::default();
+        let checks = Cell::new(0);
+        let in_use = || {
+            checks.set(checks.get() + 1);
+            if key_in_use {
+                Ok(())
+            } else {
+                Err(Error::configuration("synthetic replaced key"))
+            }
+        };
+        let mut attempts = 0;
+        let error = admission
+            .send(&IN_USE, Intent::Automatic, in_use, async || {
+                attempts += 1;
+                Attempt::<()> {
+                    result: Err(if attempts == 1 { temporary() } else { stop() }),
+                    retry_after: Some(Duration::ZERO),
+                }
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(checks.get(), 1, "Only the request sent again is checked");
+        assert_eq!(attempts, if key_in_use { 2 } else { 1 });
+        assert_eq!(error.kind(), ErrorKind::Configuration);
+        if key_in_use {
+            assert!(automatic(&admission, IN_USE).is_err());
+        } else {
+            assert!(keys(&admission).is_empty());
+        }
+    }
 }
