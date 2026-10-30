@@ -1,4 +1,4 @@
-use super::{Markup, Segmented};
+use super::{Markup, Segmented, batches};
 
 /// What the service is sent for `text`, and the text put back from
 /// translations that start each segment with `T:`.
@@ -193,4 +193,50 @@ fn translations_that_lose_or_repeat_a_mark_or_do_not_match_are_refused() {
     }
     assert_eq!(assemble(&[]), None);
     assert_eq!(assemble(&["<x i=\"0\"/><x i=\"1\"/>", "extra"]), None);
+}
+
+#[test]
+fn long_texts_are_grouped_into_requests_that_fit() {
+    let texts: Vec<String> = [
+        "a".repeat(60),
+        "b".repeat(40),
+        "c".into(),
+        "d".repeat(101),
+        "e".into(),
+    ]
+    .into_iter()
+    .collect();
+    let lengths = |bytes, count| -> Vec<usize> {
+        batches(&texts, bytes, count)
+            .iter()
+            .map(|batch| batch.len())
+            .collect()
+    };
+    assert_eq!(lengths(100, usize::MAX), [2, 1, 1, 1]);
+    assert_eq!(lengths(96, usize::MAX), [1, 2, 1, 1]);
+    assert_eq!(lengths(1000, 2), [2, 2, 1]);
+    assert!(batches(&[], 100, 2).is_empty());
+}
+
+#[test]
+fn html_marks_carry_their_index_through_attributes_the_service_adds() {
+    let segmented = Segmented::new("Call `a` then `b`.");
+    assert_eq!(
+        segmented.marked(Markup::Html),
+        [
+            "Call <span translate=\"no\" class=\"notranslate\" id=\"i0\">`a`</span> then <span translate=\"no\" class=\"notranslate\" id=\"i1\">`b`</span>."
+        ]
+    );
+    let translation = "<span translate=\"no\" class=\"notranslate\" id=\"i1\" style=\"direction:rtl\">b</span> の後で <span id=\"i0\">a</span> を呼ぶ";
+    assert_eq!(
+        segmented
+            .assemble(Markup::Html, &[translation.into()])
+            .unwrap(),
+        "`b` の後で `a` を呼ぶ"
+    );
+    // A mark of the other markup is a tag the service added.
+    assert_eq!(
+        segmented.assemble(Markup::Html, &["<x i=\"0\">a</x> <x i=\"1\">b</x>".into()]),
+        None
+    );
 }

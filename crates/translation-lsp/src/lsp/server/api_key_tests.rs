@@ -9,6 +9,7 @@ use crate::providers::{
     anthropic::test_support::KeyDirectory,
     credential_directory,
     deepl::DeepLProvider,
+    google::GoogleProvider,
     http_fixture::{HttpFixture, Reply},
     openai_api::OpenAiApiProvider,
     openai_compatible::CompatibleProvider,
@@ -103,6 +104,14 @@ fn each_provider_declares_its_name_and_key_commands() {
             [
                 "translation-lsp.save-deepl-key",
                 "translation-lsp.remove-deepl-key",
+            ],
+        ),
+        (
+            commands::<GoogleProvider>(),
+            "Translation LSP (Google Cloud Translation)",
+            [
+                "translation-lsp.save-google-key",
+                "translation-lsp.remove-google-key",
             ],
         ),
     ] {

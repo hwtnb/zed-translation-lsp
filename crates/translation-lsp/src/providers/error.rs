@@ -29,19 +29,28 @@ pub(crate) enum Service {
     /// A service that `provider.base_url` names.
     Compatible,
     DeepL,
+    GoogleTranslation,
 }
 
 impl Service {
     fn network_advice(self) -> &'static str {
         match self {
             Self::OpenAi => "credentials are retained, retry later",
-            Self::OpenAiApi | Self::Anthropic | Self::Compatible | Self::DeepL => "retry later",
+            Self::OpenAiApi
+            | Self::Anthropic
+            | Self::Compatible
+            | Self::DeepL
+            | Self::GoogleTranslation => "retry later",
         }
     }
 
     fn code_label(self) -> &'static str {
         match self {
-            Self::OpenAi | Self::OpenAiApi | Self::Compatible | Self::DeepL => "code",
+            Self::OpenAi
+            | Self::OpenAiApi
+            | Self::Compatible
+            | Self::DeepL
+            | Self::GoogleTranslation => "code",
             Self::Anthropic => "type",
         }
     }
@@ -54,6 +63,7 @@ impl fmt::Display for Service {
             Self::Anthropic => "Anthropic",
             Self::Compatible => "OpenAI-compatible API",
             Self::DeepL => "DeepL API",
+            Self::GoogleTranslation => "Google Cloud Translation",
         })
     }
 }

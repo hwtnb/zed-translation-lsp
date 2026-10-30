@@ -85,6 +85,10 @@ pub(crate) enum ProviderSettings {
     /// DeepL has no models to choose: ranges and tabs are sent alike.
     #[serde(rename = "deepl")]
     DeepL {},
+    /// Google Cloud Translation, Basic edition, which has no models to choose
+    /// either.
+    #[serde(rename = "google_translate")]
+    GoogleTranslate {},
 }
 
 /// The model and options that one output sends. `provider.document` is one of
@@ -129,7 +133,7 @@ impl ProviderSettings {
     /// `provider.document` is present, whatever its values are.
     pub fn separates_documents(&self) -> bool {
         match self {
-            Self::Unset | Self::Mock {} | Self::DeepL {} => false,
+            Self::Unset | Self::Mock {} | Self::DeepL {} | Self::GoogleTranslate {} => false,
             Self::Chatgpt { document, .. } => document.is_some(),
             Self::Anthropic { document, .. } => document.is_some(),
             Self::OpenAiApi { document, .. } => document.is_some(),

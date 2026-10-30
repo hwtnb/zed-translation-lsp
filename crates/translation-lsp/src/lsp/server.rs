@@ -60,6 +60,7 @@ use crate::{
         credential_directory,
         deepl::DeepLProvider,
         error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
+        google::GoogleProvider,
         mock::{MockOptions, MockProvider},
         openai_api::OpenAiApiProvider,
         openai_compatible::CompatibleProvider,
@@ -183,6 +184,7 @@ fn serve(
         ProviderSettings::OpenAiApi { .. } => capabilities::<OpenAiApiProvider>(),
         ProviderSettings::OpenAiCompatible { .. } => capabilities::<CompatibleProvider>(),
         ProviderSettings::DeepL {} => capabilities::<DeepLProvider>(),
+        ProviderSettings::GoogleTranslate {} => capabilities::<GoogleProvider>(),
     };
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
 
@@ -277,6 +279,14 @@ fn serve(
         }
         ProviderSettings::DeepL {} => {
             let provider = DeepLProvider::new(
+                &settings.source_language,
+                settings.translation_limits.output_kib,
+                key_directory,
+            )?;
+            serve_initialized(connection, settings, ui, provider)
+        }
+        ProviderSettings::GoogleTranslate {} => {
+            let provider = GoogleProvider::new(
                 &settings.source_language,
                 settings.translation_limits.output_kib,
                 key_directory,

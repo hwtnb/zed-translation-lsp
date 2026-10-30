@@ -313,6 +313,7 @@ fn every_text_for_the_terminal_is_ascii() {
         introduction(&KeyKind::Anthropic),
         introduction(&KeyKind::DeepL),
         introduction(&origin),
+        introduction(&KeyKind::Origin(Origin::google_translation())),
         prompt(&KeyKind::Anthropic),
         prompt(&KeyKind::DeepL),
         prompt(&origin),
@@ -397,4 +398,17 @@ fn deepl_key_is_saved_in_a_file_of_its_own_and_names_both_hosts() {
         fs::read(directory.path.join("deepl-api-key")).unwrap(),
         NEW_KEY.as_bytes()
     );
+}
+
+#[test]
+fn google_key_is_told_where_to_be_created() {
+    let text = introduction(&KeyKind::Origin(Origin::google_translation()));
+    for expected in [
+        "Translation LSP: API key for https://translation.googleapis.com\n",
+        "The key is saved in the file api-key-https-translation.googleapis.com-443 in ",
+        "Cloud Translation API is enabled",
+        "https://console.cloud.google.com/apis/credentials",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
 }

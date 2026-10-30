@@ -121,6 +121,11 @@ impl Origin {
     pub fn openai() -> Self {
         Self::parse("https://api.openai.com").unwrap()
     }
+
+    /// The origin of Google Cloud Translation.
+    pub fn google_translation() -> Self {
+        Self::parse("https://translation.googleapis.com").unwrap()
+    }
 }
 
 /// Which key a file holds: the key of one service, which has a command of its

@@ -71,15 +71,16 @@ relative to the repository root.
   Prompt the model to preserve code, identifiers, URLs, and meaning. Do not require
   JSON translation segments or enforce Markdown structure or byte equality on the
   generated translation. Markdown parsing only determines input eligibility. A
-  provider that takes no prompt, such as DeepL, is sent the segments of
-  `providers/segments.rs`, with code spans and URLs marked to stay untranslated;
-  a translation that loses a mark is an error, never a partial result.
+  provider that takes no prompt, such as DeepL or Google Cloud Translation, is
+  sent the segments of `providers/segments.rs`, with code spans and URLs marked
+  to stay untranslated; a translation that loses a mark is an error, never a
+  partial result.
 - A selection of up to three words and 64 characters on one line that ends no
   sentence, other than the whole document, is looked up instead
   (`text/term.rs`): the term is sent with its line, the model replies
   with the JSON fields in `providers/dictionary.rs`, and the server renders them
   as Markdown with every text escaped. Comment Hover always translates, and so
-  does a provider without entries, such as DeepL.
+  does a provider without entries, such as DeepL or Google Cloud Translation.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Hover waiters retain independent cancellation and deadlines, including queue

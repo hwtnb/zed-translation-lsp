@@ -107,18 +107,6 @@ fn free_keys_go_to_the_free_api_and_language_settings_become_codes() {
     assert_eq!(target_code("pt_BR").as_deref(), Some("PT-BR"));
     assert_eq!(target_code("zh-Hans").as_deref(), Some("ZH-HANS"));
     assert_eq!(source_code("pt-BR").as_deref(), Some("PT"));
-    assert!(check_languages("auto", "ja").is_ok());
-    assert!(check_languages("en", "en-US").is_ok());
-    for (source, target, setting) in [
-        ("auto", "Japanese", "target_language"),
-        ("English", "ja", "source_language"),
-    ] {
-        let error = check_languages(source, target).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            format!("{setting} must be a language code, such as ja or pt-BR, with provider deepl")
-        );
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -234,17 +222,6 @@ async fn rate_limit_is_sent_again_once_and_broken_marks_save_nothing() {
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Failed, "{error}");
     }
-}
-
-#[test]
-fn long_texts_are_sent_in_requests_that_fit() {
-    let texts: Vec<String> = ["a".repeat(60 * 1024), "b".repeat(40 * 1024), "c".into()]
-        .into_iter()
-        .chain(["d".repeat(REQUEST_BYTES + 1), "e".into()])
-        .collect();
-    let lengths: Vec<usize> = batches(&texts).iter().map(|batch| batch.len()).collect();
-    assert_eq!(lengths, [1, 2, 1, 1]);
-    assert!(batches(&[]).is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

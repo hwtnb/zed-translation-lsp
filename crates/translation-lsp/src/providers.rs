@@ -6,6 +6,7 @@ pub(crate) mod credential_directory;
 pub(crate) mod deepl;
 pub(crate) mod dictionary;
 pub(crate) mod error;
+pub(crate) mod google;
 #[cfg(test)]
 pub(crate) mod http_fixture;
 pub(crate) mod mock;

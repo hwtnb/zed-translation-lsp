@@ -47,6 +47,7 @@ const DEEPL_INTRODUCTION: &str = concat!(
 );
 const OPENAI_KEYS: &str =
     "Create the key in the OpenAI Platform:\nhttps://platform.openai.com/api-keys\n";
+const GOOGLE_KEYS: &str = "Create the key in the Google Cloud console, in a project where the\nCloud Translation API is enabled:\nhttps://console.cloud.google.com/apis/credentials\n";
 const REPLACES: &str = "\nA key is saved there now. The key you enter replaces it.\n";
 const PROMPT: &str = " and press Enter (input is hidden). Press Enter alone to cancel: ";
 const MALFORMED: &str =
@@ -187,6 +188,8 @@ fn introduction(kind: &KeyKind) -> String {
     );
     if origin == Origin::openai().as_str() {
         text.push_str(OPENAI_KEYS);
+    } else if origin == Origin::google_translation().as_str() {
+        text.push_str(GOOGLE_KEYS);
     }
     text
 }

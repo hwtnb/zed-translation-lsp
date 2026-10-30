@@ -1,4 +1,5 @@
-//! Texts for services that translate without a prompt, such as DeepL. A text is
+//! Texts for services that translate without a prompt, such as DeepL and Google
+//! Cloud Translation. A text is
 //! taken apart into the segments to translate: the lines of a paragraph are
 //! joined into one, and a heading, a list item, a quote, and a table cell are
 //! each a segment of their own. Code spans and URLs in a segment are marked so
@@ -12,6 +13,59 @@ pub(crate) enum Markup {
     /// `<x i="0">…</x>`, which DeepL keeps with `tag_handling=xml` and
     /// `ignore_tags=x`.
     Xml,
+    /// `<span translate="no" class="notranslate" id="i0">…</span>`, which
+    /// Google Cloud Translation keeps in HTML.
+    Html,
+}
+
+impl Markup {
+    /// The opening tag of the part at `index`.
+    fn open(self, index: usize) -> String {
+        match self {
+            Self::Xml => format!("<x i=\"{index}\">"),
+            Self::Html => {
+                format!("<span translate=\"no\" class=\"notranslate\" id=\"i{index}\">")
+            }
+        }
+    }
+
+    fn element(self) -> &'static str {
+        match self {
+            Self::Xml => "x",
+            Self::Html => "span",
+        }
+    }
+
+    /// The index that the attributes of an opening tag carry. A service may
+    /// add attributes of its own, such as the direction of a script.
+    fn index(self, attributes: &str) -> Option<usize> {
+        let (name, prefix) = match self {
+            Self::Xml => (" i=\"", ""),
+            Self::Html => (" id=\"", "i"),
+        };
+        let value = &attributes[attributes.find(name)? + name.len()..];
+        value[..value.find('"')?].strip_prefix(prefix)?.parse().ok()
+    }
+}
+
+/// The texts in groups that each fit in one request: at most `bytes` bytes
+/// and `count` texts. A text longer than `bytes` is a group of its own, which
+/// the service refuses.
+pub(crate) fn batches(texts: &[String], bytes: usize, count: usize) -> Vec<&[String]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut size = 0;
+    for (index, text) in texts.iter().enumerate() {
+        if index > start && (size + text.len() > bytes || index - start == count) {
+            batches.push(&texts[start..index]);
+            (start, size) = (index, 0);
+        }
+        size += text.len();
+    }
+    if start < texts.len() {
+        batches.push(&texts[start..]);
+    }
+    batches
 }
 
 /// A text taken apart into segments, and the lines to put their translations
@@ -515,12 +569,12 @@ fn marked(pieces: &[Piece], markup: Markup) -> String {
     let mut text = String::new();
     let mut kept = 0;
     for piece in pieces {
-        match (piece, markup) {
-            (Piece::Prose(prose), Markup::Xml) => escape(prose, &mut text),
-            (Piece::Kept(code), Markup::Xml) => {
-                text.push_str(&format!("<x i=\"{kept}\">"));
+        match piece {
+            Piece::Prose(prose) => escape(prose, &mut text),
+            Piece::Kept(code) => {
+                text.push_str(&markup.open(kept));
                 escape(code, &mut text);
-                text.push_str("</x>");
+                text.push_str(&format!("</{}>", markup.element()));
                 kept += 1;
             }
         }
@@ -551,22 +605,18 @@ fn restore(translation: &str, pieces: &[Piece], markup: Markup) -> Option<String
     let mut seen = vec![false; kept.len()];
     let mut text = String::new();
     let mut rest = translation;
-    let Markup::Xml = markup;
-    while let Some(start) = rest.find("<x") {
+    let opening = format!("<{} ", markup.element());
+    let closing = format!("</{}>", markup.element());
+    while let Some(start) = rest.find(&opening) {
         text.push_str(&unescape(&rest[..start])?);
         let tag = &rest[start..];
         let end = tag.find('>')?;
-        let index: usize = tag[..end]
-            .strip_prefix("<x i=\"")?
-            .trim_end_matches('/')
-            .strip_suffix('"')?
-            .parse()
-            .ok()?;
+        let index = markup.index(&tag[..end])?;
         let after = if tag[..end].ends_with('/') {
             &tag[end + 1..]
         } else {
-            let close = tag.find("</x>")?;
-            &tag[close + "</x>".len()..]
+            let close = tag.find(&closing)?;
+            &tag[close + closing.len()..]
         };
         if mem::replace(seen.get_mut(index)?, true) {
             return None;

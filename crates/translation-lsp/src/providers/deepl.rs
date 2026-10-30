@@ -15,16 +15,13 @@ use super::{
     Translated, TranslationProvider,
     admission::{Admission, Attempt},
     api_key::{ApiKey, KeyFile, KeyId, KeySpec, Terminal},
-    error::{
-        Error, RemoteError, RemoteKind, Service, TransportExceeded, TransportScope,
-        credentials::CredentialError,
-    },
-    segments::{Markup, Segmented},
+    error::{Error, RemoteError, RemoteKind, Service, credentials::CredentialError},
+    segments::{Markup, Segmented, batches},
     transport::{self, safe},
 };
 #[cfg(test)]
 use crate::config::limits::TranslationLimits;
-use crate::config::{error::ConfigError, language, limits::SizeLimit};
+use crate::config::{language, limits::SizeLimit};
 
 const PRO: &str = "https://api.deepl.com";
 /// Where a key of DeepL API Free, which ends in `:fx`, is sent.
@@ -89,23 +86,6 @@ fn source_code(value: &str) -> Option<String> {
     language::is_tag(value).then(|| language.to_ascii_uppercase())
 }
 
-/// Checks that the language settings are codes that DeepL takes.
-pub(crate) fn check_languages(source: &str, target: &str) -> Result<(), ConfigError> {
-    if target_code(target).is_none() {
-        return Err(ConfigError::LanguageCode {
-            setting: "target_language",
-            provider: "deepl",
-        });
-    }
-    if source != "auto" && source_code(source).is_none() {
-        return Err(ConfigError::LanguageCode {
-            setting: "source_language",
-            provider: "deepl",
-        });
-    }
-    Ok(())
-}
-
 /// The error that a failed response reports.
 fn failure(status: u16, body: &Value, secrets: &[&str]) -> Error {
     let message = body
@@ -153,36 +133,13 @@ async fn failure_of(response: reqwest::Response, secrets: &[&str]) -> Error {
     }
 }
 
-/// The translations of a response to `count` texts. The body is bounded by
-/// the output limit, with room for JSON escaping.
+/// The translations of a response to `count` texts.
 async fn translations(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     count: usize,
     output_limit: SizeLimit,
 ) -> Result<Vec<String>, Error> {
-    let limit = output_limit
-        .bytes()
-        .saturating_mul(6)
-        .saturating_add(1024 * 1024);
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(transport::network_error(SERVICE))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > limit {
-            return Err(TransportExceeded {
-                service: SERVICE,
-                scope: TransportScope::Response,
-                actual_bytes: bytes.len().saturating_add(chunk.len()),
-                maximum_bytes: limit,
-            }
-            .into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let body: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::protocol(SERVICE, "response is not JSON"))?;
+    let body = transport::json_body(response, SERVICE, output_limit).await?;
     let translations: Option<Vec<String>> = body["translations"]
         .as_array()
         .map(|translations| {
@@ -199,24 +156,6 @@ async fn translations(
             "response does not hold a translation for each text",
         )),
     }
-}
-
-/// The texts in groups that each fit in one request.
-fn batches(texts: &[String]) -> Vec<&[String]> {
-    let mut batches = Vec::new();
-    let mut start = 0;
-    let mut bytes = 0;
-    for (index, text) in texts.iter().enumerate() {
-        if index > start && bytes + text.len() > REQUEST_BYTES {
-            batches.push(&texts[start..index]);
-            (start, bytes) = (index, 0);
-        }
-        bytes += text.len();
-    }
-    if start < texts.len() {
-        batches.push(&texts[start..]);
-    }
-    batches
 }
 
 #[derive(Clone)]
@@ -397,7 +336,7 @@ impl TranslationProvider for DeepLProvider {
         let mut translations = Vec::with_capacity(marked.len());
         // The requests of one text go one after another, so that a failure
         // stops the rest.
-        for batch in batches(&marked) {
+        for batch in batches(&marked, REQUEST_BYTES, usize::MAX) {
             translations.extend(
                 self.send(intent, batch, target_language, text, expected)
                     .await?,

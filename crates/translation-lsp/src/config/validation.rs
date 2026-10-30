@@ -17,11 +17,9 @@ use super::{
     AnthropicEffort, AnthropicSpeed, OpenAiSpeed, ProviderSettings, ReasoningEffort, Settings,
     error::{ConfigError, bounded_number},
     features::Feature,
+    language,
 };
-use crate::{
-    language::Language,
-    providers::{api_key::Origin, deepl},
-};
+use crate::{language::Language, providers::api_key::Origin};
 
 pub(super) fn before_decoding(options: &Value) -> Result<(), ConfigError> {
     compatible_service(options)?;
@@ -81,7 +79,18 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
     match &settings.provider {
         ProviderSettings::Unset | ProviderSettings::Mock {} => (),
         ProviderSettings::DeepL {} => {
-            deepl::check_languages(&settings.source_language, &settings.target_language)?;
+            language::check_codes(
+                &settings.source_language,
+                &settings.target_language,
+                "deepl",
+            )?;
+        }
+        ProviderSettings::GoogleTranslate {} => {
+            language::check_codes(
+                &settings.source_language,
+                &settings.target_language,
+                "google_translate",
+            )?;
         }
         ProviderSettings::Chatgpt {
             model, document, ..

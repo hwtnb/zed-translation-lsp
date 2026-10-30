@@ -698,22 +698,38 @@ fn openai_api_settings_default_like_chatgpt_and_take_no_endpoint() {
 }
 
 #[test]
-fn deepl_takes_no_fields_and_language_codes_only() {
+fn translation_services_take_no_fields_and_language_codes_only() {
     let settings = |options: Value| Settings::from_options(Some(options));
-    let ProviderSettings::DeepL {} = settings(json!({"provider": {"name": "deepl"}}))
-        .unwrap()
-        .provider
-    else {
-        panic!("Expected the DeepL provider")
-    };
+    assert!(matches!(
+        settings(json!({"provider": {"name": "deepl"}}))
+            .unwrap()
+            .provider,
+        ProviderSettings::DeepL {}
+    ));
+    assert!(matches!(
+        settings(json!({"provider": {"name": "google_translate"}}))
+            .unwrap()
+            .provider,
+        ProviderSettings::GoogleTranslate {}
+    ));
+    for name in ["deepl", "google_translate"] {
+        check_language_codes(name);
+    }
+    // Other providers take any value.
+    assert!(settings(json!({"target_language": "Japanese"})).is_ok());
+}
+
+/// Checks that the provider `name` takes no fields and only language codes.
+fn check_language_codes(name: &str) {
+    let settings = |options: Value| Settings::from_options(Some(options));
     assert!(
         settings(json!({
-            "provider": {"name": "deepl"}, "source_language": "en", "target_language": "pt-BR"
+            "provider": {"name": name}, "source_language": "en", "target_language": "pt-BR"
         }))
         .is_ok()
     );
     for field in ["model", "base_url", "document"] {
-        let mut provider = json!({"name": "deepl"});
+        let mut provider = json!({ "name": name });
         provider[field] = json!("synthetic");
         assert!(matches!(
             settings(json!({"provider": provider})).err().unwrap(),
@@ -724,15 +740,13 @@ fn deepl_takes_no_fields_and_language_codes_only() {
         ("target_language", "Japanese"),
         ("source_language", "English"),
     ] {
-        let mut options = json!({"provider": {"name": "deepl"}});
+        let mut options = json!({"provider": {"name": name}});
         options[setting] = json!(value);
         assert_eq!(
             settings(options).err().unwrap().to_string(),
-            format!("{setting} must be a language code, such as ja or pt-BR, with provider deepl")
+            format!("{setting} must be a language code, such as ja or pt-BR, with provider {name}")
         );
     }
-    // Other providers take any value.
-    assert!(settings(json!({"target_language": "Japanese"})).is_ok());
 }
 
 fn compatible(fields: Value) -> Result<ProviderSettings, ConfigError> {

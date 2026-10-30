@@ -9,7 +9,8 @@ use reqwest::{
 
 use serde_json::Value;
 
-use super::error::{Cause, Error, Service};
+use super::error::{Cause, Error, Service, TransportExceeded, TransportScope};
+use crate::config::limits::SizeLimit;
 
 pub(crate) fn client_builder() -> reqwest::ClientBuilder {
     Client::builder()
@@ -43,6 +44,33 @@ pub(crate) async fn error_body(
     }
     Ok(serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
+}
+
+/// The JSON of a reply that is not streamed. The body is bounded by the output
+/// limit, with room for JSON escaping and the marks around code.
+pub(crate) async fn json_body(
+    mut response: reqwest::Response,
+    service: Service,
+    output_limit: SizeLimit,
+) -> Result<Value, Error> {
+    let limit = output_limit
+        .bytes()
+        .saturating_mul(6)
+        .saturating_add(1024 * 1024);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error(service))? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(TransportExceeded {
+                service,
+                scope: TransportScope::Response,
+                actual_bytes: bytes.len().saturating_add(chunk.len()),
+                maximum_bytes: limit,
+            }
+            .into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| Error::protocol(service, "response is not JSON"))
 }
 
 /// A date or invalid delay must not cause a retry earlier than requested.

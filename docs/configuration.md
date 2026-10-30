@@ -2,7 +2,7 @@
 
 [日本語](ja/configuration.md)
 
-This page describes the settings under `lsp.translation-lsp`. The fields of each provider are listed on the [ChatGPT](providers/chatgpt.md), [Anthropic API](providers/anthropic.md), [OpenAI API](providers/openai-api.md), [OpenAI-compatible API](providers/openai-compatible.md), and [DeepL API](providers/deepl.md) pages.
+This page describes the settings under `lsp.translation-lsp`. The fields of each provider are listed on the [ChatGPT](providers/chatgpt.md), [Anthropic API](providers/anthropic.md), [OpenAI API](providers/openai-api.md), [OpenAI-compatible API](providers/openai-compatible.md), [DeepL API](providers/deepl.md), and [Google Cloud Translation](providers/google-translate.md) pages.
 
 ## Full example
 
@@ -102,7 +102,7 @@ In that language, neither Hover translation nor the Code Actions appear. To turn
 
 UI labels are in English regardless of `target_language`. `target_language` defaults to `ja`; `source_language` defaults to `auto`. With `auto`, the same translation request identifies the source language.
 
-A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans` or `pt-BR`, is shown with the English name of its language, as `Japanese (ja)`, both in Code Action titles and in the instructions sent to the provider. Any other value, such as `Japanese`, is used as written. The DeepL API takes no instructions and only language codes; see [Settings](providers/deepl.md#settings) of that page.
+A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans` or `pt-BR`, is shown with the English name of its language, as `Japanese (ja)`, both in Code Action titles and in the instructions sent to the provider. Any other value, such as `Japanese`, is used as written. The DeepL API and Google Cloud Translation take no instructions and only language codes; see [Settings](providers/deepl.md#settings) of the DeepL API page and [Settings](providers/google-translate.md#settings) of the Google Cloud Translation page.
 
 ## Features
 
@@ -240,7 +240,7 @@ Restart the language server after changing these settings. Settings changes do n
 
 1. Open Zed's Command Palette and run `zed: open settings file`.
 2. Edit `lsp.translation-lsp.initialization_options.provider.model` with the model slug you want to use.
-3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings), [Anthropic API](providers/anthropic.md#settings), [OpenAI API](providers/openai-api.md#settings), and [OpenAI-compatible API](providers/openai-compatible.md#settings) pages. The DeepL API has no models to choose.
+3. Set the provider's other fields if needed. They are listed on the [ChatGPT](providers/chatgpt.md#settings), [Anthropic API](providers/anthropic.md#settings), [OpenAI API](providers/openai-api.md#settings), and [OpenAI-compatible API](providers/openai-compatible.md#settings) pages. The DeepL API and Google Cloud Translation have no models to choose.
 4. Save the settings. In a document using this extension, run `editor: restart language server` from the Command Palette.
 
 The extension sends the configured model slug to the translation API without substituting another model. The API determines whether that model, effort, and speed are available to your account.
