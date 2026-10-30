@@ -6,7 +6,7 @@
 
 ## 対応する言語
 
-ホバーによる自動翻訳はRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、SQL、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントと、Pythonのドキュメンテーション文字列が対象です。Markdownは文章の選択後にバックグラウンド翻訳し、段落へのホバーだけでは開始しません。
+ホバーによる自動翻訳はRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、XML、CSS、SQL、Lua、Zig、Protocol Buffers、GraphQL、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Compose、メイクファイルのコメントと、Pythonのドキュメンテーション文字列が対象です。Markdownは文章の選択後にバックグラウンド翻訳し、段落へのホバーだけでは開始しません。
 
 ## コメントの抽出
 
@@ -21,7 +21,7 @@
 - 閉じていないブロックコメントは、閉じるまで翻訳せず、それより後のコメントも見つけません。
 - 閉じていない文字列などのリテラルは、その言語の読み方に従って、それより後のコメントを隠すか、その行の末尾で終わります。
 - 構文エラーの周りや、その言語が複数の読み方をしうる箇所では、コメントを対象から外すか、そこで抽出を止めます。そこより前のコメントは抽出できます。
-- Java、Ruby、HTML、SQLの節で説明する書き方では、その言語がコメントとして読まない文字列をコメントとして扱うことがあります。
+- Java、Ruby、HTML、XML、SQLの節で説明する書き方では、その言語がコメントとして読まない文字列をコメントとして扱うことがあります。
 
 どの場合も、範囲を選択して `Translate selection to …` を使えば翻訳できます。
 
@@ -107,6 +107,28 @@ PostgreSQLの関数本体のように `$$` や `$tag$` で囲んだ部分は、S
 
 ほかの方言の書き方には従いません。MySQLの `#` のコメントは見つけません。MySQLでは引用符の前のバックスラッシュがその引用符をエスケープしますが、サーバーはそこで文字列を閉じます。PostgreSQLと違い、ブロックコメントの中の `/*` は入れ子になりません。
 
+### XML
+
+XMLは `<!-- ... -->` に対応します。文書型宣言の内部サブセットの中のコメントも対象です。タグとその属性値、CDATAセクション、`<?xml ... ?>` のような処理命令、文書型の宣言の中の文字列は、コメントとして扱いません。
+
+サーバーは、文書が整形式かどうかを確かめません。`--` を含むコメントのようにXMLが認めないコメントも、`-->` まで読みます。属性値の中の `<` もXMLは認めませんが、何も開きません。閉じていないコメント、CDATAセクション、処理命令、タグは、それより後をすべて隠します。
+
+### Lua
+
+Luaは、`--` のコメントと、`--[[ ... ]]` や `--[==[ ... ]==]` のような長いコメントに対応します。長いコメントは、`=` の数が同じ閉じ括弧まで続きます。LuaCATSのドキュメントコメントである `---` の行が続く場合は、`--` の行とは別にまとめて翻訳します。文字列と、`[[ ... ]]` のような長い文字列の中の文字列は、コメントとして扱いません。文字列の中では、行末のバックスラッシュと `\z` が次の行へ続けます。`lua` がファイルを読むときと同じく、`#` で始まる最初の行は読み飛ばします。閉じていない文字列は、その行の終わりで終わります。閉じていない長い文字列や長いコメントは、それより後をすべて隠します。
+
+### Zig
+
+Zigは、`//` のコメント、ドキュメントコメントの `///`、コンテナのドキュメントコメントの `//!` に対応します。`////` は普通のコメントを始めます。`///` や `//!` の行が続く場合は、`//` の行とは別にまとめて翻訳します。文字列、文字リテラル、`\\` で始まる複数行の文字列の行の中の文字列は、コメントとして扱いません。Zigの行はLFだけで終わるため、CRだけではコメントは終わりません。閉じていない文字列や文字リテラルは、その行の終わりで終わります。
+
+### Protocol Buffers
+
+Protocol Buffersは、`protoc` と同じく、`//` と、入れ子にならない `/* ... */` に対応します。一重引用符または二重引用符で囲んだ文字列の中の文字列は、コメントとして扱いません。閉じていない文字列は、その行の終わりで終わります。閉じていないブロックコメントは、それより後をすべて隠します。
+
+### GraphQL
+
+GraphQLは `#` のコメントに対応します。文字列とブロック文字列 `"""..."""` の中の文字列は、コメントとして扱いません。説明（description）は文字列なので、ホバーでは翻訳しません。選択して `Translate selection to …` を使ってください。閉じていない文字列は、その行の終わりで終わります。閉じていないブロック文字列は、それより後をすべて隠します。
+
 ### JSON、YAML、TOML
 
 JSONとJSONCは `//` と `/* ... */`、YAMLとTOMLは `#` に対応します。自動翻訳の対象はコメントだけです。キーや文字列の値を訳すときは、範囲を選択して `Translate selection to …` を使います。
@@ -186,6 +208,14 @@ BuildKitは、次の箇所をヒアドキュメントとして扱わず、後ろ
 
 Docker Composeのファイルは、[JSON、YAML、TOML](#jsonyamltoml)の規則でYAMLとして読みます。
 
+### メイクファイル
+
+メイクファイルは、GNU Make 4.3以降と同じく読みます。`#` は行末まで続くコメントを始め、その行末にバックスラッシュがあれば次の行までコメントが続きます。`\#` のようにバックスラッシュの後にある `#` と、`$(shell echo '#')` のように変数参照や関数呼び出しの中にある `#` は、コメントを始めません。`define` の本体は変数の値なので、その中の `#` の行はコメントではありません。
+
+ルールの後のタブで始まるレシピの行は、シェルに渡されます。そのコメントは、行頭の `@`、`-`、`+` の後をシェルスクリプトとして読んで見つけます。行に `# note` だけがある場合と、`cc -c a.c # note` のようにコマンドの後にある場合が対象です。シェルの引用符の中の文字列は、コメントとして扱いません。ルールの行で `;` の後に書いたレシピは読まないため、そこにあるコメントは見つけません。
+
+macOSに付属するGNU Make 3.81は、変数参照や関数呼び出しの中の `#` をコメントとして、そこで参照を終えます。サーバーはそれより新しい版に従い、そのような `#` ではコメントを始めません。`.RECIPEPREFIX` で設定したタブ以外のレシピの接頭辞には従いません。行はLFだけで終わります。
+
 ## 言語サーバーの設定
 
 C#ファイルでは、Zedの[C#言語拡張](https://github.com/zed-extensions/csharp)を導入してください。設定上の言語名は `CSharp` です。`languages.CSharp.language_servers` を明示している場合は、既存のC#サーバーに `"translation-lsp"` を追加します。RoslynやOmniSharpを置き換える必要はありません。
@@ -197,6 +227,8 @@ PythonもZedに組み込まれています。`languages.Python.language_servers`
 GoとCSSはZedに組み込まれていて、HTML拡張はZedが既定で導入します。RubyとPHPのファイルでは、Zedの[Ruby拡張](https://github.com/zed-extensions/ruby)と[PHP拡張](https://github.com/zed-extensions/php)を導入してください。設定上の言語名は `Go`、`Ruby`、`PHP`、`HTML`、`CSS` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 
 Java、Kotlin、Swift、SQLのファイルでは、Zedの[Java拡張](https://github.com/zed-extensions/java)、[Kotlin拡張](https://github.com/zed-extensions/kotlin)、[Swift拡張](https://github.com/zed-extensions/swift)、[SQL拡張](https://github.com/zed-extensions/sql)を導入してください。設定上の言語名は `Java`、`Kotlin`、`Swift`、`SQL` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
+
+XML、Lua、Zig、Protocol Buffers、GraphQL、メイクファイルでは、Zedの[XML拡張](https://github.com/sweetppro/zed-xml)、[Lua拡張](https://github.com/zed-extensions/lua)、[Zig拡張](https://github.com/zed-extensions/zig)、[Proto拡張](https://github.com/zed-industries/zed/tree/main/extensions/proto)、[GraphQL拡張](https://github.com/11bit/zed-extension-graphql)、[Make拡張](https://github.com/caius/zed-make)を導入してください。設定上の言語名は `XML`、`Lua`、`Zig`、`Proto`、`GraphQL`、`Make` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 
 JSON、JSONC、YAMLはZedに組み込まれています。TOMLファイルでは、Zedの[TOML拡張](https://github.com/zed-extensions/toml)を導入してください。設定上の言語名は `JSON`、`JSONC`、`YAML`、`TOML` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 

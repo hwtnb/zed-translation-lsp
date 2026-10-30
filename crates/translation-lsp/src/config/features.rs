@@ -80,7 +80,7 @@ mod tests {
         *,
     };
 
-    const LANGUAGE_IDS: [&str; 27] = [
+    const LANGUAGE_IDS: [&str; 33] = [
         "rust",
         "javascript",
         "typescript",
@@ -96,8 +96,13 @@ mod tests {
         "ruby",
         "php",
         "html",
+        "xml",
         "css",
         "sql",
+        "lua",
+        "zig",
+        "proto",
+        "graphql",
         "json",
         "jsonc",
         "yaml",
@@ -106,6 +111,7 @@ mod tests {
         "powershell",
         "dockerfile",
         "dockercompose",
+        "makefile",
         "markdown",
         "plaintext",
     ];
@@ -288,15 +294,16 @@ mod tests {
                     error.to_string(),
                     "features.languages keys must be one of rust, javascript, typescript, \
                      typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, \
-                     php, html, css, sql, json, jsonc, yaml, toml, shellscript, powershell, \
-                     dockerfile, dockercompose, markdown, plaintext"
+                     php, html, xml, css, sql, lua, zig, proto, graphql, json, jsonc, yaml, \
+                     toml, shellscript, powershell, dockerfile, dockercompose, makefile, \
+                     markdown, plaintext"
                 );
                 assert_eq!(format!("{error:?}"), error.to_string());
             }
         }
         // The named check reports before the generic error.
         let error = Settings::from_options(Some(json!({
-            "features": {"languages": {"lua": {}}, "unknown": true},
+            "features": {"languages": {"elixir": {}}, "unknown": true},
             "translation_limits": []
         })))
         .err()
@@ -359,8 +366,8 @@ mod tests {
             message(json!({"languages": {"markdown": {"comment_hover": false}}})),
             "features.languages.markdown.comment_hover is not available; comment_hover applies \
              to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, java, \
-             kotlin, swift, ruby, php, html, css, sql, json, jsonc, yaml, toml, shellscript, \
-             powershell, dockerfile, dockercompose"
+             kotlin, swift, ruby, php, html, xml, css, sql, lua, zig, proto, graphql, json, \
+             jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, makefile"
         );
     }
 }

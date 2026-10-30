@@ -1743,6 +1743,15 @@ fn readers_finish_repeated_pieces_in_seconds() {
         "$$\"",
         "\"${",
         "E'\\",
+        "--[==[",
+        "[==[",
+        "]=]",
+        "\\\\",
+        "<!DOCTYPE r [",
+        "<!ENTITY e \"",
+        "define a\n",
+        "a:\n\t",
+        "$(a #",
     ];
     let pieces: Vec<_> = signs.iter().map(String::as_str).chain(openings).collect();
     let size = 64 << 10;
@@ -1763,6 +1772,12 @@ fn readers_finish_repeated_pieces_in_seconds() {
         "kotlin",
         "swift",
         "sql",
+        "lua",
+        "zig",
+        "proto",
+        "graphql",
+        "xml",
+        "makefile",
     ] {
         // A Dockerfile reads words only in an instruction that can have a here-document.
         let heads: &[&str] = if language == "dockerfile" {
@@ -1951,6 +1966,13 @@ fn readers_finish_texts_of_several_repeated_parts_in_seconds() {
         "#/",
         "\"${",
         "E'",
+        "--[[",
+        "]]",
+        "\\\\",
+        "<!DOCTYPE r [",
+        "\t#",
+        "define a\n",
+        "endef\n",
     ];
     // A fixed sequence, so that every run reads the same texts.
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -1979,6 +2001,12 @@ fn readers_finish_texts_of_several_repeated_parts_in_seconds() {
         "kotlin",
         "swift",
         "sql",
+        "lua",
+        "zig",
+        "proto",
+        "graphql",
+        "xml",
+        "makefile",
     ] {
         for _ in 0..160 {
             let size = (16 + below(49)) << 10;
@@ -2923,4 +2951,188 @@ fn a_panic_while_reading_is_a_failure_that_names_its_place_only() {
     assert!(line.parse::<u32>().is_ok(), "{place}");
     assert!(!READING.get());
     assert_eq!(parsed("rust", &uri, "// Read.").0.len(), 1);
+}
+
+fn lua(text: &str) -> Vec<String> {
+    sources("lua", "untitled:comment", text)
+}
+
+#[test]
+fn lua_comments_exclude_strings_and_long_strings_and_skip_a_first_line_of_hash() {
+    let text = concat!(
+        "#!/usr/bin/env lua -- hidden\n",
+        "-- line\n",
+        "local s = \"-- not\" .. '\\'-- not' .. \"a\\\n-- not\" -- trailing\n",
+        "local z = \"a\\z\n  -- not\" --[[ long\ncomment ]]\n",
+        "local l = [==[ -- not ]] ]==] --[=[ level ]] ]=]\n",
+        "--[ not long\n",
+        "--- doc\n",
+        "local u = \"unclosed -- not\n",
+        "-- after unclosed\n",
+        "--[[ unclosed",
+    );
+    assert_eq!(
+        lua(text),
+        [
+            "-- line",
+            "-- trailing",
+            "--[[ long\ncomment ]]",
+            "--[=[ level ]] ]=]",
+            "--[ not long",
+            "--- doc",
+            "-- after unclosed",
+        ]
+    );
+    // `---` lines are documentation, apart from the `--` lines after them.
+    assert_eq!(
+        bodies("lua", "--- One\n--- two\n-- Three\n"),
+        ["One\ntwo", "Three"]
+    );
+    assert_eq!(bodies("lua", "--[==[\nLong\n]==]"), ["Long\n"]);
+    // Only a line feed ends a first line that starts with `#`.
+    assert!(lua("#!\r-- hidden").is_empty());
+}
+
+fn zig(text: &str) -> Vec<String> {
+    sources("zig", "untitled:comment", text)
+}
+
+#[test]
+fn zig_comments_exclude_strings_characters_and_multiline_strings() {
+    let text = concat!(
+        "//! Container.\n",
+        "/// Doc.\n",
+        "//// Not doc.\n",
+        "const s = \"// not \\\" // not\"; // trailing\n",
+        "const c = '\\''; // after char\n",
+        "const m =\n    \\\\ // not, in a multiline string\n;\n",
+        "const u = \"unclosed // not\n",
+        "// after unclosed\r\n",
+    );
+    assert_eq!(
+        zig(text),
+        [
+            "//! Container.",
+            "/// Doc.",
+            "//// Not doc.",
+            "// trailing",
+            "// after char",
+            "// after unclosed",
+        ]
+    );
+    assert_eq!(
+        bodies("zig", "/// One\n/// two\n// Three\n//// Four\n"),
+        ["One\ntwo", "Three\n// Four"]
+    );
+}
+
+fn proto(text: &str) -> Vec<String> {
+    sources("proto", "untitled:comment", text)
+}
+
+#[test]
+fn proto_comments_exclude_strings_and_do_not_nest() {
+    let text = concat!(
+        "// line\n",
+        "string s = 1 [default = \"// not /* not */\"]; // trailing\n",
+        "option (o) = '\\' // not'; /* block */\n",
+        "/* not /* nested */ // after block\n",
+        "string u = \"unclosed // not\n",
+        "// after unclosed\n",
+        "/* unclosed",
+    );
+    assert_eq!(
+        proto(text),
+        [
+            "// line",
+            "// trailing",
+            "/* block */",
+            "/* not /* nested */",
+            "// after block",
+            "// after unclosed",
+        ]
+    );
+    assert_eq!(
+        bodies("proto", "// One\n// two\nmessage M {}\n"),
+        ["One\ntwo"]
+    );
+}
+
+fn graphql(text: &str) -> Vec<String> {
+    sources("graphql", "untitled:comment", text)
+}
+
+#[test]
+fn graphql_comments_exclude_strings_and_descriptions() {
+    let text = concat!(
+        "# line\n",
+        "type Q { a: String = \"# not \\\" # not\" # trailing\n",
+        "  \"\"\"Block # not \\\"\"\" # not\"\"\" b: Int # after block\n",
+        "  c: String = \"unclosed # not\n",
+        "# after unclosed\n",
+        "\"\"\" unclosed # not",
+    );
+    assert_eq!(
+        graphql(text),
+        ["# line", "# trailing", "# after block", "# after unclosed"]
+    );
+    assert_eq!(bodies("graphql", "# One\n# two\ntype T\n"), ["One\ntwo"]);
+}
+
+fn xml(text: &str) -> Vec<String> {
+    sources("xml", "untitled:comment", text)
+}
+
+#[test]
+fn xml_comments_exclude_markup_sections_and_declarations() {
+    let text = concat!(
+        "<?xml version=\"1.0\"?><!-- prolog -->\n",
+        "<!DOCTYPE r [\n<!-- in subset -->\n<!ENTITY e \"<!-- not -->\">\n<?pi <!-- not ?>\n]>\n",
+        "<r a='<!-- not' b=\"-->\"><![CDATA[<!-- not -->]]><?pi <!-- not ?>text<!--inline--></r>\n",
+        "<!-- unclosed",
+    );
+    assert_eq!(
+        xml(text),
+        ["<!-- prolog -->", "<!-- in subset -->", "<!--inline-->"]
+    );
+    assert_eq!(bodies("xml", "<!-- One\ntwo -->"), ["One\ntwo "]);
+}
+
+fn make(text: &str) -> Vec<String> {
+    sources("makefile", "untitled:comment", text)
+}
+
+#[test]
+fn make_comments_exclude_references_definitions_and_shell_text() {
+    let text = concat!(
+        "# top\n",
+        "CC = gcc # compiler\n",
+        "X = a\\#b $(if #,c) ${y #} $# $$# after dollars\n",
+        "all: a.o ; echo # recipe after semicolon\n",
+        "\t# recipe comment\n",
+        "\t@echo hi # shell comment\n",
+        "\techo \"# not\" '# not'\n",
+        "# between recipe lines\n",
+        "\t@# after at\n",
+        "define BODY\n# not, a value\nendef\n",
+        "Y = 1\n",
+        "\t# not a recipe\n",
+        "long = a # continued \\\n  comment\n",
+        "last = 1\n",
+    );
+    assert_eq!(
+        make(text),
+        [
+            "# top",
+            "# compiler",
+            "# after dollars",
+            "# recipe comment",
+            "# shell comment",
+            "# between recipe lines",
+            "# after at",
+            "# not a recipe",
+            "# continued \\\n  comment",
+        ]
+    );
+    assert_eq!(bodies("makefile", "# One\n# two\nall:\n"), ["One\ntwo"]);
 }

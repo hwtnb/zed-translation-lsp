@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+message Settings {
+  // Retry only if the remote service
+  // reports a temporary failure.
+  int32 retry_count = 1;
+}

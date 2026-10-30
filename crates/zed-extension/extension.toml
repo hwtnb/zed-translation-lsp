@@ -13,7 +13,7 @@ path = ["hwtnb", "zed-translation-lsp", "releases", "download", "**"]
 
 [language_servers.translation-lsp]
 name = "Translation LSP"
-languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "Go", "Java", "Kotlin", "Swift", "Ruby", "PHP", "HTML", "CSS", "SQL", "JSON", "JSONC", "YAML", "TOML", "Shell Script", "PowerShell", "Dockerfile", "Docker Compose", "Markdown", "Plain Text"]
+languages = ["Rust", "JavaScript", "TypeScript", "TSX", "CSharp", "C", "C++", "Python", "Go", "Java", "Kotlin", "Swift", "Ruby", "PHP", "HTML", "XML", "CSS", "SQL", "Lua", "Zig", "Proto", "GraphQL", "JSON", "JSONC", "YAML", "TOML", "Shell Script", "PowerShell", "Dockerfile", "Docker Compose", "Make", "Markdown", "Plain Text"]
 
 [language_servers.translation-lsp.language_ids]
 Rust = "rust"
@@ -31,8 +31,13 @@ Swift = "swift"
 Ruby = "ruby"
 PHP = "php"
 HTML = "html"
+XML = "xml"
 CSS = "css"
 SQL = "sql"
+Lua = "lua"
+Zig = "zig"
+Proto = "proto"
+GraphQL = "graphql"
 JSON = "json"
 JSONC = "jsonc"
 YAML = "yaml"
@@ -41,5 +46,6 @@ TOML = "toml"
 PowerShell = "powershell"
 Dockerfile = "dockerfile"
 "Docker Compose" = "dockercompose"
+Make = "makefile"
 Markdown = "markdown"
 "Plain Text" = "plaintext"

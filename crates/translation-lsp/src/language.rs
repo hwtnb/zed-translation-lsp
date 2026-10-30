@@ -18,8 +18,13 @@ pub(crate) enum Language {
     Ruby,
     Php,
     Html,
+    Xml,
     Css,
     Sql,
+    Lua,
+    Zig,
+    Proto,
+    GraphQl,
     Json,
     Jsonc,
     Yaml,
@@ -28,13 +33,14 @@ pub(crate) enum Language {
     PowerShell,
     Dockerfile,
     DockerCompose,
+    Make,
     Markdown,
     PlainText,
 }
 
 impl Language {
     /// Every language, in the order of `extension.toml`.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 33] = [
         Self::Rust,
         Self::JavaScript,
         Self::TypeScript,
@@ -50,8 +56,13 @@ impl Language {
         Self::Ruby,
         Self::Php,
         Self::Html,
+        Self::Xml,
         Self::Css,
         Self::Sql,
+        Self::Lua,
+        Self::Zig,
+        Self::Proto,
+        Self::GraphQl,
         Self::Json,
         Self::Jsonc,
         Self::Yaml,
@@ -60,6 +71,7 @@ impl Language {
         Self::PowerShell,
         Self::Dockerfile,
         Self::DockerCompose,
+        Self::Make,
         Self::Markdown,
         Self::PlainText,
     ];
@@ -82,8 +94,13 @@ impl Language {
             Self::Ruby => "ruby",
             Self::Php => "php",
             Self::Html => "html",
+            Self::Xml => "xml",
             Self::Css => "css",
             Self::Sql => "sql",
+            Self::Lua => "lua",
+            Self::Zig => "zig",
+            Self::Proto => "proto",
+            Self::GraphQl => "graphql",
             Self::Json => "json",
             Self::Jsonc => "jsonc",
             Self::Yaml => "yaml",
@@ -92,6 +109,7 @@ impl Language {
             Self::PowerShell => "powershell",
             Self::Dockerfile => "dockerfile",
             Self::DockerCompose => "dockercompose",
+            Self::Make => "makefile",
             Self::Markdown => "markdown",
             Self::PlainText => "plaintext",
         }

@@ -22,17 +22,23 @@ mod css;
 mod data;
 mod dockerfile;
 mod go;
+mod graphql;
 mod html;
 mod java;
 mod kotlin;
+mod lua;
+mod make;
 mod php;
 mod powershell;
+mod proto;
 mod python;
 mod ruby;
 mod shell;
 mod sql;
 mod swift;
 mod syntax;
+mod xml;
+mod zig;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LineKind {
@@ -164,6 +170,12 @@ impl Comments {
             Language::Css => Some(css::parse(text)),
             Language::Php => Some(php::parse(text)),
             Language::Sql => Some(sql::parse(text)),
+            Language::Lua => Some(lua::parse(text)),
+            Language::Zig => Some(zig::parse(text)),
+            Language::Proto => Some(proto::parse(text)),
+            Language::GraphQl => Some(graphql::parse(text)),
+            Language::Xml => Some(xml::parse(text)),
+            Language::Make => Some(make::parse(text)),
             Language::Ruby => Some(ruby::parse(text)),
             Language::Json
             | Language::Jsonc

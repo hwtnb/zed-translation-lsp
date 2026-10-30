@@ -6,7 +6,7 @@ This page lists the languages whose comments are translated on Hover, the rules 
 
 ## Supported languages
 
-Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, CSS, SQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
+Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, XML, CSS, SQL, Lua, Zig, Protocol Buffers, GraphQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, Docker Compose, and makefiles, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
 
 ## Comment extraction
 
@@ -21,7 +21,7 @@ Where the text is unfinished, or where the server cannot read it as the language
 - An unclosed block comment is not translated, and no comment after it is found, until it is closed.
 - An unclosed string or other literal hides the comments after it, or ends at the end of its line, as the language reads it.
 - Around a syntax error, or where the language can read the text in more than one way, a comment is left out, or extraction stops there. The comments before that point remain available.
-- In the forms described under Java, Ruby, HTML, and SQL, text that the language does not read as a comment can be taken as one.
+- In the forms described under Java, Ruby, HTML, XML, and SQL, text that the language does not read as a comment can be taken as one.
 
 In all of these cases, select the text and use `Translate selection to …` to translate it.
 
@@ -107,6 +107,28 @@ Text between `$$` or `$tag$`, such as the body of a PostgreSQL function, is read
 
 The forms of other dialects are not followed. A MySQL `#` comment is not found. MySQL escapes a quote with a backslash before it; the server closes the string there. A `/*` inside a block comment does not nest as it does in PostgreSQL.
 
+### XML
+
+XML supports `<!-- ... -->`, also in the internal subset of a document type declaration. Text inside tags and their attribute values, CDATA sections, processing instructions such as `<?xml ... ?>`, and the declarations of a document type is not treated as a comment.
+
+The server does not check that a document is well formed. A comment that XML refuses, such as one that holds `--`, is still read up to its `-->`, and a `<` inside an attribute value, which XML refuses too, opens nothing. An unclosed comment, CDATA section, processing instruction, or tag hides everything after it.
+
+### Lua
+
+Lua supports `--` comments, and long comments such as `--[[ ... ]]` and `--[==[ ... ]==]`, which run to the closing bracket with as many `=`. Consecutive `---` lines, the documentation comments of LuaCATS, are translated together, apart from `--` lines. Text inside strings and long strings such as `[[ ... ]]` is not treated as a comment; in a string, a backslash at the end of a line and `\z` continue it on the next line. As `lua` does with a file, a first line that starts with `#` is skipped. An unclosed string ends at the end of its line. An unclosed long string or long comment hides everything after it.
+
+### Zig
+
+Zig supports `//` comments, the documentation comments `///`, and the container documentation comments `//!`; `////` starts an ordinary comment. Consecutive `///` or `//!` lines are translated together, apart from `//` lines. Text inside strings, character literals, and the lines of multiline strings, which start with `\\`, is not treated as a comment. Zig ends lines at LF only, so a CR alone does not end a comment. An unclosed string or character literal ends at the end of its line.
+
+### Protocol Buffers
+
+Protocol Buffers supports `//` and `/* ... */`, which do not nest, as `protoc` reads them. Text inside strings in single or double quotes is not treated as a comment. An unclosed string ends at the end of its line. An unclosed block comment hides everything after it.
+
+### GraphQL
+
+GraphQL supports `#` comments. Text inside strings and block strings `"""..."""` is not treated as a comment. A description is a string, so Hover does not translate it; select it and use `Translate selection to …`. An unclosed string ends at the end of its line. An unclosed block string hides everything after it.
+
 ### JSON, YAML, and TOML
 
 JSON and JSONC support `//` and `/* ... */`; YAML and TOML support `#`. Only comments are automatic targets. To translate a key or a string value, select it and use `Translate selection to …`.
@@ -186,6 +208,14 @@ Extraction stops where the delimiter cannot be read: where the unclosed quote or
 
 Docker Compose files are read as YAML, by the rules under [JSON, YAML, and TOML](#json-yaml-and-toml).
 
+### Makefiles
+
+Makefiles are read as GNU Make 4.3 and later read them. A `#` starts a comment that runs to the end of the line, and a backslash at the end of that line continues the comment on the next line. A `#` after a backslash, as in `\#`, and a `#` inside a variable reference or function call, such as `$(shell echo '#')`, start no comment. The body of `define` is the value of a variable, so its `#` lines are not comments.
+
+A recipe line, which starts with a tab after a rule, goes to the shell. Its comments are read as in a shell script, after the `@`, `-`, and `+` at its start: a `# note` alone on the line, or after a command, as in `cc -c a.c # note`. Text inside the quotes of the shell is not treated as a comment. The text after the `;` that starts a recipe on the line of its rule is not read, so a comment there is not found.
+
+GNU Make 3.81, which macOS ships, ends a variable reference or function call at a `#` inside it, as a comment. The server follows the later versions, where such a `#` starts no comment. A recipe prefix other than a tab, set with `.RECIPEPREFIX`, is not followed. Lines end at LF only.
+
 ## Language server settings
 
 For C# files, install Zed's [C# language extension](https://github.com/zed-extensions/csharp). Its settings key is `CSharp`. If you configure `languages.CSharp.language_servers` explicitly, add `"translation-lsp"` alongside your existing C# server. This translation extension does not replace Roslyn or OmniSharp.
@@ -197,6 +227,8 @@ Python is built into Zed. If you configure `languages.Python.language_servers`, 
 Go and CSS are built into Zed, and Zed installs its HTML extension by default. For Ruby and PHP files, install Zed's [Ruby extension](https://github.com/zed-extensions/ruby) and [PHP extension](https://github.com/zed-extensions/php). The settings keys are `Go`, `Ruby`, `PHP`, `HTML`, and `CSS`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 For Java, Kotlin, Swift, and SQL files, install Zed's [Java extension](https://github.com/zed-extensions/java), [Kotlin extension](https://github.com/zed-extensions/kotlin), [Swift extension](https://github.com/zed-extensions/swift), and [SQL extension](https://github.com/zed-extensions/sql). The settings keys are `Java`, `Kotlin`, `Swift`, and `SQL`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
+
+For XML, Lua, Zig, Protocol Buffers, GraphQL, and makefiles, install Zed's [XML extension](https://github.com/sweetppro/zed-xml), [Lua extension](https://github.com/zed-extensions/lua), [Zig extension](https://github.com/zed-extensions/zig), [Proto extension](https://github.com/zed-industries/zed/tree/main/extensions/proto), [GraphQL extension](https://github.com/11bit/zed-extension-graphql), and [Make extension](https://github.com/caius/zed-make). The settings keys are `XML`, `Lua`, `Zig`, `Proto`, `GraphQL`, and `Make`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 JSON, JSONC, and YAML are built into Zed. For TOML files, install Zed's [TOML extension](https://github.com/zed-extensions/toml). The settings keys are `JSON`, `JSONC`, `YAML`, and `TOML`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 

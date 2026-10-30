@@ -1562,6 +1562,23 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "sql",
             "SELECT '-- string', E'\\'' AS s;",
         ),
+        (
+            "file:///general.lua",
+            "lua",
+            "local s = \"-- string\" .. [==[-- long]==]",
+        ),
+        ("file:///general.zig", "zig", "const s = \"// string\";"),
+        (
+            "file:///general.proto",
+            "proto",
+            "option s = \"// string\";",
+        ),
+        (
+            "file:///general.graphql",
+            "graphql",
+            "type Q { s: String @d(a: \"# string\") }",
+        ),
+        ("file:///Makefile", "makefile", "s = $(info # not)"),
         ("file:///general.rb", "ruby", "s = \"# string\""),
         ("file:///general.php", "php", "<?php $s = \"// string\";"),
         ("file:///general.cs", "csharp", "var s = @\"// string\";"),
@@ -1581,8 +1598,8 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
     ] {
         let marker = match language {
             "ruby" | "yaml" | "toml" | "shellscript" | "powershell" | "dockerfile"
-            | "dockercompose" => "#",
-            "sql" => "--",
+            | "dockercompose" | "graphql" | "makefile" => "#",
+            "sql" | "lua" => "--",
             _ => "//",
         };
         let comment = COMMENT.replace("//", marker);
@@ -1615,6 +1632,21 @@ fn general_comment_hovers_use_zed_language_ids_uri_dialects_and_new_versions() {
             "kotlin" => format!("val t = \"\"\"{comment}\"\"\""),
             "swift" => format!("let t = \"\"\"\n{comment}\n\"\"\""),
             "sql" => format!("SELECT '{comment}';"),
+            "lua" => format!("local t = [[{comment}]]"),
+            // Each line of a multiline string starts with `\\`.
+            "zig" => format!(
+                "const t =\n{}\n;",
+                comment
+                    .lines()
+                    .map(|line| format!("    \\\\{}", line.trim_start()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            // Protocol Buffers strings cannot span lines.
+            "proto" => format!("option t =\n\"{}\";", comment.replace('\n', " ")),
+            "graphql" => format!("\"\"\"\n{comment}\n\"\"\"\ntype T {{ a: Int }}"),
+            // The body of `define` is a value.
+            "makefile" => format!("define T\n{comment}\nendef"),
             "ruby" => format!("t = \"{comment}\""),
             "php" => format!("<?php $t = \"{comment}\";"),
             // JSON strings cannot span lines.
@@ -1660,6 +1692,9 @@ fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
         ("file:///blocks.kt", "kotlin", "/*", "*/"),
         ("file:///blocks.swift", "swift", "/*", "*/"),
         ("file:///blocks.sql", "sql", "/*", "*/"),
+        ("file:///blocks.proto", "proto", "/*", "*/"),
+        ("file:///blocks.lua", "lua", "--[[", "]]"),
+        ("file:///blocks.xml", "xml", "<!--", "-->"),
         ("file:///blocks.css", "css", "/*", "*/"),
         ("file:///blocks.html", "html", "<!--", "-->"),
     ] {
@@ -2573,6 +2608,15 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
         ("file:///comment.kt", "kotlin", sample!("comment.kt")),
         ("file:///comment.swift", "swift", sample!("comment.swift")),
         ("file:///comment.sql", "sql", sample!("comment.sql")),
+        ("file:///comment.lua", "lua", sample!("comment.lua")),
+        ("file:///comment.zig", "zig", sample!("comment.zig")),
+        ("file:///comment.proto", "proto", sample!("comment.proto")),
+        (
+            "file:///comment.graphql",
+            "graphql",
+            sample!("comment.graphql"),
+        ),
+        ("file:///Makefile", "makefile", sample!("Makefile")),
         ("file:///comment.rb", "ruby", sample!("comment.rb")),
         ("file:///comment.php", "php", sample!("comment.php")),
         ("file:///comment.sh", "shellscript", sample!("comment.sh")),
@@ -2584,7 +2628,13 @@ fn json_yaml_and_toml_samples_translate_their_comment_groups() {
             sample!("compose.yaml"),
         ),
     ] {
-        for ending in ["\n", "\r\n", "\r"] {
+        // Zig and Make end lines at LF only.
+        let endings: &[&str] = if matches!(language, "zig" | "makefile") {
+            &["\n", "\r\n"]
+        } else {
+            &["\n", "\r\n", "\r"]
+        };
+        for ending in endings {
             let source = source.replace('\n', ending);
             let start = source.find(['/', '#', '-']).unwrap();
             let end = source.find("failure.").unwrap() + "failure.".len();
@@ -2619,6 +2669,7 @@ fn html_and_css_samples_translate_their_comments_and_those_of_scripts_and_styles
     let mut client = Client::new(&[]);
     let html = sample!("comment.html");
     let css = sample!("comment.css");
+    let xml = sample!("comment.xml");
     let block = "/*\nRetry only if the remote service\nreports a temporary failure.\n*/";
     for (uri, language, source, comments) in [
         (
@@ -2632,6 +2683,12 @@ fn html_and_css_samples_translate_their_comments_and_those_of_scripts_and_styles
             ][..],
         ),
         ("file:///comment.css", "css", css, &[block]),
+        (
+            "file:///comment.xml",
+            "xml",
+            xml,
+            &["<!--\nRetry only if the remote service\nreports a temporary failure.\n-->"],
+        ),
     ] {
         client.open(uri, language, source, 1);
         for comment in comments {
@@ -2849,8 +2906,8 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
             json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
             "features.languages keys must be one of rust, javascript, typescript, \
              typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, php, html, \
-             css, sql, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, \
-             dockercompose, markdown, plaintext",
+             xml, css, sql, lua, zig, proto, graphql, json, jsonc, yaml, toml, shellscript, \
+             powershell, dockerfile, dockercompose, makefile, markdown, plaintext",
         ),
         (
             json!({"features": {"languages": {"rust": {"document_action": false}}}}),

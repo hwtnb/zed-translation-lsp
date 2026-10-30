@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!--
+Retry only if the remote service
+reports a temporary failure.
+-->
+<settings retry_count="3"/>

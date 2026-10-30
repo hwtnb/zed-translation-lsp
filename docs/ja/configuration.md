@@ -110,7 +110,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 
 | `features` 内の設定 | 切り替える機能 | 言語ID |
 | --- | --- | --- |
-| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`java`、`kotlin`、`swift`、`ruby`、`php`、`html`、`css`、`sql`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose` |
+| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`java`、`kotlin`、`swift`、`ruby`、`php`、`html`、`xml`、`css`、`sql`、`lua`、`zig`、`proto`、`graphql`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose`、`makefile` |
 | `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
 | `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
 | `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
@@ -153,8 +153,13 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | Ruby | `ruby` |
 | PHP | `php` |
 | HTML | `html` |
+| XML | `xml` |
 | CSS | `css` |
 | SQL | `sql` |
+| Lua | `lua` |
+| Zig | `zig` |
+| Proto | `proto` |
+| GraphQL | `graphql` |
 | JSON | `json` |
 | JSONC | `jsonc` |
 | YAML | `yaml` |
@@ -163,6 +168,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | PowerShell | `powershell` |
 | Dockerfile | `dockerfile` |
 | Docker Compose | `dockercompose` |
+| Make | `makefile` |
 | Markdown | `markdown` |
 | Plain Text | `plaintext` |
 
