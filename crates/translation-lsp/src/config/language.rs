@@ -12,6 +12,11 @@ pub(crate) fn display(value: &str) -> Cow<'_, str> {
     }
 }
 
+/// Whether `value` reads as a language tag, such as `ja` or `pt-BR`.
+pub(crate) fn is_tag(value: &str) -> bool {
+    name(value).is_some()
+}
+
 /// The language of a tag such as `ja`, `yue`, `zh-Hans`, or `pt_BR`, named by
 /// its first part. The other parts are only checked to be subtags.
 fn name(value: &str) -> Option<&'static str> {

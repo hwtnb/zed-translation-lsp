@@ -172,7 +172,8 @@ fn speeds(name: &str, fields: Value) -> (Option<Value>, Option<Option<Value>>) {
         } => (value(speed), document.map(|tab| value(tab.speed))),
         ProviderSettings::Unset
         | ProviderSettings::Mock {}
-        | ProviderSettings::OpenAiCompatible { .. } => panic!("Expected provider settings"),
+        | ProviderSettings::OpenAiCompatible { .. }
+        | ProviderSettings::DeepL {} => panic!("Expected provider settings"),
     }
 }
 

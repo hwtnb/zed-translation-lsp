@@ -1,5 +1,5 @@
-//! `translation-lsp anthropic-key` and `translation-lsp api-key <origin>`: ask
-//! for a key in the terminal and save it. The key reaches the file without
+//! `translation-lsp anthropic-key`, `translation-lsp deepl-key`, and
+//! `translation-lsp api-key <origin>`: ask for a key in the terminal and save it. The key reaches the file without
 //! passing through the editor.
 use std::{
     env,
@@ -9,10 +9,11 @@ use std::{
     process::ExitCode,
 };
 
-use super::{ApiKey, DIRECTORY, NotKey, Origin, file, save, saved};
+use super::{ApiKey, DIRECTORY, KeyKind, NotKey, Origin, save, saved};
 use crate::providers::{credential_directory, error::credentials::CredentialError};
 
 pub(crate) const ANTHROPIC: &str = "anthropic-key";
+pub(crate) const DEEPL: &str = "deepl-key";
 pub(crate) const ORIGIN: &str = "api-key";
 
 // The terminal of the process, whatever its standard streams are. The server
@@ -32,6 +33,17 @@ const ANTHROPIC_INTRODUCTION: &str = concat!(
     "The language server sends it to the Anthropic API and nowhere else.\n",
     "Create the key for a single workspace in the Claude Console:\n",
     "https://platform.claude.com/settings/keys\n",
+);
+const DEEPL_INTRODUCTION: &str = concat!(
+    "Translation LSP: DeepL API key\n",
+    "\n",
+    "The key is saved in the file deepl-api-key in ",
+    directory!(),
+    ".\n",
+    "The language server sends it to the DeepL API and nowhere else: a DeepL API\n",
+    "Free key to api-free.deepl.com, any other key to api.deepl.com.\n",
+    "Find the key in your DeepL account:\n",
+    "https://www.deepl.com/your-account/keys\n",
 );
 const OPENAI_KEYS: &str =
     "Create the key in the OpenAI Platform:\nhttps://platform.openai.com/api-keys\n";
@@ -68,12 +80,13 @@ impl Console for Terminal {
     }
 }
 
-/// The arguments that run the command for the key sent to `destination`, or
-/// for the Anthropic key, after the executable.
-pub(crate) fn arguments(destination: Option<&Origin>) -> Vec<&str> {
-    match destination {
-        None => vec![ANTHROPIC],
-        Some(origin) => vec![ORIGIN, origin.as_str()],
+/// The arguments that run the command for the key of `kind`, after the
+/// executable.
+pub(crate) fn arguments(kind: &KeyKind) -> Vec<&str> {
+    match kind {
+        KeyKind::Anthropic => vec![ANTHROPIC],
+        KeyKind::DeepL => vec![DEEPL],
+        KeyKind::Origin(origin) => vec![ORIGIN, origin.as_str()],
     }
 }
 
@@ -83,18 +96,21 @@ pub fn from_arguments() -> Option<ExitCode> {
     let mut arguments = env::args().skip(1);
     let name = arguments.next()?;
     let rest: Vec<String> = arguments.collect();
-    let destination = match name.as_str() {
-        ANTHROPIC if rest.is_empty() => Ok(None),
-        ANTHROPIC => Err(format!("translation-lsp {ANTHROPIC} takes no arguments")),
+    let kind = match name.as_str() {
+        ANTHROPIC | DEEPL if !rest.is_empty() => {
+            Err(format!("translation-lsp {name} takes no arguments"))
+        }
+        ANTHROPIC => Ok(KeyKind::Anthropic),
+        DEEPL => Ok(KeyKind::DeepL),
         ORIGIN => match &rest[..] {
             [origin] => Origin::parse(origin)
-                .map(Some)
+                .map(KeyKind::Origin)
                 .ok_or_else(|| ORIGIN_ARGUMENT.to_owned()),
             _ => Err(ORIGIN_ARGUMENT.to_owned()),
         },
         _ => return None,
     };
-    let problem = match destination {
+    let problem = match kind {
         Ok(_)
             if TERMINAL.iter().any(|path| {
                 OpenOptions::new()
@@ -108,10 +124,10 @@ pub fn from_arguments() -> Option<ExitCode> {
                 "translation-lsp {name} asks for the key in a terminal, and this process has none. Run it in a terminal window"
             ))
         }
-        destination => destination,
+        kind => kind,
     };
-    let destination = match problem {
-        Ok(destination) => destination,
+    let kind = match problem {
+        Ok(kind) => kind,
         Err(problem) => {
             eprintln!("{problem}");
             return Some(ExitCode::FAILURE);
@@ -125,11 +141,7 @@ pub fn from_arguments() -> Option<ExitCode> {
         return Some(ExitCode::FAILURE);
     };
     Some(
-        if run(
-            credential_directory::locate(),
-            destination.as_ref(),
-            &mut Terminal,
-        ) {
+        if run(credential_directory::locate(), &kind, &mut Terminal) {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE
@@ -162,11 +174,13 @@ fn receive_interruptions() -> io::Result<impl Sized> {
 
 /// What the command says first: which key it saves, where, and where the
 /// server sends it.
-fn introduction(destination: Option<&Origin>) -> String {
-    let Some(origin) = destination else {
-        return ANTHROPIC_INTRODUCTION.into();
+fn introduction(kind: &KeyKind) -> String {
+    let origin = match kind {
+        KeyKind::Anthropic => return ANTHROPIC_INTRODUCTION.into(),
+        KeyKind::DeepL => return DEEPL_INTRODUCTION.into(),
+        KeyKind::Origin(origin) => origin,
     };
-    let file = file(destination);
+    let file = kind.file();
     let origin = origin.as_str();
     let mut text = format!(
         "Translation LSP: API key for {origin}\n\nThe key is saved in the file {file} in {DIRECTORY}.\nThe language server sends it to {origin} and nowhere else.\n"
@@ -177,10 +191,11 @@ fn introduction(destination: Option<&Origin>) -> String {
     text
 }
 
-fn prompt(destination: Option<&Origin>) -> String {
-    let key = match destination {
-        None => "the Anthropic API key",
-        Some(_) => "the API key",
+fn prompt(kind: &KeyKind) -> String {
+    let key = match kind {
+        KeyKind::Anthropic => "the Anthropic API key",
+        KeyKind::DeepL => "the DeepL API key",
+        KeyKind::Origin(_) => "the API key",
     };
     format!("\nPaste {key}{PROMPT}")
 }
@@ -198,24 +213,23 @@ fn not_private(file: &str) -> String {
     }
 }
 
-/// Saves the key sent to `destination`, or the Anthropic key. Returns whether
-/// a key was saved.
+/// Saves the key of `kind`. Returns whether a key was saved.
 pub(crate) fn run(
     directory: Result<PathBuf, CredentialError>,
-    destination: Option<&Origin>,
+    kind: &KeyKind,
     console: &mut impl Console,
 ) -> bool {
     // A terminal that went away ends the command like an input that ended.
-    dialogue(directory, destination, console).unwrap_or(false)
+    dialogue(directory, kind, console).unwrap_or(false)
 }
 
 fn dialogue(
     directory: Result<PathBuf, CredentialError>,
-    destination: Option<&Origin>,
+    kind: &KeyKind,
     console: &mut impl Console,
 ) -> io::Result<bool> {
-    console.say(&introduction(destination))?;
-    let file = file(destination);
+    console.say(&introduction(kind))?;
+    let file = kind.file();
     // A place that cannot take the key is reported before the key is typed.
     let place = directory.and_then(|directory| Ok((saved(&directory, file)?, directory)));
     let (replaces, directory) = match place {
@@ -225,7 +239,7 @@ fn dialogue(
     if replaces {
         console.say(REPLACES)?;
     }
-    let prompt = prompt(destination);
+    let prompt = prompt(kind);
     loop {
         console.say(&prompt)?;
         let Ok(line) = console.read_hidden() else {

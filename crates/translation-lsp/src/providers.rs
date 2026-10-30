@@ -3,6 +3,7 @@ pub(crate) mod anthropic;
 pub(crate) mod api_key;
 pub(crate) mod chatgpt;
 pub(crate) mod credential_directory;
+pub(crate) mod deepl;
 pub(crate) mod dictionary;
 pub(crate) mod error;
 #[cfg(test)]
@@ -12,6 +13,7 @@ pub(crate) mod openai_api;
 pub(crate) mod openai_compatible;
 pub(crate) mod prompt;
 pub(crate) mod responses;
+pub(crate) mod segments;
 pub(crate) mod sse;
 pub(crate) mod transport;
 pub(crate) mod unset;

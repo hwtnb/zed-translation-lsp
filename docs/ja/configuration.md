@@ -2,7 +2,7 @@
 
 [English](../configuration.md)
 
-このページでは、`lsp.translation-lsp` の設定を説明します。プロバイダーごとの項目は、[ChatGPT](providers/chatgpt.md)、[Anthropic API](providers/anthropic.md)、[OpenAI API](providers/openai-api.md)、[OpenAI互換API](providers/openai-compatible.md) のページにあります。
+このページでは、`lsp.translation-lsp` の設定を説明します。プロバイダーごとの項目は、[ChatGPT](providers/chatgpt.md)、[Anthropic API](providers/anthropic.md)、[OpenAI API](providers/openai-api.md)、[OpenAI互換API](providers/openai-compatible.md)、[DeepL API](providers/deepl.md) のページにあります。
 
 ## 設定の全体例
 
@@ -102,7 +102,7 @@ WindowsのパスもJSON内では `/` で区切れます。バックスラッシ�
 
 画面上の表示は `target_language` にかかわらず英語です。`target_language` の既定値は `ja`、`source_language` は `auto` です。`auto` では、翻訳する同じ要求の中で原語を判定します。
 
-ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のように続きがあっても、`Japanese (ja)` のように英語の言語名を付けて、コードアクションの表示とプロバイダーへの指示の両方で使います。`Japanese` のようなそれ以外の値は、書いたとおりに使います。
+ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のように続きがあっても、`Japanese (ja)` のように英語の言語名を付けて、コードアクションの表示とプロバイダーへの指示の両方で使います。`Japanese` のようなそれ以外の値は、書いたとおりに使います。DeepL APIは指示文を受け付けず、言語コードだけを使えます。そのページの[設定項目](providers/deepl.md#設定項目)を参照してください。
 
 ## 機能の切り替え
 
@@ -240,7 +240,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 
 1. Zedのコマンドパレットで `zed: open settings file` を実行します。
 2. `lsp.translation-lsp.initialization_options.provider.model` を、使いたいモデルの識別名に変更します。
-3. 必要に応じて、プロバイダーのほかの項目を指定します。項目は [ChatGPT](providers/chatgpt.md#設定項目)、[Anthropic API](providers/anthropic.md#設定項目)、[OpenAI API](providers/openai-api.md#設定項目)、[OpenAI互換API](providers/openai-compatible.md#設定項目) のページにあります。
+3. 必要に応じて、プロバイダーのほかの項目を指定します。項目は [ChatGPT](providers/chatgpt.md#設定項目)、[Anthropic API](providers/anthropic.md#設定項目)、[OpenAI API](providers/openai-api.md#設定項目)、[OpenAI互換API](providers/openai-compatible.md#設定項目) のページにあります。DeepL APIには、選べるモデルはありません。
 4. 設定を保存します。この拡張を使う文書で、コマンドパレットから `editor: restart language server` を実行します。
 
 拡張は設定したモデルの識別名をそのまま翻訳APIへ送り、別のモデルへ自動で切り替えません。そのモデル・推論強度・速度をアカウントで使えるかどうかは、APIが判断します。

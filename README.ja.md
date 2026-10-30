@@ -4,7 +4,7 @@
 
 ZedでRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、SQL、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメント、Pythonのドキュメンテーション文字列、選択したMarkdownなどの文章を翻訳します。訳文はホバー表示（テキスト上で開く情報表示）で読めます。原文はエディタに残ります。コードのコメントにマウスポインターを重ねると、初回から翻訳が始まります。プロバイダーが使える状態では、Markdownの文章を選択して安定させるとバックグラウンドで翻訳し、その範囲のホバーで訳文を読めます。
 
-ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropic APIとOpenAI APIのプロバイダーは、本人のAPIキーでそれぞれのAPIを呼びます。OpenAI互換のプロバイダーは、OpenRouter、Gemini API、Ollama、LM Studioなど、指定したサービスを呼びます。APIキーは、保存した場合にだけ送ります。プロバイダーを選ぶまでは、文章を外部へ送りません。
+ChatGPTを使う場合は、本人のChatGPTアカウントで接続し、ChatGPTプランの利用を許可します。Anthropic APIとOpenAI APIのプロバイダーは、本人のAPIキーでそれぞれのAPIを呼びます。OpenAI互換のプロバイダーは、OpenRouter、Gemini API、Ollama、LM Studioなど、指定したサービスを呼びます。APIキーは、保存した場合にだけ送ります。DeepL APIのプロバイダーは、本人のAPIキーでDeepLの翻訳サービスを呼びます。プロバイダーを選ぶまでは、文章を外部へ送りません。
 
 ## 導入
 
@@ -50,7 +50,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
 
 プロバイダーがないと、言語サーバーは何も翻訳しません。起動したときに、Zedの設定ファイルと英語版READMEのこの節を開くボタンを添えて、プロバイダーを選ぶよう求めます。その後も、対応する文書のコードアクションの `Set up Translation LSP…` から同じボタンを出せます。
 
-既存のZed設定の `lsp` に次のどちらかの項目を追加してプロバイダーを選び、Zedのコードアクションから接続します。設定を変更したら言語サーバーを再起動してください。`target_language` は訳文の言語です。[ほかのよく使う設定](#ほかのよく使う設定)を参照してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
+既存のZed設定の `lsp` に次のいずれかの項目を追加してプロバイダーを選び、Zedのコードアクションから接続します。設定を変更したら言語サーバーを再起動してください。`target_language` は訳文の言語です。[ほかのよく使う設定](#ほかのよく使う設定)を参照してください。すべての設定は[設定](docs/ja/configuration.md)で説明します。
 
 ### ChatGPT
 
@@ -136,13 +136,32 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
 
 `base_url` にはサービスのアドレスを、`model` にはそのサービスのモデル名を指定します。上の例は、お使いのコンピューターのOllamaに取り込んだモデルを使います。Ollamaのように、キーの要らないサービスは、キーなしで使えます。キーが要るサービスでは、コードアクションの `OpenAI-compatible API key…` から `Save OpenAI-compatible API key` を実行します。いくつかのサービスのアドレスとほかの設定は[OpenAI互換API](docs/ja/providers/openai-compatible.md)で説明します。
 
+### DeepL API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "deepl"
+        }
+      }
+    }
+  }
+}
+```
+
+対応する文書でZedのコマンドパレットから `editor: toggle code actions` を実行し、`DeepL API key…` から `Save DeepL API key` を実行します。開いた端末のウィンドウにキーを貼り付けて、Enterを押してください。DeepLでは、`target_language` を言語コードにする必要があります。また、選択した単語は辞書で引かずに翻訳します。文章の送り方と費用は[DeepL API](docs/ja/providers/deepl.md)で説明します。
+
 ### ほかのよく使う設定
 
 次の設定は `initialization_options` の中で `provider` と並べて書きます。どれも省略できます。
 
 | 設定 | 既定値 | 内容 |
 | --- | --- | --- |
-| `target_language` | `ja` | 訳文の言語です。`en`、`ja`、`zh-Hans` のような言語コードか、言語名を書きます。 |
+| `target_language` | `ja` | 訳文の言語です。`en`、`ja`、`zh-Hans` のような言語コードか、言語名を書きます。DeepL APIでは言語コードだけを使えます。 |
 | `source_language` | `auto` | 原文の言語です。`auto` ではモデルが判別します。 |
 | `features.comment_hover` | `true` | コメントへのホバーで翻訳を始めるかどうかです。 |
 | `features.automatic_selection` | `true` | Markdownの選択が安定したときにバックグラウンドで翻訳を始めるかどうかです。 |
@@ -156,7 +175,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
 | コメントのホバー | 対応するコードのコメントにマウスポインターを重ねるか、カーソルを置いてZedの `editor: hover` を実行します。 |
 | Markdownの選択 | [プロバイダーの設定](#プロバイダーの設定)のとおりプロバイダーが使える状態で、`features.automatic_selection` が `true` の場合、Markdownの文章を選択して安定させるとバックグラウンドで翻訳します。その範囲でホバーを開いて訳文を読みます。 |
 | `Translate selection to …` | すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。 |
-| 単語を辞書で引く | 1行で3語以下の語句か識別子1つ（`retain`、`retain_completed` など）を選択します。ホバーには訳文の代わりに辞書の項目が表示されます。 |
+| 単語を辞書で引く | 1行で3語以下の語句か識別子1つ（`retain`、`retain_completed` など）を選択します。ホバーには訳文の代わりに辞書の項目が表示されます。DeepL APIでは、辞書で引かずに翻訳します。 |
 | `… and open in tab` | Markdownまたはプレーンテキスト（Zedの言語名は `Plain Text`）では、`Translate selection to … and open in tab` で訳文を別タブに開けます。選択がない場合は `Translate document to … and open in tab` となり、文書全体を翻訳します。 |
 | 取り消し | 1件を止めるには、その範囲にカーソルか選択範囲を置き、コードアクションの `Cancel translation of lines …` を実行します。`Cancel all translations` はアカウントメニューを残してすべての翻訳を取り消します。 |
 
@@ -178,6 +197,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、S
 - [Anthropic API](docs/ja/providers/anthropic.md): Anthropicプロバイダーの設定と、APIキー。
 - [OpenAI API](docs/ja/providers/openai-api.md): OpenAI APIプロバイダーの設定と、APIキー。
 - [OpenAI互換API](docs/ja/providers/openai-compatible.md): OpenAI互換プロバイダーの設定、いくつかのサービスのアドレス、APIキー。
+- [DeepL API](docs/ja/providers/deepl.md): DeepLプロバイダーの設定、文章の送り方、APIキー。
 - [使い方](docs/ja/usage.md): ホバー、選択、単語を辞書で引く、タブに開く翻訳、状態表示、取り消しと再試行、送信する内容。
 - [動作](docs/ja/behavior.md): 受付、処理が続く条件、自動選択、キャッシュ、期限、再試行、停止。
 - [対応言語](docs/ja/languages.md): 対応する言語、コメントの抽出、言語サーバーの設定。

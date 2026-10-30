@@ -4,7 +4,7 @@
 
 Translate comments in Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, CSS, SQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, and Docker Compose, including Python docstrings, in Zed's Hover. Select Markdown prose to prepare a translation in the background. Hover over the original text to read the translation. The source stays in the editor unchanged.
 
-The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic API and OpenAI API providers call those APIs with your API key. The OpenAI-compatible provider calls a service you name, such as OpenRouter, the Gemini API, Ollama, or LM Studio, with an API key only when you save one. Until you select a provider, the extension sends no text to an external service.
+The ChatGPT provider uses your ChatGPT account with permission to use your plan. The Anthropic API and OpenAI API providers call those APIs with your API key. The OpenAI-compatible provider calls a service you name, such as OpenRouter, the Gemini API, Ollama, or LM Studio, with an API key only when you save one. The DeepL API provider calls DeepL's translation service with your API key. Until you select a provider, the extension sends no text to an external service.
 
 ## Installation
 
@@ -136,13 +136,32 @@ In a supported document, run `editor: toggle code actions` from Zed's Command Pa
 
 Set `base_url` to the address of the service and `model` to one of its model names; the example above uses a model pulled into Ollama on your computer. A service that needs no key, such as Ollama, is ready without one. For a service that needs a key, choose `OpenAI-compatible API key…` from the code actions, then run `Save OpenAI-compatible API key`. See [OpenAI-compatible API](docs/providers/openai-compatible.md) for the addresses of some services and the other settings.
 
+### DeepL API
+
+```json
+{
+  "lsp": {
+    "translation-lsp": {
+      "initialization_options": {
+        "target_language": "ja",
+        "provider": {
+          "name": "deepl"
+        }
+      }
+    }
+  }
+}
+```
+
+In a supported document, run `editor: toggle code actions` from Zed's Command Palette, choose `DeepL API key…`, then run `Save DeepL API key`. Paste the key in the terminal window that opens and press Enter. With DeepL, `target_language` must be a language code, and a selected word is translated instead of looked up. See [DeepL API](docs/providers/deepl.md) for how the text is sent and cost.
+
 ### Other common settings
 
 These settings sit next to `provider` in `initialization_options`. Each can be omitted.
 
 | Setting | Default | What it sets |
 | --- | --- | --- |
-| `target_language` | `ja` | The language translations are written in: a language code such as `en`, `ja`, or `zh-Hans`, or a language name. |
+| `target_language` | `ja` | The language translations are written in: a language code such as `en`, `ja`, or `zh-Hans`, or a language name. The DeepL API takes language codes only. |
 | `source_language` | `auto` | The language of the original text. With `auto`, the model identifies it. |
 | `features.comment_hover` | `true` | Whether Hover over a comment starts a translation. |
 | `features.automatic_selection` | `true` | Whether a stable Markdown selection starts a translation in the background. |
@@ -156,7 +175,7 @@ These settings sit next to `provider` in `initialization_options`. Each can be o
 | Comment Hover | Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. |
 | Markdown selection | With a provider ready, as described under [Set up a provider](#set-up-a-provider), and `features.automatic_selection` set to `true`, select Markdown prose and keep the selection stable. Translation starts in the background; Hover over that range to read it. |
 | `Translate selection to …` | To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. |
-| Word lookup | Select up to three words or one identifier on one line, such as `retain` or `retain_completed`. Hover shows a dictionary entry instead of a translation. |
+| Word lookup | Select up to three words or one identifier on one line, such as `retain` or `retain_completed`. Hover shows a dictionary entry instead of a translation. The DeepL API translates the selection instead. |
 | `… and open in tab` | In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. |
 | Cancel | To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. `Cancel all translations` stops all translation work without canceling an account menu. |
 
@@ -178,6 +197,7 @@ What each request contains is described under [What is sent](docs/usage.md#what-
 - [Anthropic API](docs/providers/anthropic.md): the settings of the Anthropic provider and its API key.
 - [OpenAI API](docs/providers/openai-api.md): the settings of the OpenAI API provider and its API key.
 - [OpenAI-compatible API](docs/providers/openai-compatible.md): the settings of the OpenAI-compatible provider, the addresses of some services, and their API keys.
+- [DeepL API](docs/providers/deepl.md): the settings of the DeepL provider, how the text is sent, and its API key.
 - [Usage](docs/usage.md): Hover, selections, looking up words, translations opened in a tab, status, canceling and retrying, and what is sent.
 - [Behavior](docs/behavior.md): admission, what keeps work running, automatic selection, the cache, deadlines, retries, and pauses.
 - [Languages](docs/languages.md): supported languages, comment extraction, and language server settings.

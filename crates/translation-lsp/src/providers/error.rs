@@ -28,19 +28,20 @@ pub(crate) enum Service {
     Anthropic,
     /// A service that `provider.base_url` names.
     Compatible,
+    DeepL,
 }
 
 impl Service {
     fn network_advice(self) -> &'static str {
         match self {
             Self::OpenAi => "credentials are retained, retry later",
-            Self::OpenAiApi | Self::Anthropic | Self::Compatible => "retry later",
+            Self::OpenAiApi | Self::Anthropic | Self::Compatible | Self::DeepL => "retry later",
         }
     }
 
     fn code_label(self) -> &'static str {
         match self {
-            Self::OpenAi | Self::OpenAiApi | Self::Compatible => "code",
+            Self::OpenAi | Self::OpenAiApi | Self::Compatible | Self::DeepL => "code",
             Self::Anthropic => "type",
         }
     }
@@ -52,6 +53,7 @@ impl fmt::Display for Service {
             Self::OpenAi | Self::OpenAiApi => "OpenAI",
             Self::Anthropic => "Anthropic",
             Self::Compatible => "OpenAI-compatible API",
+            Self::DeepL => "DeepL API",
         })
     }
 }
@@ -312,6 +314,8 @@ impl fmt::Debug for Error {
 pub(crate) enum TransportScope {
     Stream,
     Event,
+    /// A reply that is not streamed.
+    Response,
 }
 
 impl fmt::Display for TransportScope {
@@ -319,6 +323,7 @@ impl fmt::Display for TransportScope {
         f.write_str(match self {
             Self::Stream => "stream",
             Self::Event => "SSE event",
+            Self::Response => "response",
         })
     }
 }

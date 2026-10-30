@@ -20,8 +20,6 @@ use crate::providers::{
     error::{Cause, Error, credentials::CredentialError},
 };
 
-/// The file of the Anthropic key, which is older than the keys of origins.
-const ANTHROPIC_FILE: &str = "anthropic-api-key";
 /// A key is about a hundred bytes.
 const MAX_BYTES: usize = 4096;
 /// How old a file must be before its attributes stand for its contents: one
@@ -125,6 +123,36 @@ impl Origin {
     }
 }
 
+/// Which key a file holds: the key of one service, which has a command of its
+/// own, or the key sent to an origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KeyKind {
+    /// Older than the keys of origins.
+    Anthropic,
+    /// Sent to DeepL API Free or to the paid DeepL API, whichever the key
+    /// belongs to.
+    DeepL,
+    Origin(Origin),
+}
+
+impl KeyKind {
+    pub fn file(&self) -> &str {
+        match self {
+            Self::Anthropic => "anthropic-api-key",
+            Self::DeepL => "deepl-api-key",
+            Self::Origin(origin) => &origin.file,
+        }
+    }
+
+    /// Where the key is sent, for the texts. `None` for the key of a service.
+    pub fn destination(&self) -> Option<&Origin> {
+        match self {
+            Self::Origin(origin) => Some(origin),
+            Self::Anthropic | Self::DeepL => None,
+        }
+    }
+}
+
 /// One key file, and the names the texts give its key.
 #[derive(Clone, Debug)]
 pub(crate) struct KeySpec {
@@ -132,8 +160,7 @@ pub(crate) struct KeySpec {
     pub name: &'static str,
     /// The code action that saves the key.
     pub menu: &'static str,
-    /// `None` for the Anthropic key, which has a command of its own.
-    origin: Option<Origin>,
+    kind: KeyKind,
 }
 
 impl KeySpec {
@@ -141,7 +168,15 @@ impl KeySpec {
         Self {
             name: "Anthropic API key",
             menu,
-            origin: None,
+            kind: KeyKind::Anthropic,
+        }
+    }
+
+    pub fn deepl(menu: &'static str) -> Self {
+        Self {
+            name: "DeepL API key",
+            menu,
+            kind: KeyKind::DeepL,
         }
     }
 
@@ -150,17 +185,16 @@ impl KeySpec {
         Self {
             name,
             menu,
-            origin: Some(origin),
+            kind: KeyKind::Origin(origin),
         }
     }
 
     pub fn file(&self) -> &str {
-        file(self.origin.as_ref())
+        self.kind.file()
     }
 
-    /// Where the key is sent, for the texts. `None` for the Anthropic key.
-    pub fn destination(&self) -> Option<&Origin> {
-        self.origin.as_ref()
+    pub fn kind(&self) -> &KeyKind {
+        &self.kind
     }
 
     fn missing(&self) -> String {
@@ -214,11 +248,6 @@ impl KeySpec {
             _ => self.unreadable(),
         })
     }
-}
-
-/// The file of the key sent to `destination`, or of the Anthropic key.
-fn file(destination: Option<&Origin>) -> &str {
-    destination.map_or(ANTHROPIC_FILE, |origin| &origin.file)
 }
 
 /// What the key file and its directory must be, after the directory's name.
@@ -286,7 +315,13 @@ impl ApiKey {
 
     /// The value of an `Authorization` header that carries the key.
     pub fn bearer(&self) -> HeaderValue {
-        let mut header = HeaderValue::from_str(&format!("Bearer {}", self.text))
+        self.authorization("Bearer")
+    }
+
+    /// The value of an `Authorization` header that carries the key after
+    /// `scheme`.
+    pub fn authorization(&self, scheme: &str) -> HeaderValue {
+        let mut header = HeaderValue::from_str(&format!("{scheme} {}", self.text))
             .expect("a key is visible ASCII");
         header.set_sensitive(true);
         header
@@ -341,9 +376,9 @@ impl KeyFile {
         self.directory.as_deref().map_err(Error::clone)
     }
 
-    /// Where the key is sent. `None` for the Anthropic key.
+    /// Where the key is sent. `None` for the key of a service.
     pub fn destination(&self) -> Option<&Origin> {
-        self.spec.destination()
+        self.spec.kind().destination()
     }
 
     /// The saved key, unless another has taken the place of `expected`.
@@ -370,10 +405,10 @@ impl KeyFile {
     pub async fn ask_in_terminal(&self, terminal: &Terminal) -> Result<String, Error> {
         let executable = env::current_exe()
             .map_err(|_| Error::failed("Could not locate the language server executable"))?;
-        let destination = self.spec.destination();
-        let command = terminal::manual_command(&executable, destination);
+        let kind = self.spec.kind();
+        let command = terminal::manual_command(&executable, kind);
         let opened = match terminal {
-            Terminal::System => terminal::open(&executable, destination).await,
+            Terminal::System => terminal::open(&executable, kind).await,
             #[cfg(test)]
             Terminal::Synthetic(terminal) => terminal.open(&executable),
         };

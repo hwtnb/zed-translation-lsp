@@ -23,7 +23,7 @@ use crate::{
             AnthropicProvider, MENU as KEY_MENU, REMOVE, SAVE,
             test_support::{Fixture, KEY, KeyDirectory, Reply, Terminal, completed},
         },
-        api_key::{KeyFile, KeySpec, terminal},
+        api_key::{KeyFile, KeyKind, KeySpec, terminal},
         error::{Error, ErrorKind, Notification, credentials::CredentialError},
     },
 };
@@ -782,7 +782,7 @@ async fn saving_opens_a_terminal_for_this_executable_and_names_the_command_to_ru
     let provider = fixture.provider().with_terminal(terminal.clone());
     let editor = Editor::default();
     let executable = env::current_exe().unwrap();
-    let command = terminal::manual_command(&executable, None);
+    let command = terminal::manual_command(&executable, &KeyKind::Anthropic);
     assert!(command.ends_with(" anthropic-key"), "{command}");
 
     let notice = provider.administer(SAVE, &editor).await.unwrap();

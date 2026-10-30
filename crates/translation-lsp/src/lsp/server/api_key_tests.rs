@@ -1,4 +1,4 @@
-//! The OpenAI API and OpenAI-compatible providers in the server.
+//! The providers that send an API key, other than Anthropic, in the server.
 use std::time::Duration;
 
 use serde_json::json;
@@ -7,6 +7,8 @@ use tokio::task::spawn_blocking;
 use super::*;
 use crate::providers::{
     anthropic::test_support::KeyDirectory,
+    credential_directory,
+    deepl::DeepLProvider,
     http_fixture::{HttpFixture, Reply},
     openai_api::OpenAiApiProvider,
     openai_compatible::CompatibleProvider,
@@ -95,6 +97,14 @@ fn each_provider_declares_its_name_and_key_commands() {
                 "translation-lsp.remove-compatible-key",
             ],
         ),
+        (
+            commands::<DeepLProvider>(),
+            "Translation LSP (DeepL API)",
+            [
+                "translation-lsp.save-deepl-key",
+                "translation-lsp.remove-deepl-key",
+            ],
+        ),
     ] {
         assert_eq!(name, expected_name);
         let expected: Vec<&str> = shared
@@ -173,4 +183,66 @@ async fn compatible_service_translates_without_a_key_and_hover_shows_it() {
     let records = fixture.records();
     assert_eq!(records.len(), 1);
     assert!(records[0].headers.get("authorization").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deepl_translates_a_comment_of_several_lines_as_one_sentence() {
+    let fixture = HttpFixture::new().await;
+    let keys = KeyDirectory::new();
+    let (mut server, connection, client, completions) =
+        server(DeepLProvider::synthetic(fixture.base.clone(), &keys.path));
+    let (uri, range) = markdown(&mut server);
+    assert_eq!(titles(&mut server, &uri, range), ["DeepL API key…"]);
+    credential_directory::replace(&keys.path, "deepl-api-key", b"synthetic-deepl-key").unwrap();
+
+    let uri: Uri = "file:///comment.rs".parse().unwrap();
+    server.documents.insert(
+        uri.clone(),
+        Document::new(
+            1,
+            1,
+            "rust".into(),
+            "// Call `retry()` only if the service\n// reports a temporary failure.".into(),
+        ),
+    );
+    fixture.reply(Reply {
+        status: 200,
+        body: json!({"translations": [{"text": "サービスが一時的な障害を報告した場合のみ <x i=\"0\">`retry()`</x> を呼びます。"}]})
+            .to_string(),
+        headers: vec![("content-type", "application/json")],
+    });
+    let hover =
+        || parse(json!({"textDocument":{"uri":uri},"position":{"line":0,"character":4}})).unwrap();
+    assert!(server.hover(1.into(), hover()).unwrap().is_none());
+    let finished = {
+        let completions = completions.clone();
+        spawn_blocking(move || {
+            loop {
+                if let WorkerEvent::Finished(completion) =
+                    completions.recv_timeout(Duration::from_secs(3)).unwrap()
+                {
+                    break completion;
+                }
+            }
+        })
+        .await
+        .unwrap()
+    };
+    server.finish(&connection, finished).unwrap();
+    let Message::Response(response) = client.receiver.try_recv().unwrap() else {
+        panic!("Expected Hover response");
+    };
+    let contents = response.response_result.unwrap()["contents"]["value"].clone();
+    assert!(
+        contents
+            .as_str()
+            .unwrap()
+            .contains("サービスが一時的な障害を報告した場合のみ `retry()` を呼びます。"),
+        "{contents}"
+    );
+    let records = fixture.records();
+    assert_eq!(
+        records[0].body["text"],
+        json!(["Call <x i=\"0\">`retry()`</x> only if the service reports a temporary failure."])
+    );
 }

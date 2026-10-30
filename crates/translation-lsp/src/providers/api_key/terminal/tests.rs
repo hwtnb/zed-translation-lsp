@@ -1,5 +1,5 @@
 use super::*;
-use crate::providers::api_key::Origin;
+use crate::providers::api_key::{KeyKind, Origin};
 
 fn launch(program: &str, arguments: &[&str]) -> Launch {
     Launch::new::<&str>(program, arguments, &[])
@@ -96,7 +96,7 @@ fn script_removes_itself_and_runs_the_quoted_executable() {
 
 #[test]
 fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
-    let command = |path: &str| manual_command(Path::new(path), None);
+    let command = |path: &str| manual_command(Path::new(path), &KeyKind::Anthropic);
     let local = Origin::parse("http://[::1]:8080").unwrap();
     if cfg!(windows) {
         assert_eq!(
@@ -109,11 +109,15 @@ fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
         );
         let executable = Path::new(r"C:\Users\synthetic\translation-lsp.exe");
         assert_eq!(
-            manual_command(executable, Some(&openrouter())),
+            manual_command(executable, &KeyKind::Origin(openrouter())),
             r"C:\Users\synthetic\translation-lsp.exe api-key https://openrouter.ai"
         );
         assert_eq!(
-            manual_command(executable, Some(&local)),
+            manual_command(executable, &KeyKind::DeepL),
+            r"C:\Users\synthetic\translation-lsp.exe deepl-key"
+        );
+        assert_eq!(
+            manual_command(executable, &KeyKind::Origin(local.clone())),
             r#"C:\Users\synthetic\translation-lsp.exe api-key "http://[::1]:8080""#
         );
     } else {
@@ -131,11 +135,15 @@ fn command_to_run_by_hand_quotes_a_path_that_needs_it() {
         );
         let executable = Path::new("/opt/translation-lsp");
         assert_eq!(
-            manual_command(executable, Some(&openrouter())),
+            manual_command(executable, &KeyKind::Origin(openrouter())),
             "/opt/translation-lsp api-key https://openrouter.ai"
         );
         assert_eq!(
-            manual_command(executable, Some(&local)),
+            manual_command(executable, &KeyKind::DeepL),
+            "/opt/translation-lsp deepl-key"
+        );
+        assert_eq!(
+            manual_command(executable, &KeyKind::Origin(local.clone())),
             "/opt/translation-lsp api-key 'http://[::1]:8080'"
         );
     }

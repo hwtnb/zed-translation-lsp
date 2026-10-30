@@ -69,6 +69,7 @@ fn origins_of_https_and_of_this_computer_name_a_key_file_each() {
         KeySpec::anthropic("Anthropic API key…").file(),
         "anthropic-api-key"
     );
+    assert_eq!(KeySpec::deepl("DeepL API key…").file(), "deepl-api-key");
 }
 
 #[test]

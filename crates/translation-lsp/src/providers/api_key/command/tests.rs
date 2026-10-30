@@ -29,12 +29,12 @@ impl Typed {
 
     /// Runs the command for `directory`. Nothing typed may be shown.
     fn run(lines: &[&str], directory: &Path) -> (bool, Self) {
-        Self::run_for(None, lines, directory)
+        Self::run_for(&KeyKind::Anthropic, lines, directory)
     }
 
-    fn run_for(destination: Option<&Origin>, lines: &[&str], directory: &Path) -> (bool, Self) {
+    fn run_for(kind: &KeyKind, lines: &[&str], directory: &Path) -> (bool, Self) {
         let mut console = Self::new(lines);
-        let saved = super::run(Ok(directory.into()), destination, &mut console);
+        let saved = super::run(Ok(directory.into()), kind, &mut console);
         for line in lines.iter().filter(|line| !line.trim().is_empty()) {
             assert!(!console.shown.contains(line.trim()), "{}", console.shown);
         }
@@ -216,7 +216,11 @@ fn input_that_is_not_a_key_is_asked_for_again_and_saves_nothing() {
 /// it asks for the key, and wait for the user to have read it.
 fn refused(directory: Result<&Path, CredentialError>) -> String {
     let mut console = Typed::new(&[NEW_KEY]);
-    let saved = super::run(directory.map(Path::to_owned), None, &mut console);
+    let saved = super::run(
+        directory.map(Path::to_owned),
+        &KeyKind::Anthropic,
+        &mut console,
+    );
     assert!(!saved);
     assert!(!console.shown.contains("Paste the Anthropic API key"));
     assert!(!console.shown.contains(NEW_KEY));
@@ -304,11 +308,14 @@ fn loose_directory_symbolic_links_and_named_pipe_are_refused_and_left_alone() {
 
 #[test]
 fn every_text_for_the_terminal_is_ascii() {
-    let origin = Origin::openai();
+    let origin = KeyKind::Origin(Origin::openai());
     for text in [
-        introduction(None),
-        introduction(Some(&origin)),
-        prompt(Some(&origin)),
+        introduction(&KeyKind::Anthropic),
+        introduction(&KeyKind::DeepL),
+        introduction(&origin),
+        prompt(&KeyKind::Anthropic),
+        prompt(&KeyKind::DeepL),
+        prompt(&origin),
         not_private("api-key-https-api.openai.com-443"),
         REPLACES.into(),
         MALFORMED.into(),
@@ -328,7 +335,8 @@ fn every_text_for_the_terminal_is_ascii() {
 fn key_for_an_origin_is_saved_in_a_file_of_its_own_and_names_where_it_goes() {
     let directory = KeyDirectory::with_key(KEY);
     let openrouter = Origin::parse("https://openrouter.ai/api/v1").unwrap();
-    let (saved, console) = Typed::run_for(Some(&openrouter), &[NEW_KEY], &directory.path);
+    let (saved, console) =
+        Typed::run_for(&KeyKind::Origin(openrouter), &[NEW_KEY], &directory.path);
     assert!(saved);
     for expected in [
         "Translation LSP: API key for https://openrouter.ai\n",
@@ -354,7 +362,8 @@ fn key_for_an_origin_is_saved_in_a_file_of_its_own_and_names_where_it_goes() {
     // The OpenAI key is told where to be created, and replaced like any other.
     let openai = Origin::openai();
     for (key, replaces) in [(NEW_KEY, false), (KEY, true)] {
-        let (saved, console) = Typed::run_for(Some(&openai), &[key], &directory.path);
+        let (saved, console) =
+            Typed::run_for(&KeyKind::Origin(openai.clone()), &[key], &directory.path);
         assert!(saved);
         assert!(
             console
@@ -366,5 +375,26 @@ fn key_for_an_origin_is_saved_in_a_file_of_its_own_and_names_where_it_goes() {
     assert_eq!(
         fs::read(directory.path.join("api-key-https-api.openai.com-443")).unwrap(),
         KEY.as_bytes()
+    );
+}
+
+#[test]
+fn deepl_key_is_saved_in_a_file_of_its_own_and_names_both_hosts() {
+    let directory = KeyDirectory::with_key(KEY);
+    let (saved, console) = Typed::run_for(&KeyKind::DeepL, &[NEW_KEY], &directory.path);
+    assert!(saved);
+    for expected in [
+        "Translation LSP: DeepL API key\n",
+        "The key is saved in the file deepl-api-key in ",
+        "Free key to api-free.deepl.com, any other key to api.deepl.com.",
+        "https://www.deepl.com/your-account/keys",
+        "Paste the DeepL API key and press Enter (input is hidden)",
+    ] {
+        assert!(console.shown.contains(expected), "{}", console.shown);
+    }
+    assert_eq!(directory.names(), ["anthropic-api-key", "deepl-api-key"]);
+    assert_eq!(
+        fs::read(directory.path.join("deepl-api-key")).unwrap(),
+        NEW_KEY.as_bytes()
     );
 }

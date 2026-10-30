@@ -18,7 +18,10 @@ use super::{
     error::{ConfigError, bounded_number},
     features::Feature,
 };
-use crate::{language::Language, providers::api_key::Origin};
+use crate::{
+    language::Language,
+    providers::{api_key::Origin, deepl},
+};
 
 pub(super) fn before_decoding(options: &Value) -> Result<(), ConfigError> {
     compatible_service(options)?;
@@ -77,6 +80,9 @@ pub(super) fn after_decoding(settings: &Settings) -> Result<(), ConfigError> {
     }
     match &settings.provider {
         ProviderSettings::Unset | ProviderSettings::Mock {} => (),
+        ProviderSettings::DeepL {} => {
+            deepl::check_languages(&settings.source_language, &settings.target_language)?;
+        }
         ProviderSettings::Chatgpt {
             model, document, ..
         }

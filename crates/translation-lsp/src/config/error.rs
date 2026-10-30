@@ -46,6 +46,11 @@ pub(crate) enum ConfigError {
     BaseUrl,
     #[error("{setting} is required")]
     Required { setting: &'static str },
+    #[error("{setting} must be a language code, such as ja or pt-BR, with provider {provider}")]
+    LanguageCode {
+        setting: &'static str,
+        provider: &'static str,
+    },
     #[error("{setting} must be one of {choices}")]
     Choice {
         setting: &'static str,

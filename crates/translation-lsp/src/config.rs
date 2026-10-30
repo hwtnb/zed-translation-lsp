@@ -82,6 +82,9 @@ pub(crate) enum ProviderSettings {
         #[serde(default, deserialize_with = "explicit")]
         document: Option<CompatibleModel>,
     },
+    /// DeepL has no models to choose: ranges and tabs are sent alike.
+    #[serde(rename = "deepl")]
+    DeepL {},
 }
 
 /// The model and options that one output sends. `provider.document` is one of
@@ -126,7 +129,7 @@ impl ProviderSettings {
     /// `provider.document` is present, whatever its values are.
     pub fn separates_documents(&self) -> bool {
         match self {
-            Self::Unset | Self::Mock {} => false,
+            Self::Unset | Self::Mock {} | Self::DeepL {} => false,
             Self::Chatgpt { document, .. } => document.is_some(),
             Self::Anthropic { document, .. } => document.is_some(),
             Self::OpenAiApi { document, .. } => document.is_some(),

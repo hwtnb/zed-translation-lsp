@@ -12,13 +12,13 @@ relative to the repository root.
   `src/providers/` owns translation providers and authentication;
   `src/text/` owns comment extraction and Markdown input eligibility;
   `src/language.rs` names the languages that `extension.toml` registers. Run with
-  `anthropic-key`, or with `api-key` and the address of a service, the same
-  executable asks for an API key in a terminal and saves it instead of serving
-  an editor.
+  `anthropic-key` or `deepl-key`, or with `api-key` and the address of a service,
+  the same executable asks for an API key in a terminal and saves it instead of
+  serving an editor.
 - `crates/translation-lsp/tests/stdio.rs`: integration tests for the LSP protocol.
 - `crates/translation-lsp/tests/key_command.rs`: integration tests for the
-  `anthropic-key` and `api-key` commands on a pseudo-terminal, for macOS and
-  Linux.
+  `anthropic-key`, `deepl-key`, and `api-key` commands on a pseudo-terminal, for
+  macOS and Linux.
 - `xtask`: development-only native packaging, license collection, and artifact checks.
 - `README.md` and `docs/`: canonical English usage and development documentation.
   `README.md` is the entry point; `docs/` holds the details. `README.ja.md` and
@@ -70,12 +70,16 @@ relative to the repository root.
   text or comment body as prose and display the completed translation directly.
   Prompt the model to preserve code, identifiers, URLs, and meaning. Do not require
   JSON translation segments or enforce Markdown structure or byte equality on the
-  generated translation. Markdown parsing only determines input eligibility.
+  generated translation. Markdown parsing only determines input eligibility. A
+  provider that takes no prompt, such as DeepL, is sent the segments of
+  `providers/segments.rs`, with code spans and URLs marked to stay untranslated;
+  a translation that loses a mark is an error, never a partial result.
 - A selection of up to three words and 64 characters on one line that ends no
   sentence, other than the whole document, is looked up instead
   (`text/term.rs`): the term is sent with its line, the model replies
   with the JSON fields in `providers/dictionary.rs`, and the server renders them
-  as Markdown with every text escaped. Comment Hover always translates.
+  as Markdown with every text escaped. Comment Hover always translates, and so
+  does a provider without entries, such as DeepL.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Hover waiters retain independent cancellation and deadlines, including queue

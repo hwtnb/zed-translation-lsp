@@ -1,5 +1,6 @@
-//! `translation-lsp anthropic-key` and `translation-lsp api-key <origin>` as the
-//! process the server starts in a new terminal window. A pseudo-terminal stands
+//! `translation-lsp anthropic-key`, `translation-lsp deepl-key`, and
+//! `translation-lsp api-key <origin>` as the process the server starts in a new
+//! terminal window. A pseudo-terminal stands
 //! for the window, and the process gets no standard stream, as when the server
 //! starts it.
 //!
@@ -366,6 +367,26 @@ fn key_for_an_origin_is_saved_in_its_own_file() {
 }
 
 #[test]
+fn deepl_key_is_saved_in_its_own_file() {
+    let home = Home::new();
+    let (mut window, child) = Window::start(home.command(&["deepl-key"]));
+    window.wait_for("Translation LSP: DeepL API key");
+    window.wait_for("The key is saved in the file deepl-api-key in ");
+    window.wait_for("Paste the DeepL API key and press Enter (input is hidden).");
+    window.type_hidden(&format!("{KEY}\r"));
+    window.wait_for(FINISH);
+    window.type_hidden("\r");
+    let (status, shown, left) = window.finish(child);
+    assert!(status.success(), "{shown}");
+    assert_eq!(left, USUAL);
+    assert!(!shown.contains(KEY), "{shown}");
+    let file = home.directory().join("deepl-api-key");
+    assert_eq!(fs::read(&file).unwrap(), KEY.as_bytes());
+    assert_eq!(mode(&file), 0o600);
+    assert!(!home.key_file().exists());
+}
+
+#[test]
 fn giving_up_saves_nothing_fails_and_leaves_the_terminal_as_it_was() {
     // Enter alone, the end of the input, and Ctrl+C. The command ends by
     // itself each time, so that it gives the terminal back as it found it:
@@ -425,6 +446,7 @@ fn key_command_is_only_the_first_argument_alone() {
     // Neither asks for a key: the terminal is not even opened.
     for (arguments, expected) in [
         (&["anthropic-key", "extra"][..], "takes no arguments"),
+        (&["deepl-key", "extra"], "deepl-key takes no arguments"),
         (
             &["--stdio", "anthropic-key"],
             "Unknown argument: anthropic-key",

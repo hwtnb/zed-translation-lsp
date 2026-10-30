@@ -58,6 +58,7 @@ use crate::{
         anthropic::AnthropicProvider,
         chatgpt::ChatGptProvider,
         credential_directory,
+        deepl::DeepLProvider,
         error::{Error as ProviderError, ErrorKind, credentials::CredentialError},
         mock::{MockOptions, MockProvider},
         openai_api::OpenAiApiProvider,
@@ -181,6 +182,7 @@ fn serve(
         ProviderSettings::Anthropic { .. } => capabilities::<AnthropicProvider>(),
         ProviderSettings::OpenAiApi { .. } => capabilities::<OpenAiApiProvider>(),
         ProviderSettings::OpenAiCompatible { .. } => capabilities::<CompatibleProvider>(),
+        ProviderSettings::DeepL {} => capabilities::<DeepLProvider>(),
     };
     connection.initialize_finish(id, serde_json::to_value(initialized)?)?;
 
@@ -268,6 +270,14 @@ fn serve(
                 &base_url,
                 OutputOptions::new(CompatibleModel { model, effort }, document),
                 settings.source_language.clone(),
+                settings.translation_limits.output_kib,
+                key_directory,
+            )?;
+            serve_initialized(connection, settings, ui, provider)
+        }
+        ProviderSettings::DeepL {} => {
+            let provider = DeepLProvider::new(
+                &settings.source_language,
                 settings.translation_limits.output_kib,
                 key_directory,
             )?;

@@ -15,7 +15,7 @@ use std::{
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use super::{Origin, command};
+use super::{KeyKind, command};
 
 /// How long a started program has to fail. `open` and the terminals that hand
 /// the window to a running instance end sooner than this; the others are still
@@ -120,7 +120,7 @@ fn shell_word(text: &str) -> String {
 
 /// What the user types to run the command by hand, when no window opens or the
 /// server runs on another machine.
-pub(crate) fn manual_command(executable: &Path, destination: Option<&Origin>) -> String {
+pub(crate) fn manual_command(executable: &Path, kind: &KeyKind) -> String {
     let path = executable.to_string_lossy();
     let words: Vec<String> = if cfg!(windows) {
         // PowerShell and the console take a quoted word alike.
@@ -133,7 +133,7 @@ pub(crate) fn manual_command(executable: &Path, destination: Option<&Origin>) ->
         };
         [word(&path)]
             .into_iter()
-            .chain(command::arguments(destination).into_iter().map(word))
+            .chain(command::arguments(kind).into_iter().map(word))
             .collect()
     } else {
         let path = if plain(&path, "/._-+") {
@@ -143,7 +143,7 @@ pub(crate) fn manual_command(executable: &Path, destination: Option<&Origin>) ->
         };
         [path]
             .into_iter()
-            .chain(command::arguments(destination).into_iter().map(shell_word))
+            .chain(command::arguments(kind).into_iter().map(shell_word))
             .collect()
     };
     words.join(" ")
@@ -231,10 +231,9 @@ pub(super) async fn first_started(launches: &[Launch], grace: Duration) -> bool 
     false
 }
 
-/// Returns whether a terminal took the command that saves the key sent to
-/// `destination`, or the Anthropic key.
-pub(crate) async fn open(executable: &Path, destination: Option<&Origin>) -> bool {
-    let arguments = command::arguments(destination);
+/// Returns whether a terminal took the command that saves the key of `kind`.
+pub(crate) async fn open(executable: &Path, kind: &KeyKind) -> bool {
+    let arguments = command::arguments(kind);
     if cfg!(target_os = "macos") {
         let Ok(script) = write_script(executable, &arguments) else {
             return false;
