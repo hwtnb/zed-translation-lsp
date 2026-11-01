@@ -59,7 +59,7 @@ cargo run -p xtask --locked -- check-notices
 
 Go、Java、Kotlin、Swift、Ruby、PHP、HTML、CSS、SQL、JSON、TOML、シェルスクリプト、PowerShell、Dockerfileのコメントは、サーバー自身の読み取りで読みます。YAMLは `granit-parser` のスキャナーで読みます。HTML文書のスクリプトはOxcで読みます。文書のコメントを読む間、要求を処理するスレッドは待つため、内容にかかわらず、読み取りにかかる時間はテキストの大きさに比例する必要があります。読み取りは、256 MiBのスタックを持つ専用のスレッドで動きます。Oxcは入れ子を再帰で読み、深さの上限を持たないためです（[oxc#21953](https://github.com/oxc-project/oxc/issues/21953)）。スタックは使った部分だけがメモリーを使います。約10万段を超える入れ子では、それでもスタックがあふれます。PowerShellとTOMLの読み取りは、`pwsh-parser` と `toml_parser` の字句解析器を置き換えたものです。これらは、テキストによっては大きさの2乗に比例する時間がかかりました。サーバー自身の読み取りは、各部分を1回だけ読み、前の位置から読み直さず、再帰も使いません。シェル、Dockerfile、Kotlin、Swift、Ruby、PHPの読み取りは、開いているものを自前のスタックに積むため、入れ子の深さを制限するのはメモリーだけです。Rubyの読み取りは、語がローカル変数かどうかを、スコープの深さにかかわらず1つの集合で調べます。テスト `readers_finish_repeated_pieces_in_seconds` と `readers_finish_texts_of_several_repeated_parts_in_seconds` が、短い文字列を繰り返したテキストで、YAMLを含む15の読み取りの時間を確かめます。読み取りを追加するときは、両方のテストに加えてください。これらのテストがすべてのテキストに届くわけではないので、読み取りを変えるときは、現在の文字より前や先を読む箇所を一つずつ確かめてください。
 
-現在のバージョン固定の例外は `unicode-ident = "=1.0.24"` です。Rustの字句解析器とUnicodeテーブルの版を揃えるために固定しています。字句解析器と関連するUnicodeテーブルが同じ版に対応した時点で、固定を外してまとめて更新してください。
+Rustの字句解析器は、`unicode-ident` と `unicode-properties` のUnicodeの版が同じでないとコンパイルできません。更新でどちらか一方だけが新しいUnicodeの版に上がるときは、互換範囲の唯一の例外として、その一方を前の版に固定し、もう一方が追いついた時点で固定を外してください。
 
 ## 依存ライブラリのライセンス表示
 

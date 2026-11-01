@@ -23,7 +23,7 @@ icu_segmenter = "2.4"
 isolang = "2.4"
 lsp-server = "0.10"
 lsp-types = "0.97"
-openidconnect = { version = "4.0", default-features = false, features = ["timing-resistant-secret-traits"] }
+openidconnect = { version = "4.1", default-features = false, features = ["timing-resistant-secret-traits"] }
 oxc_allocator = "0.156"
 oxc_parser = "0.156"
 oxc_span = "0.156"
@@ -40,8 +40,6 @@ tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"
 tree-sitter-cpp = "0.23"
 tree-sitter-python = "0.25"
-# Match the Unicode 17 tables required by ra-ap-rustc_lexer 0.179.
-unicode-ident = "=1.0.24"
 uuid = { version = "1.29", features = ["v4", "serde"] }
 
 [dev-dependencies]

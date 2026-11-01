@@ -70,11 +70,6 @@ files = [
     { path = "aws-lc/third_party/fiat/LICENSE", license = "MIT", checksum = "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061" },
 ]
 
-# The license file continues with the license of the code it was derived from.
-[curve25519-dalek.clarify]
-license = "BSD-3-Clause"
-files = [{ path = "LICENSE", checksum = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f" }]
-
 # The copyright notices follow both license texts in one file.
 [libm.clarify]
 license = "MIT"
