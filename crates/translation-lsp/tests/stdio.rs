@@ -1695,6 +1695,9 @@ fn adjacent_block_start_and_unclosed_blocks_do_not_reuse_previous_preview() {
         ("file:///blocks.proto", "proto", "/*", "*/"),
         ("file:///blocks.lua", "lua", "--[[", "]]"),
         ("file:///blocks.xml", "xml", "<!--", "-->"),
+        ("file:///blocks.vue", "vue", "<!--", "-->"),
+        ("file:///blocks.svelte", "svelte", "<!--", "-->"),
+        ("file:///blocks.astro", "astro", "<!--", "-->"),
         ("file:///blocks.css", "css", "/*", "*/"),
         ("file:///blocks.html", "html", "<!--", "-->"),
     ] {
@@ -2689,6 +2692,36 @@ fn html_and_css_samples_translate_their_comments_and_those_of_scripts_and_styles
             xml,
             &["<!--\nRetry only if the remote service\nreports a temporary failure.\n-->"],
         ),
+        (
+            "file:///comment.vue",
+            "vue",
+            sample!("comment.vue"),
+            &[
+                "<!--\nRetry only if the remote service\nreports a temporary failure.\n-->",
+                "// Retry only if the remote service\n// reports a temporary failure.",
+                block,
+            ][..],
+        ),
+        (
+            "file:///comment.svelte",
+            "svelte",
+            sample!("comment.svelte"),
+            &[
+                "<!--\nRetry only if the remote service\nreports a temporary failure.\n-->",
+                "// Retry only if the remote service\n  // reports a temporary failure.",
+                block,
+            ],
+        ),
+        (
+            "file:///comment.astro",
+            "astro",
+            sample!("comment.astro"),
+            &[
+                "<!--\nRetry only if the remote service\nreports a temporary failure.\n-->",
+                "// Retry only if the remote service\n// reports a temporary failure.",
+                block,
+            ],
+        ),
     ] {
         client.open(uri, language, source, 1);
         for comment in comments {
@@ -2906,7 +2939,7 @@ fn features_errors_name_the_language_or_the_feature_at_initialization() {
             json!({"features": {"languages": {"javascriptreact": {"comment_hover": false}}}}),
             "features.languages keys must be one of rust, javascript, typescript, \
              typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, php, html, \
-             xml, css, sql, lua, zig, proto, graphql, json, jsonc, yaml, toml, shellscript, \
+             vue, svelte, astro, xml, css, sql, lua, zig, proto, graphql, json, jsonc, yaml, toml, shellscript, \
              powershell, dockerfile, dockercompose, makefile, markdown, plaintext",
         ),
         (

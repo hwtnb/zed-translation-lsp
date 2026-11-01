@@ -24,7 +24,7 @@ pub(super) fn script(text: &str, module: bool) -> Vec<Comment> {
     comments(source_type, text)
 }
 
-fn comments(source_type: SourceType, text: &str) -> Vec<Comment> {
+pub(super) fn comments(source_type: SourceType, text: &str) -> Vec<Comment> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, text, source_type).parse();
     parsed

@@ -80,7 +80,7 @@ mod tests {
         *,
     };
 
-    const LANGUAGE_IDS: [&str; 33] = [
+    const LANGUAGE_IDS: [&str; 36] = [
         "rust",
         "javascript",
         "typescript",
@@ -96,6 +96,9 @@ mod tests {
         "ruby",
         "php",
         "html",
+        "vue",
+        "svelte",
+        "astro",
         "xml",
         "css",
         "sql",
@@ -294,9 +297,9 @@ mod tests {
                     error.to_string(),
                     "features.languages keys must be one of rust, javascript, typescript, \
                      typescriptreact, csharp, c, cpp, python, go, java, kotlin, swift, ruby, \
-                     php, html, xml, css, sql, lua, zig, proto, graphql, json, jsonc, yaml, \
-                     toml, shellscript, powershell, dockerfile, dockercompose, makefile, \
-                     markdown, plaintext"
+                     php, html, vue, svelte, astro, xml, css, sql, lua, zig, proto, graphql, \
+                     json, jsonc, yaml, toml, shellscript, powershell, dockerfile, \
+                     dockercompose, makefile, markdown, plaintext"
                 );
                 assert_eq!(format!("{error:?}"), error.to_string());
             }
@@ -366,8 +369,8 @@ mod tests {
             message(json!({"languages": {"markdown": {"comment_hover": false}}})),
             "features.languages.markdown.comment_hover is not available; comment_hover applies \
              to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, java, \
-             kotlin, swift, ruby, php, html, xml, css, sql, lua, zig, proto, graphql, json, \
-             jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, makefile"
+             kotlin, swift, ruby, php, html, vue, svelte, astro, xml, css, sql, lua, zig, proto, \
+             graphql, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, makefile"
         );
     }
 }

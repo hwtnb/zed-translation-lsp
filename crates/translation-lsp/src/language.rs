@@ -18,6 +18,9 @@ pub(crate) enum Language {
     Ruby,
     Php,
     Html,
+    Vue,
+    Svelte,
+    Astro,
     Xml,
     Css,
     Sql,
@@ -40,7 +43,7 @@ pub(crate) enum Language {
 
 impl Language {
     /// Every language, in the order of `extension.toml`.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 36] = [
         Self::Rust,
         Self::JavaScript,
         Self::TypeScript,
@@ -56,6 +59,9 @@ impl Language {
         Self::Ruby,
         Self::Php,
         Self::Html,
+        Self::Vue,
+        Self::Svelte,
+        Self::Astro,
         Self::Xml,
         Self::Css,
         Self::Sql,
@@ -94,6 +100,9 @@ impl Language {
             Self::Ruby => "ruby",
             Self::Php => "php",
             Self::Html => "html",
+            Self::Vue => "vue",
+            Self::Svelte => "svelte",
+            Self::Astro => "astro",
             Self::Xml => "xml",
             Self::Css => "css",
             Self::Sql => "sql",

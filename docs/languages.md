@@ -6,7 +6,7 @@ This page lists the languages whose comments are translated on Hover, the rules 
 
 ## Supported languages
 
-Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, XML, CSS, SQL, Lua, Zig, Protocol Buffers, GraphQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, Docker Compose, and makefiles, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
+Automatic comment Hover supports Rust, JavaScript/JSX, TypeScript/TSX, C#, C, C++, Python, Go, Java, Kotlin, Swift, Ruby, PHP, HTML, Vue.js, Svelte, Astro, XML, CSS, SQL, Lua, Zig, Protocol Buffers, GraphQL, JSON, JSONC, YAML, TOML, shell scripts, PowerShell, Dockerfile, Docker Compose, and makefiles, including Python docstrings. Markdown requires a prose selection before background translation; paragraph Hover alone does not start it.
 
 ## Comment extraction
 
@@ -39,7 +39,7 @@ Rust supports `//` and `/* ... */`, which nest, and the documentation comments `
 
 JavaScript, JSX, TypeScript, and TSX support `//` and `/* ... */`, including JSDoc comments `/** ... */` and comments in JSX such as `{/* ... */}`. The file name gives the rules of modules and declarations, as for `.mjs`, `.cjs`, `.mts`, `.cts`, and `.d.ts`. Text inside strings, template literals, and regular expressions is not treated as a comment. A hashbang on the first line is skipped.
 
-A syntax error that stops the parser hides the comments after it. Code nested more than about 100,000 levels deep, such as that many `[` in a row, stops the language server, because the parser reads each level of nesting by recursion. This also holds for the scripts of an HTML document.
+A syntax error that stops the parser hides the comments after it. Code nested more than about 100,000 levels deep, such as that many `[` in a row, stops the language server, because the parser reads each level of nesting by recursion. This also holds for the scripts of an HTML document or a component file.
 
 ### C#
 
@@ -98,6 +98,20 @@ Text inside tags and their attribute values, and inside `<textarea>`, `<title>`,
 The server reads HTML without building the tree of the document. Where the tree changes how a browser reads the text, the server reads it as in the body of a document, with these exceptions. `<![CDATA[` runs to `]]>`, as in SVG and MathML, also elsewhere. The text of `<script>` and `<style>` inside SVG and MathML is read as JavaScript and CSS. An element such as `<textarea>` inside `<select>`, which a browser ignores there, still holds no comment. An unclosed comment or tag hides everything after it, and so does `<plaintext>`.
 
 CSS supports `/* ... */`. Text inside strings and inside an unquoted `url( ... )` is not treated as a comment. An unclosed comment hides everything after it.
+
+### Vue.js, Svelte, and Astro
+
+A component file is read part by part. `<!-- ... -->` in the markup is a comment, as in HTML, and text inside tags and their attribute values, and inside `<textarea>`, is not. The comments of a script are read as in a JavaScript or TypeScript file, and those of a style sheet as in CSS. A syntax error that stops the reading of a script hides the comments after it in that script.
+
+A script is read when its `lang` is empty, `js`, `javascript`, `ts`, `typescript`, `jsx`, or `tsx`, and when its `type` is empty, a JavaScript type, or `module`. A style sheet is read when its `lang` is empty, `css`, or `postcss`, and with `//` comments as well when it is `scss` or `less`. Other languages, such as Sass, Stylus, and CoffeeScript, are not read.
+
+In a Vue file, the `<template>` block, unless another language such as Pug is named by its `lang`, is read as markup, and so are the comments between blocks. Custom blocks such as `<i18n>` are not read. Text inside `{{ ... }}` is not treated as a comment, and comments of the expressions there or in the attributes of directives are not found. `{{` opens this text also inside `v-pre`.
+
+In a Svelte or Astro file, the comments of JavaScript are read in the `{ ... }` expressions of the markup and of attributes, such as `{/* note */}`, also in Svelte's block tags such as `{#if a /* note */}`. Text inside the strings and template literals there is not treated as a comment. A comment in a tag outside `{ ... }`, which Svelte allows, is not found. Svelte's `<title>` holds markup.
+
+In an Astro file, the script between the `---` lines is read as TypeScript, and so is `<script>`, whatever is inside it. A `---` inside a string or a comment of the script does not end it. The script is found when only text and comments come before it. Elements inside an expression, such as `{items.map((item) => <li><!-- note --></li>)}`, are read as markup. The text of an element with `is:raw` holds no comment. As the Astro compiler does, the server reads no regular expressions in an expression, so a quote in one opens a string. A backslash in a string there escapes the next character, as in JavaScript, also where the compiler does not follow it.
+
+An unclosed comment, tag, expression, or `{{ ... }}` hides everything after it, and so does nesting of elements and expressions more than 512 levels deep.
 
 ### SQL
 
@@ -227,6 +241,8 @@ Python is built into Zed. If you configure `languages.Python.language_servers`, 
 Go and CSS are built into Zed, and Zed installs its HTML extension by default. For Ruby and PHP files, install Zed's [Ruby extension](https://github.com/zed-extensions/ruby) and [PHP extension](https://github.com/zed-extensions/php). The settings keys are `Go`, `Ruby`, `PHP`, `HTML`, and `CSS`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 For Java, Kotlin, Swift, and SQL files, install Zed's [Java extension](https://github.com/zed-extensions/java), [Kotlin extension](https://github.com/zed-extensions/kotlin), [Swift extension](https://github.com/zed-extensions/swift), and [SQL extension](https://github.com/zed-extensions/sql). The settings keys are `Java`, `Kotlin`, `Swift`, and `SQL`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
+
+For Vue.js, Svelte, and Astro files, install Zed's [Vue extension](https://github.com/zed-extensions/vue), [Svelte extension](https://github.com/zed-extensions/svelte), and [Astro extension](https://github.com/zed-extensions/astro). The settings keys are `Vue.js`, `Svelte`, and `Astro`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 
 For XML, Lua, Zig, Protocol Buffers, GraphQL, and makefiles, install Zed's [XML extension](https://github.com/sweetppro/zed-xml), [Lua extension](https://github.com/zed-extensions/lua), [Zig extension](https://github.com/zed-extensions/zig), [Proto extension](https://github.com/zed-industries/zed/tree/main/extensions/proto), [GraphQL extension](https://github.com/11bit/zed-extension-graphql), and [Make extension](https://github.com/caius/zed-make). The settings keys are `XML`, `Lua`, `Zig`, `Proto`, `GraphQL`, and `Make`. If you list the language servers of one of these languages explicitly, add `"translation-lsp"` alongside your existing servers.
 

@@ -3,7 +3,7 @@ use std::ops::Range;
 use super::{Comment, Kind, css, javascript};
 
 /// The elements whose text runs to their end tag without markup in it.
-const RAW_TEXT: [&[u8]; 7] = [
+pub(super) const RAW_TEXT: [&[u8]; 7] = [
     b"style",
     b"xmp",
     b"iframe",
@@ -44,32 +44,10 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
         index += found;
         let rest = &bytes[index..];
         if rest.starts_with(b"<!--") {
-            let after = index + 4;
-            // `<!-->` and `<!--->` are empty comments.
-            let (end, closing) = if bytes.get(after) == Some(&b'>') {
-                (after, 1)
-            } else if bytes[after..].starts_with(b"->") {
-                (after, 2)
-            } else {
-                // An unclosed comment hides the rest of the document. Each
-                // dash after the first can start the `--` of the end.
-                let mut at = after;
-                loop {
-                    let Some(end) = find(bytes, at, b"--") else {
-                        return comments;
-                    };
-                    if let Some(closing) = comment_end(&bytes[end..]) {
-                        break (end, closing);
-                    }
-                    at = end + 1;
-                }
+            let Some(end) = comment(bytes, index, &mut comments) else {
+                break;
             };
-            let start = (after + usize::from(bytes.get(after) == Some(&b' '))).min(end);
-            comments.push(Comment {
-                range: index..end + closing,
-                kind: Kind::Contents(vec![Range { start, end }]),
-            });
-            index = end + closing;
+            index = end;
         } else if rest.starts_with(b"<![CDATA[") {
             // This runs to `]]>` in SVG and MathML, where it belongs, and to
             // the first `>` elsewhere, where it is an error.
@@ -127,6 +105,34 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
     comments
 }
 
+/// Adds the comment at `index`, and gives where it ends. An unclosed comment
+/// hides the rest of the document.
+pub(super) fn comment(bytes: &[u8], index: usize, comments: &mut Vec<Comment>) -> Option<usize> {
+    let after = index + 4;
+    // `<!-->` and `<!--->` are empty comments.
+    let (end, closing) = if bytes.get(after) == Some(&b'>') {
+        (after, 1)
+    } else if bytes[after..].starts_with(b"->") {
+        (after, 2)
+    } else {
+        // Each dash after the first can start the `--` of the end.
+        let mut at = after;
+        loop {
+            let end = find(bytes, at, b"--")?;
+            if let Some(closing) = comment_end(&bytes[end..]) {
+                break (end, closing);
+            }
+            at = end + 1;
+        }
+    };
+    let start = (after + usize::from(bytes.get(after) == Some(&b' '))).min(end);
+    comments.push(Comment {
+        range: index..end + closing,
+        kind: Kind::Contents(vec![Range { start, end }]),
+    });
+    Some(end + closing)
+}
+
 /// How many bytes from `--` end a comment: `-->` and `--!>`.
 fn comment_end(dashes: &[u8]) -> Option<usize> {
     if dashes[2..].starts_with(b">") {
@@ -138,14 +144,14 @@ fn comment_end(dashes: &[u8]) -> Option<usize> {
     }
 }
 
-fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(super) fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     bytes[from..]
         .windows(needle.len())
         .position(|window| window == needle)
         .map(|at| from + at)
 }
 
-fn shifted(comments: &mut Vec<Comment>, found: Vec<Comment>, offset: usize) {
+pub(super) fn shifted(comments: &mut Vec<Comment>, found: Vec<Comment>, offset: usize) {
     comments.extend(found.into_iter().map(|comment| Comment {
         range: comment.range.start + offset..comment.range.end + offset,
         kind: comment.kind,
@@ -154,7 +160,7 @@ fn shifted(comments: &mut Vec<Comment>, found: Vec<Comment>, offset: usize) {
 
 /// The blanks that end the name of a tag or of an attribute. The tokenizer
 /// reads a CR as LF.
-fn blank(byte: u8) -> bool {
+pub(super) fn blank(byte: u8) -> bool {
     matches!(byte, b'\t' | b'\n' | b'\x0c' | b'\r' | b' ')
 }
 
@@ -256,7 +262,7 @@ impl<'a> Tag<'a> {
 
 /// Where the end tag of `name` starts, from `from` on: `</` and the name in any
 /// case, followed by a blank, `/`, or `>`.
-fn end_tag(bytes: &[u8], from: usize, name: &[u8]) -> Option<usize> {
+pub(super) fn end_tag(bytes: &[u8], from: usize, name: &[u8]) -> Option<usize> {
     let mut at = from;
     while let Some(start) = find(bytes, at, b"</") {
         if is_tag(bytes, start + 2, name) {
@@ -332,7 +338,12 @@ fn script_type(tag: &Tag<'_>) -> Option<bool> {
         (Some(script_type), _) => attribute_text(script_type),
         (None, Some(language)) => format!("text/{}", attribute_text(language)),
     };
-    // An empty type is told apart before blanks are removed.
+    script_kind(&written)
+}
+
+/// Whether a type names JavaScript, and if so, whether a module. An empty type
+/// is told apart before this.
+pub(super) fn script_kind(written: &str) -> Option<bool> {
     let written = written
         .trim_matches(|character: char| character.is_ascii_whitespace())
         .to_ascii_lowercase();

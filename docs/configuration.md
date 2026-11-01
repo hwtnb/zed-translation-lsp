@@ -110,7 +110,7 @@ A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans
 
 | Setting inside `features` | What it turns on or off | Language IDs |
 | --- | --- | --- |
-| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `go`, `java`, `kotlin`, `swift`, `ruby`, `php`, `html`, `xml`, `css`, `sql`, `lua`, `zig`, `proto`, `graphql`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose`, `makefile` |
+| `comment_hover` | Starting a translation by Hover over a comment. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `go`, `java`, `kotlin`, `swift`, `ruby`, `php`, `html`, `vue`, `svelte`, `astro`, `xml`, `css`, `sql`, `lua`, `zig`, `proto`, `graphql`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose`, `makefile` |
 | `automatic_selection` | Starting a translation after a stable Markdown selection. | `markdown` |
 | `selection_action` | The `Translate selection to …` Code Action. | Every language ID in the table below |
 | `document_action` | The `Translate selection to … and open in tab` and `Translate document to … and open in tab` Code Actions. | `markdown`, `plaintext` |
@@ -153,6 +153,9 @@ The keys of `languages` are the following language IDs, in lowercase:
 | Ruby | `ruby` |
 | PHP | `php` |
 | HTML | `html` |
+| Vue.js | `vue` |
+| Svelte | `svelte` |
+| Astro | `astro` |
 | XML | `xml` |
 | CSS | `css` |
 | SQL | `sql` |

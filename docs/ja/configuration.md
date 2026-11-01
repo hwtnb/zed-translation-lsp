@@ -110,7 +110,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 
 | `features` 内の設定 | 切り替える機能 | 言語ID |
 | --- | --- | --- |
-| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`java`、`kotlin`、`swift`、`ruby`、`php`、`html`、`xml`、`css`、`sql`、`lua`、`zig`、`proto`、`graphql`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose`、`makefile` |
+| `comment_hover` | コメントのホバーで翻訳を始める。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`java`、`kotlin`、`swift`、`ruby`、`php`、`html`、`vue`、`svelte`、`astro`、`xml`、`css`、`sql`、`lua`、`zig`、`proto`、`graphql`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose`、`makefile` |
 | `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
 | `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
 | `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
@@ -153,6 +153,9 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | Ruby | `ruby` |
 | PHP | `php` |
 | HTML | `html` |
+| Vue.js | `vue` |
+| Svelte | `svelte` |
+| Astro | `astro` |
 | XML | `xml` |
 | CSS | `css` |
 | SQL | `sql` |

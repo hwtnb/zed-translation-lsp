@@ -6,7 +6,7 @@
 
 ## 対応する言語
 
-ホバーによる自動翻訳はRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、XML、CSS、SQL、Lua、Zig、Protocol Buffers、GraphQL、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Compose、メイクファイルのコメントと、Pythonのドキュメンテーション文字列が対象です。Markdownは文章の選択後にバックグラウンド翻訳し、段落へのホバーだけでは開始しません。
+ホバーによる自動翻訳はRust、JavaScript／JSX、TypeScript／TSX、C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、Vue.js、Svelte、Astro、XML、CSS、SQL、Lua、Zig、Protocol Buffers、GraphQL、JSON、JSONC、YAML、TOML、シェルスクリプト、PowerShell、Dockerfile、Docker Compose、メイクファイルのコメントと、Pythonのドキュメンテーション文字列が対象です。Markdownは文章の選択後にバックグラウンド翻訳し、段落へのホバーだけでは開始しません。
 
 ## コメントの抽出
 
@@ -39,7 +39,7 @@ Rustは `//` と、入れ子にできる `/* ... */`、ドキュメントコメ�
 
 JavaScript、JSX、TypeScript、TSXは、`//` と `/* ... */` に対応します。JSDocの `/** ... */` と、`{/* ... */}` のようなJSXの中のコメントも含みます。モジュールと型宣言の規則は、`.mjs`、`.cjs`、`.mts`、`.cts`、`.d.ts` のようにファイル名から決めます。文字列、テンプレートリテラル、正規表現の中の文字列は、コメントとして扱いません。1行目のシバンは除外します。
 
-構文解析を止める構文エラーがあると、それより後のコメントは抽出できません。`[` を10万個ほど続けたような、約10万段を超える入れ子があると、言語サーバーが停止します。構文解析器が入れ子の1段ごとに再帰するためです。HTML文書のスクリプトも同じです。
+構文解析を止める構文エラーがあると、それより後のコメントは抽出できません。`[` を10万個ほど続けたような、約10万段を超える入れ子があると、言語サーバーが停止します。構文解析器が入れ子の1段ごとに再帰するためです。HTML文書とコンポーネントファイルのスクリプトも同じです。
 
 ### C#
 
@@ -98,6 +98,20 @@ HTMLは `<!-- ... -->` に対応します。`<script>` の中ではJavaScriptの
 サーバーは、文書のツリーを作らずにHTMLを読みます。ツリーによってブラウザーの読み方が変わる箇所では、次の例外を除き、文書の本文と同じように読みます。`<![CDATA[` は、SVGとMathMLの中と同じく、それ以外の箇所でも `]]>` まで続きます。SVGとMathMLの中の `<script>` と `<style>` の文字列も、JavaScriptとCSSとして読みます。`<select>` の中でブラウザーが無視する `<textarea>` などの要素も、コメントを持たないものとして読みます。閉じていないコメントとタグは、それより後をすべて隠します。`<plaintext>` も同じです。
 
 CSSは `/* ... */` に対応します。文字列と、引用符で囲まれていない `url( ... )` の中の文字列は、コメントとして扱いません。閉じていないコメントは、それより後をすべて隠します。
+
+### Vue.js、Svelte、Astro
+
+コンポーネントファイルは部分ごとに読みます。マークアップの `<!-- ... -->` はHTMLと同じくコメントで、タグとその属性値、`<textarea>` の中の文字列はコメントとして扱いません。スクリプトのコメントはJavaScriptまたはTypeScriptのファイルと同じく読み、スタイルシートのコメントはCSSと同じく読みます。スクリプトの読み取りを止める構文エラーがあると、そのスクリプトのそれより後のコメントは抽出できません。
+
+スクリプトを読むのは、`lang` が空、`js`、`javascript`、`ts`、`typescript`、`jsx`、`tsx` のいずれかで、`type` が空、JavaScriptの型、`module` のいずれかの場合です。スタイルシートを読むのは、`lang` が空、`css`、`postcss` のいずれかの場合で、`scss` と `less` では `//` のコメントも読みます。Sass、Stylus、CoffeeScriptなど、ほかの言語は読みません。
+
+Vueのファイルでは、`lang` でPugなどの別の言語を指定していない `<template>` ブロックと、ブロックの間のコメントをマークアップとして読みます。`<i18n>` などのカスタムブロックは読みません。`{{ ... }}` の中の文字列はコメントとして扱わず、そこやディレクティブの属性にある式のコメントは見つけません。`v-pre` の中でも `{{` からこの文字列が始まります。
+
+SvelteとAstroのファイルでは、マークアップと属性の `{ ... }` の式にあるJavaScriptのコメントを読みます。`{/* note */}` のほか、Svelteのブロックタグの `{#if a /* note */}` も対象です。そこにある文字列とテンプレートリテラルの中はコメントとして扱いません。Svelteで書ける、`{ ... }` の外にあるタグの中のコメントは見つけません。Svelteの `<title>` の中はマークアップとして読みます。
+
+Astroのファイルでは、`---` の行の間のスクリプトをTypeScriptとして読み、`<script>` も中身にかかわらずTypeScriptとして読みます。スクリプトの文字列やコメントの中の `---` では終わりません。このスクリプトが見つかるのは、前に文字列とコメントしかない場合です。`{items.map((item) => <li><!-- note --></li>)}` のように式の中にある要素は、マークアップとして読みます。`is:raw` のある要素の文字列にコメントはありません。Astroのコンパイラと同じく、式の中の正規表現は読まないため、正規表現の中の引用符は文字列を始めます。そこの文字列のバックスラッシュは、コンパイラが従わない箇所でも、JavaScriptと同じく次の文字をエスケープします。
+
+閉じていないコメント、タグ、式、`{{ ... }}` は、それより後をすべて隠します。要素と式の入れ子が512段を超えた場合も同じです。
 
 ### SQL
 
@@ -227,6 +241,8 @@ PythonもZedに組み込まれています。`languages.Python.language_servers`
 GoとCSSはZedに組み込まれていて、HTML拡張はZedが既定で導入します。RubyとPHPのファイルでは、Zedの[Ruby拡張](https://github.com/zed-extensions/ruby)と[PHP拡張](https://github.com/zed-extensions/php)を導入してください。設定上の言語名は `Go`、`Ruby`、`PHP`、`HTML`、`CSS` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 
 Java、Kotlin、Swift、SQLのファイルでは、Zedの[Java拡張](https://github.com/zed-extensions/java)、[Kotlin拡張](https://github.com/zed-extensions/kotlin)、[Swift拡張](https://github.com/zed-extensions/swift)、[SQL拡張](https://github.com/zed-extensions/sql)を導入してください。設定上の言語名は `Java`、`Kotlin`、`Swift`、`SQL` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
+
+Vue.js、Svelte、Astroのファイルでは、Zedの[Vue拡張](https://github.com/zed-extensions/vue)、[Svelte拡張](https://github.com/zed-extensions/svelte)、[Astro拡張](https://github.com/zed-extensions/astro)を導入してください。設定上の言語名は `Vue.js`、`Svelte`、`Astro` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 
 XML、Lua、Zig、Protocol Buffers、GraphQL、メイクファイルでは、Zedの[XML拡張](https://github.com/sweetppro/zed-xml)、[Lua拡張](https://github.com/zed-extensions/lua)、[Zig拡張](https://github.com/zed-extensions/zig)、[Proto拡張](https://github.com/zed-industries/zed/tree/main/extensions/proto)、[GraphQL拡張](https://github.com/11bit/zed-extension-graphql)、[Make拡張](https://github.com/caius/zed-make)を導入してください。設定上の言語名は `XML`、`Lua`、`Zig`、`Proto`、`GraphQL`、`Make` です。これらの言語サーバーを明示設定している場合は、既存のサーバーに `"translation-lsp"` を追加します。
 

@@ -1752,6 +1752,14 @@ fn readers_finish_repeated_pieces_in_seconds() {
         "define a\n",
         "a:\n\t",
         "$(a #",
+        "<template>",
+        "<a {",
+        "<a b=\"{",
+        "<p>{a && ",
+        "<>",
+        "{{",
+        "{/",
+        "(/[",
     ];
     let pieces: Vec<_> = signs.iter().map(String::as_str).chain(openings).collect();
     let size = 64 << 10;
@@ -1766,6 +1774,9 @@ fn readers_finish_repeated_pieces_in_seconds() {
         "go",
         "css",
         "html",
+        "vue",
+        "svelte",
+        "astro",
         "ruby",
         "php",
         "java",
@@ -1973,6 +1984,18 @@ fn readers_finish_texts_of_several_repeated_parts_in_seconds() {
         "\t#",
         "define a\n",
         "endef\n",
+        "---\n",
+        "<template>",
+        "</template>",
+        "<a {",
+        "<a b=\"{",
+        "<p>{a && ",
+        "}</p>",
+        "<>",
+        "{{",
+        "}}",
+        "{/",
+        "(/[",
     ];
     // A fixed sequence, so that every run reads the same texts.
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -1995,6 +2018,9 @@ fn readers_finish_texts_of_several_repeated_parts_in_seconds() {
         "go",
         "css",
         "html",
+        "vue",
+        "svelte",
+        "astro",
         "ruby",
         "php",
         "java",
@@ -3077,6 +3103,182 @@ fn graphql_comments_exclude_strings_and_descriptions() {
         ["# line", "# trailing", "# after block", "# after unclosed"]
     );
     assert_eq!(bodies("graphql", "# One\n# two\ntype T\n"), ["One\ntwo"]);
+}
+
+fn vue(text: &str) -> Vec<String> {
+    sources("vue", "untitled:comment", text)
+}
+
+#[test]
+fn vue_comments_are_read_by_block() {
+    let text = concat!(
+        "<!-- top -->\n",
+        "<template>\n",
+        "  <!-- in template -->\n",
+        "  <p :a=\"'<!-- not -->'\">{{ '<!-- not -->' }}</p>\n",
+        "  <template v-if=\"a\"><!-- nested --></template>\n",
+        "  <textarea><!-- not --></textarea>\n",
+        "  <!-- last -->\n",
+        "</template>\n",
+        "<script setup lang=\"ts\">\n",
+        "// typed\n",
+        "const s: string = '<!-- not -->';\n",
+        "</script>\n",
+        "<i18n><!-- not --></i18n>\n",
+        "<style lang=\"scss\" scoped>\n",
+        "// scss\n",
+        "a { background: url(//not); /* inside */ }\n",
+        "</style>\n",
+        "<style lang=\"stylus\">\n",
+        "// not\n",
+        "</style>\n",
+        "<!-- end -->",
+    );
+    assert_eq!(
+        vue(text),
+        [
+            "<!-- top -->",
+            "<!-- in template -->",
+            "<!-- nested -->",
+            "<!-- last -->",
+            "// typed",
+            "// scss",
+            "/* inside */",
+            "<!-- end -->",
+        ]
+    );
+    assert_eq!(bodies("vue", "<!-- One\ntwo -->"), ["One\ntwo "]);
+}
+
+#[test]
+fn vue_files_hide_what_is_not_markup_of_a_template() {
+    assert_eq!(
+        vue("<template lang=\"pug\">\n//- not\n<!-- not -->\n</template>\n<!-- after -->"),
+        ["<!-- after -->"]
+    );
+    assert_eq!(vue("<template/>\n<!-- after -->"), ["<!-- after -->"]);
+    assert_eq!(
+        vue("<script src=\"./a.js\"/>\n<!-- after -->"),
+        ["<!-- after -->"]
+    );
+    assert_eq!(vue("<template>{{ a <!-- not --></template>"), [""; 0]);
+    assert_eq!(vue("<script lang=\"coffee\"># not\n</script>"), [""; 0]);
+    for (lang, code) in [
+        ("js", "// c"),
+        ("ts", "let a: number; // c"),
+        ("jsx", "const a = <b />; // c"),
+        ("tsx", "const a: B = <b />; // c"),
+    ] {
+        let text = format!("<script lang=\"{lang}\">\n{code}\n</script>");
+        assert_eq!(vue(&text), ["// c"], "{lang}");
+    }
+}
+
+fn svelte(text: &str) -> Vec<String> {
+    sources("svelte", "untitled:comment", text)
+}
+
+#[test]
+fn svelte_comments_are_read_in_scripts_markup_and_expressions() {
+    let text = concat!(
+        "<script lang=\"ts\" module>\n",
+        "// script\n",
+        "</script>\n",
+        "<!-- markup -->\n",
+        "<button onclick={() => go(/* attribute */)} class=\"a {b ? \"<!-- not -->\" : c}\">\n",
+        "  {/* expression */ value}\n",
+        "  {'<!-- not -->'}{\"}\"}{`/* not ${/* substitution */ x} */`}\n",
+        "</button>\n",
+        "{#if a > 1 /* block */}\n",
+        "  <title>{b}<!-- title --></title>\n",
+        "{:else}\n",
+        "  <textarea><!-- not --></textarea>\n",
+        "{/if}\n",
+        "{x.replace(/\"/g, '')}{a / b / c}{/[/}]/.test(d)}<!-- after regexes -->\n",
+        "<style>\n",
+        "/* style */\n",
+        "</style>",
+    );
+    assert_eq!(
+        svelte(text),
+        [
+            "// script",
+            "<!-- markup -->",
+            "/* attribute */",
+            "/* expression */",
+            "/* substitution */",
+            "/* block */",
+            "<!-- title -->",
+            "<!-- after regexes -->",
+            "/* style */",
+        ]
+    );
+}
+
+fn astro(text: &str) -> Vec<String> {
+    sources("astro", "untitled:comment", text)
+}
+
+#[test]
+fn astro_comments_are_read_in_frontmatter_markup_and_expressions() {
+    let text = concat!(
+        "---\n",
+        "// frontmatter\n",
+        "const fence = '---'; /* --- */\n",
+        "const t = `\n---\n`;\n",
+        "if (!a) return Astro.redirect('/');\n",
+        "---\n",
+        "<!-- markup -->\n",
+        "<a href={b > c} onclick={() => d /* attribute */} data-t=`${e}` class=\"{<!-- not -->\">\n",
+        "  {/* expression */}\n",
+        "  {items.map((item) => <li>don't <!-- nested --> {/* inner */}</li>)}\n",
+        "  {f && <br>}{g && <><b>h</b></>}{/* after elements */}\n",
+        "  {a < b ? '<!-- not -->' : \"}\"}\n",
+        "  <code is:raw>{ <!-- not --></code>\n",
+        "</a>\n",
+        "<script>\n",
+        "let n: number; // script\n",
+        "</script>\n",
+        "<script type=\"application/json\">\n",
+        "{}\n",
+        "</script>\n",
+        "<style lang=\"less\">\n",
+        "// style\n",
+        "</style>",
+    );
+    assert_eq!(
+        astro(text),
+        [
+            "// frontmatter",
+            "/* --- */",
+            "<!-- markup -->",
+            "/* attribute */",
+            "/* expression */",
+            "<!-- nested -->",
+            "/* inner */",
+            "/* after elements */",
+            "// script",
+            "// style",
+        ]
+    );
+}
+
+#[test]
+fn astro_frontmatter_can_follow_a_comment_but_no_markup() {
+    assert_eq!(
+        astro("<!-- first -->\n---\n// script\n---\n<p></p>"),
+        ["<!-- first -->", "// script"]
+    );
+    assert_eq!(astro("<p></p>\n---\n// text\n---\n"), [""; 0]);
+    assert_eq!(astro("---\n// unclosed"), [""; 0]);
+}
+
+#[test]
+fn component_nesting_past_the_limit_hides_the_rest() {
+    let shallow = format!("{}<p><!-- c -->", "<p>{a && ".repeat(100));
+    assert_eq!(astro(&shallow), ["<!-- c -->"]);
+    let deep = format!("{}<p><!-- c -->", "<p>{a && ".repeat(10_000));
+    assert_eq!(astro(&deep), [""; 0]);
 }
 
 fn xml(text: &str) -> Vec<String> {

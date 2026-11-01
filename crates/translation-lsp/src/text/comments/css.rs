@@ -5,6 +5,16 @@ use super::{Comment, Kind};
 /// comment. Names and numbers are read whole, so that `url` is told apart
 /// from a longer name, a unit, or a name written with escapes.
 pub(super) fn parse(text: &str) -> Vec<Comment> {
+    read(text, false)
+}
+
+/// Reads SCSS or Less, where `//` also starts a comment that runs to the end
+/// of the line.
+pub(super) fn parse_with_line_comments(text: &str) -> Vec<Comment> {
+    read(text, true)
+}
+
+fn read(text: &str, line_comments: bool) -> Vec<Comment> {
     let bytes = text.as_bytes();
     let mut comments = Vec::new();
     let mut index = 0;
@@ -24,6 +34,13 @@ pub(super) fn parse(text: &str) -> Vec<Comment> {
                         closed: true,
                     },
                 });
+            }
+            b'/' if line_comments && bytes.get(index + 1) == Some(&b'/') => {
+                index = bytes[index..]
+                    .iter()
+                    .position(|byte| matches!(byte, b'\n' | b'\r'))
+                    .map_or(bytes.len(), |length| index + length);
+                comments.push(Comment::line(start..index, 2));
             }
             quote @ (b'"' | b'\'') => index = string(bytes, index + 1, quote),
             _ if starts_number(bytes, index) => {

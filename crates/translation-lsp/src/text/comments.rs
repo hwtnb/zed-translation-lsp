@@ -15,8 +15,10 @@ use lsp_types::Uri;
 use rust_lexer::DocStyle;
 
 use crate::language::Language;
+use component::Dialect;
 
 mod c_family;
+mod component;
 mod csharp;
 mod css;
 mod data;
@@ -167,6 +169,9 @@ impl Comments {
             Language::Kotlin => Some(kotlin::parse(text)),
             Language::Swift => Some(swift::parse(text)),
             Language::Html => Some(html::parse(text)),
+            Language::Vue => Some(component::parse(Dialect::Vue, text)),
+            Language::Svelte => Some(component::parse(Dialect::Svelte, text)),
+            Language::Astro => Some(component::parse(Dialect::Astro, text)),
             Language::Css => Some(css::parse(text)),
             Language::Php => Some(php::parse(text)),
             Language::Sql => Some(sql::parse(text)),
