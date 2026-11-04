@@ -15,7 +15,7 @@ crossbeam-channel = "0.5"
 dirs = "7.0"
 eventsource-stream = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-granit-parser = { version = "2.0", default-features = false, features = ["comments"] }
+granit-parser = { version = "2.1", default-features = false, features = ["comments"] }
 http-body-util = { version = "0.1", default-features = false }
 hyper = { version = "1.12", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
@@ -24,13 +24,13 @@ isolang = "2.4"
 lsp-server = "0.10"
 lsp-types = "0.97"
 openidconnect = { version = "4.1", default-features = false, features = ["timing-resistant-secret-traits"] }
-oxc_allocator = "0.156"
-oxc_parser = "0.156"
-oxc_span = "0.156"
+oxc_allocator = "0.157"
+oxc_parser = "0.157"
+oxc_span = "0.157"
 pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 rpassword = "7.5"
-rust_lexer = { package = "ra-ap-rustc_lexer", version = "0.179" }
+rust_lexer = { package = "ra-ap-rustc_lexer", version = "0.183" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
