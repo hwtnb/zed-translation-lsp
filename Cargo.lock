@@ -3418,7 +3418,7 @@ dependencies = [
 
 [[package]]
 name = "translation-lsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crossbeam-channel",
  "dirs",
@@ -3457,7 +3457,7 @@ dependencies = [
 
 [[package]]
 name = "translation-lsp-extension"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "zed_extension_api",
 ]
