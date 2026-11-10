@@ -28,6 +28,9 @@ pub(crate) struct Ui {
 pub(crate) enum Purpose {
     CreateProgress,
     OpenDocument,
+    RefreshLenses,
+    /// A card whose response tells which button the user pressed.
+    Card,
 }
 
 enum Waiter {
@@ -40,6 +43,7 @@ pub(crate) struct UiCapabilities {
     pub show_document: bool,
     pub work_done_progress: bool,
     pub server_status: bool,
+    pub lens_refresh: bool,
 }
 
 impl From<&ClientCapabilities> for UiCapabilities {
@@ -58,6 +62,11 @@ impl From<&ClientCapabilities> for UiCapabilities {
                 .experimental
                 .as_ref()
                 .is_some_and(|extra| extra["serverStatusNotification"] == true),
+            lens_refresh: client
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.code_lens.as_ref())
+                .is_some_and(|lens| lens.refresh_support == Some(true)),
         }
     }
 }
@@ -144,6 +153,41 @@ impl Ui {
         response
             .response_result
             .map_err(|_| Error::failed("The editor declined the operation"))
+    }
+
+    /// Asks the editor to request the CodeLenses of its documents again.
+    pub fn refresh_lenses(&self) -> Result<(), Error> {
+        if !self.capabilities.lens_refresh {
+            return Ok(());
+        }
+        let id = RequestId::from(format!("translation-ui-{}", Uuid::new_v4()));
+        self.send_request(
+            id,
+            "workspace/codeLens/refresh",
+            Value::Null,
+            Purpose::RefreshLenses,
+        )
+    }
+
+    /// Shows `message` in a card with the buttons `actions`, which stays until
+    /// the user closes it or presses one. Zed closes a message without actions
+    /// after a few seconds by default. Gives the request whose response says
+    /// which was pressed.
+    pub fn show_card(
+        &self,
+        kind: MessageType,
+        message: &str,
+        actions: &[&str],
+    ) -> Result<RequestId, Error> {
+        let id = RequestId::from(format!("translation-card-{}", Uuid::new_v4()));
+        let actions: Vec<_> = actions.iter().map(|title| json!({"title":title})).collect();
+        self.send_request(
+            id.clone(),
+            "window/showMessageRequest",
+            json!({"type":kind,"message":message,"actions":actions}),
+            Purpose::Card,
+        )?;
+        Ok(id)
     }
 
     pub fn inform(&self, message: &str) -> Result<(), Error> {

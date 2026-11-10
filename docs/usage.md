@@ -44,6 +44,28 @@ A translation is model output. Text in the source that addresses the model can m
 
 Reopening the same cached tab translation reuses its temporary file and focuses that document. If the file was deleted or its saved contents changed, the server creates a fresh file without overwriting it. A newly translated result gets a separate file. Temporary files are still removed on server exit; copies saved with Save As are preserved.
 
+## CodeLens
+
+With `"code_lens": "on"` in Zed's settings, the server shows short commands on a line above text. Zed's default is `"off"`. Zed shows the commands of one line together, separated by `|`.
+
+| Where | Line |
+| --- | --- |
+| A code comment with no translation | `Translate \| Settings` |
+| A translated range | The first line of the translation, up to 72 characters, then `Settings` in code |
+| A failed range | `Translation failed \| Retry`, then `Settings` in code |
+| A range being translated | `Translating… \| Cancel`, then `Settings` in code |
+| Above the first line of Markdown and Plain Text | `Translation LSP: Translate in tab \| Auto-translate: On \| <account menu> \| Zed settings` |
+
+`Translate` translates the comment as `Translate selection to …` does, and appears with a provider ready and `selection_action` on. Translated, failed, and running ranges come from comment Hover, selections, and `Translate`; tab translations get no line. Editing the document removes the lines of the ranges whose translations it invalidates.
+
+Click the first line of a translation to read all of it in a card, or `Translation failed` to read the reason. The card stays until you close it. Its `Retry translating this text` button translates the range again. Zed's copy button on the card copies the text as Markdown, with backslashes before symbols and `---` lines before and after it.
+
+`Translate in tab` translates the whole document as `Translate document to … and open in tab` does. It appears with a provider ready and `document_action` on, in a client that supports `window/showDocument`. The account menu item is the provider's account menu, such as `ChatGPT account…`. `Zed settings` opens Zed's settings file, also only in a client that supports `window/showDocument`.
+
+`Settings` opens a menu with the same items: `Turn off automatic translation` or `Turn on automatic translation`, the account menu, and `Open Zed settings file`. Turning automatic translation off stops comment Hover and automatic Markdown selection from starting translations until the language server restarts, and cancels the translations they started that nothing else asked for. Translations already finished still appear on Hover, and `Translate`, Code Actions, and tab translations keep working. `Auto-translate: On` above Markdown and Plain Text turns it off the same way, and then reads `Auto-translate: Off`.
+
+In a file with many comments, each comment gets a line. With [`features.comment_lens`](configuration.md#features) set to `false`, comments without a translation, a failure, or one in progress get no line, and the menu moves above the first line, as in Markdown.
+
 ## Status and notifications
 
 While translation is queued or running, Zed shows a spinner and text directly in the left status bar. `Queued: 1` means one queued translation. `Translating: 1, queued: 0` means one translation is running with none queued. Requests for the same range count as one translation. Its tab translation counts separately with `provider.document`, and with the Anthropic API, OpenAI API, and OpenAI-compatible providers when the range request was already sent. Other language-server activity can take priority in this shared area.

@@ -143,7 +143,7 @@ fn render(term: &str, entry: &Entry) -> Option<String> {
 }
 
 /// `text` on one line as Markdown that shows it as written.
-fn inline(text: &str) -> String {
+pub(crate) fn inline(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut markdown = String::with_capacity(text.len());
     let mut leading_digits = true;

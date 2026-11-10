@@ -192,6 +192,27 @@ impl Document {
         ))
     }
 
+    /// The ranges of the comment groups with words in them, in order.
+    pub fn comment_ranges(&mut self, uri: &Uri, limit: Duration) -> Vec<Range> {
+        self.read_comments(uri, limit);
+        let (Some(indexed), Reading::Done(comments)) = (self.text.as_ref(), &self.comments) else {
+            return Vec::new();
+        };
+        let text = indexed.as_str();
+        comments
+            .groups(text)
+            .into_iter()
+            .filter(|group| !comments.body(text, group.clone()).trim().is_empty())
+            .filter_map(|group| {
+                let bytes = comments.range(group);
+                Some(Range::new(
+                    indexed.position(bytes.start).ok()?,
+                    indexed.position(bytes.end).ok()?,
+                ))
+            })
+            .collect()
+    }
+
     pub fn translation_input(
         &mut self,
         uri: &Uri,
@@ -239,6 +260,20 @@ mod tests {
     use super::*;
 
     const LIMIT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn comment_ranges_list_the_groups_with_words_in_order() {
+        let uri: Uri = "untitled:sample".parse().unwrap();
+        let text = "// first\n// second\nfn f() {}\n//\n/* third */ /* open";
+        let mut document = Document::new(1, 1, "rust".into(), text.into());
+        assert_eq!(
+            document.comment_ranges(&uri, LIMIT),
+            [
+                Range::new(Position::new(0, 0), Position::new(1, 9)),
+                Range::new(Position::new(4, 0), Position::new(4, 11)),
+            ]
+        );
+    }
 
     #[test]
     fn comment_cache_is_lazy_and_invalidated_by_edits_and_broken_sync() {

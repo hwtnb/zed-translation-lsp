@@ -1,15 +1,26 @@
 //! The commands that Code Actions carry and `workspace/executeCommand` runs.
 
-use super::*;
+use super::{
+    menu::{RETRY, card_message},
+    *,
+};
 
 pub(super) enum ServerCommand {
     TranslateSelection(TranslationTarget),
     Retry(TranslationTarget),
+    /// Shows the translation or failure of a range in a card.
+    Show(TranslationTarget),
     OpenTab(TranslationTarget),
     Cancel(u64),
     CancelAll,
     /// The account menu, or an account command of the provider.
     Account(String),
+    /// The server menu.
+    Menu,
+    /// Turns the automatic features back to the settings (`true`) or off.
+    Automatic(bool),
+    /// Opens Zed's settings file.
+    OpenSettings,
 }
 
 impl ServerCommand {
@@ -34,6 +45,7 @@ impl ServerCommand {
         match command.as_str() {
             COMMAND => Ok(Self::TranslateSelection(target(arguments)?)),
             RETRY_COMMAND => Ok(Self::Retry(target(arguments)?)),
+            SHOW_COMMAND => Ok(Self::Show(target(arguments)?)),
             DOCUMENT_COMMAND => Ok(Self::OpenTab(target(arguments)?)),
             CANCEL_COMMAND => Ok(Self::Cancel(parse(one(
                 arguments,
@@ -42,6 +54,15 @@ impl ServerCommand {
             CANCEL_ALL_COMMAND => {
                 none(&arguments, "Cancel all takes no arguments")?;
                 Ok(Self::CancelAll)
+            }
+            MENU_COMMAND | AUTOMATIC_OFF_COMMAND | AUTOMATIC_ON_COMMAND | OPEN_SETTINGS_COMMAND => {
+                none(&arguments, "Menu commands take no arguments")?;
+                Ok(match command.as_str() {
+                    MENU_COMMAND => Self::Menu,
+                    AUTOMATIC_OFF_COMMAND => Self::Automatic(false),
+                    AUTOMATIC_ON_COMMAND => Self::Automatic(true),
+                    _ => Self::OpenSettings,
+                })
             }
             _ if P::capabilities().account_menu.is_some()
                 && (command == SETTINGS_COMMAND
@@ -65,10 +86,15 @@ impl ServerCommand {
         let (command, arguments) = match self {
             Self::TranslateSelection(target) => (COMMAND, Some(vec![to_value(target)?])),
             Self::Retry(target) => (RETRY_COMMAND, Some(vec![to_value(target)?])),
+            Self::Show(target) => (SHOW_COMMAND, Some(vec![to_value(target)?])),
             Self::OpenTab(target) => (DOCUMENT_COMMAND, Some(vec![to_value(target)?])),
             Self::Cancel(ticket) => (CANCEL_COMMAND, Some(vec![to_value(ticket)?])),
             Self::CancelAll => (CANCEL_ALL_COMMAND, Some(Vec::new())),
             Self::Account(command) => (command.as_str(), None),
+            Self::Menu => (MENU_COMMAND, None),
+            Self::Automatic(true) => (AUTOMATIC_ON_COMMAND, None),
+            Self::Automatic(false) => (AUTOMATIC_OFF_COMMAND, None),
+            Self::OpenSettings => (OPEN_SETTINGS_COMMAND, None),
         };
         Ok(CodeAction {
             title: title.clone(),
@@ -90,9 +116,13 @@ impl<P: TranslationProvider> Server<P> {
         id: RequestId,
         params: ExecuteCommandParams,
     ) -> RequestResult<Option<Value>> {
+        if params.command == LENS_COMMAND {
+            return Ok(Some(Value::Null));
+        }
         let command = ServerCommand::parse::<P>(params)?;
         if let ServerCommand::TranslateSelection(target)
         | ServerCommand::Retry(target)
+        | ServerCommand::Show(target)
         | ServerCommand::OpenTab(target) = &command
             && target.target_language != self.settings.target_language
         {
@@ -111,6 +141,20 @@ impl<P: TranslationProvider> Server<P> {
                 Ok(Some(Value::Null))
             }
             ServerCommand::Account(command) => self.start_administration(connection, id, command),
+            ServerCommand::Menu => self.start_administration(connection, id, MENU_COMMAND.into()),
+            ServerCommand::Automatic(on) => {
+                self.set_automatic(connection, on)?;
+                Ok(Some(Value::Null))
+            }
+            ServerCommand::OpenSettings => {
+                if !self.ui.capabilities.show_document {
+                    return Err(failure(
+                        ErrorCode::RequestFailed,
+                        "The editor does not support opening files",
+                    ));
+                }
+                self.start_administration(connection, id, OPEN_SETTINGS_COMMAND.into())
+            }
             ServerCommand::OpenTab(target) => {
                 if !self.ui.capabilities.show_document {
                     return Err(failure(
@@ -137,6 +181,32 @@ impl<P: TranslationProvider> Server<P> {
                 self.queue(id, target, PendingReply::Command)
             }
             ServerCommand::Retry(target) => self.queue(id, target, PendingReply::Retry),
+            ServerCommand::Show(target) => {
+                let gone = || {
+                    failure(
+                        ErrorCode::ContentModified,
+                        "The translation is no longer available",
+                    )
+                };
+                if !self.target_is_current(&target) {
+                    return Err(gone());
+                }
+                self.check_cache()?;
+                let (kind, message) = match self
+                    .cache
+                    .message(&target.uri, target.range)
+                    .ok_or_else(gone)?
+                {
+                    Ok(translation) => (MessageType::INFO, translation),
+                    Err(reason) => (MessageType::ERROR, reason),
+                };
+                let card = self
+                    .ui
+                    .show_card(kind, &card_message(&message), &[RETRY])
+                    .map_err(provider_failure)?;
+                self.cards.insert(card, target);
+                Ok(Some(Value::Null))
+            }
         }
     }
 

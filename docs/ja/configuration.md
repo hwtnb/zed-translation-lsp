@@ -26,7 +26,8 @@
           "comment_hover": true,
           "automatic_selection": true,
           "selection_action": true,
-          "document_action": true
+          "document_action": true,
+          "comment_lens": true
         },
         "translation_limits": {
           "input_kib": {
@@ -106,7 +107,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 
 ## 機能の切り替え
 
-`features` は、翻訳を始める機能を、すべての言語または言語ごとに切り替えます。値はすべて真偽値です。
+`features` は、翻訳を始める機能とコメントのCodeLensの行を、すべての言語または言語ごとに切り替えます。値はすべて真偽値です。
 
 | `features` 内の設定 | 切り替える機能 | 言語ID |
 | --- | --- | --- |
@@ -114,6 +115,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | `automatic_selection` | 安定したMarkdownの選択から翻訳を始める。 | `markdown` |
 | `selection_action` | コードアクションの `Translate selection to …`。 | 下の表のすべての言語ID |
 | `document_action` | コードアクションの `Translate selection to … and open in tab` と `Translate document to … and open in tab`。 | `markdown`、`plaintext` |
+| `comment_lens` | 訳文、失敗、翻訳中のどれもないコメントの[CodeLens](usage.md#codelens)の行。 | `rust`、`javascript`、`typescript`、`typescriptreact`、`csharp`、`c`、`cpp`、`python`、`go`、`java`、`kotlin`、`swift`、`ruby`、`php`、`html`、`vue`、`svelte`、`astro`、`xml`、`css`、`sql`、`lua`、`zig`、`proto`、`graphql`、`json`、`jsonc`、`yaml`、`toml`、`shellscript`、`powershell`、`dockerfile`、`dockercompose`、`makefile` |
 
 `features`、その中の各設定、`languages`、`languages` の中の各言語、言語の中の各設定は、どれも省略できます。ある言語の機能には、`languages.<言語ID>` の値を使います。その値がなければ `features` の直下の値を使い、それもなければ有効です。
 
@@ -132,7 +134,7 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 }
 ```
 
-`comment_hover` を止めた言語では、コメントにホバーしても翻訳を始めません。`Translate selection to …` で始めた翻訳は、ホバーに表示します。`selection_action` または `document_action` を止めた言語では、そのコードアクションを一覧に出しません。取り消し、再試行、アカウントメニューのコードアクションは変わりません。
+`comment_hover` を止めた言語では、コメントにホバーしても翻訳を始めません。`Translate selection to …` で始めた翻訳は、ホバーに表示します。`selection_action` または `document_action` を止めた言語では、そのコードアクションを一覧に出しません。取り消し、再試行、アカウントメニューのコードアクションは変わりません。`comment_lens` を止めた言語では、サーバーのメニューをファイルの1行目の上に表示します。
 
 `languages` のキーは次の言語IDで、小文字で書きます。
 

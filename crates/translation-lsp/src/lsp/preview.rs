@@ -1,6 +1,8 @@
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 use uuid::Uuid;
 
+use crate::providers::dictionary::inline;
+
 pub(super) mod cache;
 pub(super) mod files;
 
@@ -59,6 +61,34 @@ impl<C> Preview<C> {
             range: Some(self.range),
         })
     }
+
+    /// The translation as the Markdown of an editor message. Zed wraps the
+    /// lines of a message but not those of a code block in it, so the text is
+    /// escaped instead of fenced.
+    pub fn message(&self) -> String {
+        if self.entry {
+            self.translation.clone()
+        } else {
+            plain_text(&self.translation)
+        }
+    }
+}
+
+/// `text` as Markdown that shows the words of each line as written, with the
+/// line breaks of `text`.
+fn plain_text(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = inline(line);
+            // A line of `=` under a line of text would make it a heading.
+            if line.starts_with('=') {
+                format!("\\{line}")
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("  \n")
 }
 
 fn fenced_text(text: &str) -> String {
@@ -79,6 +109,26 @@ mod tests {
     use crate::providers::chatgpt::test_support::Fixture;
 
     use super::*;
+
+    #[test]
+    fn messages_escape_markdown_and_keep_line_breaks() {
+        let text = "**retry** `count`\n\n===\n- item\nhttps://example.com";
+        assert_eq!(
+            plain_text(text),
+            "\\*\\*retry\\*\\* \\`count\\`  \n  \n\\===  \n\\- item  \nhttps:\u{2060}//example.com"
+        );
+        let markdown = plain_text(text);
+        let mut parsed = Parser::new(&markdown).filter_map(|event| match event {
+            Event::Text(text) => Some(text.into_string()),
+            Event::HardBreak => Some("\n".into()),
+            Event::Start(Tag::Heading { .. } | Tag::List(_) | Tag::CodeBlock(_)) => {
+                panic!("Unexpected {event:?}")
+            }
+            _ => None,
+        });
+        assert_eq!(parsed.next().unwrap(), "*");
+        assert!(parsed.any(|text| text == "\n"));
+    }
 
     #[test]
     fn fences_preserve_whitespace_identifiers_and_markdown() {

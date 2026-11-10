@@ -30,6 +30,7 @@ async fn activity_cancellation_leaves_account_picker_and_its_deadline_alive() {
                 show_document: true,
                 work_done_progress: true,
                 server_status: true,
+                lens_refresh: false,
             },
         ),
     )

@@ -44,6 +44,28 @@ Markdownの訳文は一時的な `.md` ファイルとして開きます。コ�
 
 同じキャッシュ済み翻訳を再びタブに開く場合は、一時ファイルを再利用してその文書へ移動します。ファイルが削除された場合や保存済みの内容が変更された場合は、既存の内容を上書きせず新しいファイルを作ります。新しく翻訳した結果は別ファイルになります。一時ファイルはサーバー終了時に削除し、「別名で保存」で保存したコピーは残します。
 
+## CodeLens
+
+Zedの設定で `"code_lens": "on"` にすると、本文の上の行に短いコマンドを表示します。Zedの既定値は `"off"` です。Zedは同じ行のコマンドを `|` で区切って1行に並べます。
+
+| 場所 | 表示する行 |
+| --- | --- |
+| 訳文のないコードのコメント | `Translate \| Settings` |
+| 翻訳済みの範囲 | 訳文の1行目（72文字まで）と、コードでは `Settings` |
+| 翻訳に失敗した範囲 | `Translation failed \| Retry` と、コードでは `Settings` |
+| 翻訳中の範囲 | `Translating… \| Cancel` と、コードでは `Settings` |
+| Markdownとプレーンテキストの1行目の上 | `Translation LSP: Translate in tab \| Auto-translate: On \| <アカウントメニュー> \| Zed settings` |
+
+`Translate` は、`Translate selection to …` と同じようにコメントを翻訳します。プロバイダーが使える状態で、`selection_action` が有効なときに表示します。翻訳済み、失敗、翻訳中の範囲は、コメントのホバー、選択、`Translate` で翻訳した範囲です。タブに開く翻訳には行を表示しません。文書を編集すると、訳文が無効になった範囲の行は消えます。
+
+訳文の1行目をクリックすると訳文の全体を、`Translation failed` をクリックすると失敗の理由をカードに表示します。カードは閉じるまで残ります。カードの `Retry translating this text` ボタンで、その範囲をもう一度翻訳します。カードにあるZedのコピーボタンは、本文をMarkdownのままコピーします。記号の前のバックスラッシュと、前後の `---` の行も含みます。
+
+`Translate in tab` は、`Translate document to … and open in tab` と同じように文書全体を翻訳します。プロバイダーが使える状態で `document_action` が有効なときに、`window/showDocument` に対応したクライアントで表示します。アカウントメニューの項目は、`ChatGPT account…` などのプロバイダーのアカウントメニューです。`Zed settings` はZedの設定ファイルを開きます。これも `window/showDocument` に対応したクライアントでだけ表示します。
+
+`Settings` は、同じ項目のメニューを開きます。項目は `Turn off automatic translation` または `Turn on automatic translation`、アカウントメニュー、`Open Zed settings file` です。自動翻訳をオフにすると、言語サーバーを再起動するまで、コメントのホバーとMarkdownの自動選択では翻訳を始めません。それらが始めた翻訳のうち、ほかから求められていないものは取り消します。翻訳済みの訳文はホバーに表示し、`Translate`、コードアクション、タブに開く翻訳はそのまま使えます。Markdownとプレーンテキストの上の `Auto-translate: On` でも同じようにオフにでき、表示は `Auto-translate: Off` に変わります。
+
+コメントの多いファイルでは、コメントごとに行が増えます。[`features.comment_lens`](configuration.md#機能の切り替え) を `false` にすると、訳文、失敗、翻訳中のどれもないコメントには行を表示せず、メニューをMarkdownと同じように1行目の上に表示します。
+
 ## 状態表示と通知
 
 翻訳の待機・実行中は、ステータスバー左側にスピナー（回転する処理中の印）と文字を直接表示します。`Queued: …` は待機中の件数、`Translating: …, queued: …` は実行中と待機中の件数です。同じ範囲への複数の要求は一件と数えます。`provider.document` を設定している場合と、Anthropic API、OpenAI API、OpenAI互換のプロバイダーで範囲翻訳の要求を送った後の場合は、その範囲のタブ翻訳を別に数えます。この欄はほかの言語サーバーと共有するため、別の活動が優先されることがあります。

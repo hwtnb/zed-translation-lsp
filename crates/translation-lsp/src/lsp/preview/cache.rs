@@ -1,4 +1,4 @@
-use super::{Preview, fenced_text};
+use super::{Preview, fenced_text, plain_text};
 use crate::{config::limits::TranslationLimits, providers::Output};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range, Uri};
 
@@ -62,6 +62,12 @@ impl<C: PartialEq> Stored<C> {
     fn is_failure(&self) -> bool {
         matches!(self, Self::Failure { .. })
     }
+}
+
+/// What a CodeLens tells of a range.
+pub(crate) enum Lens<'a> {
+    Translated(&'a str),
+    Failed,
 }
 
 struct Entry<C> {
@@ -158,6 +164,37 @@ impl<C: Clone + PartialEq> Cache<C> {
         })
         .and_then(|stored| stored.translation(output))
         .cloned()
+    }
+
+    /// The message that shows the newest range translation or failure of
+    /// exactly `range`: `Ok` with a translation, `Err` with the reason of a
+    /// failure.
+    pub fn message(&mut self, uri: &Uri, range: Range) -> Option<Result<String, String>> {
+        let stored = self.use_newest(uri, |stored| {
+            stored.range() == range && stored.translation(Output::Document).is_none()
+        })?;
+        Some(match stored {
+            Stored::Translation(_, preview) => Ok(preview.message()),
+            Stored::Failure { message, .. } => Err(plain_text(message)),
+        })
+    }
+
+    /// The range translations and failures of a document, by their position.
+    pub fn lenses(&self, uri: &Uri) -> Vec<(Range, Lens<'_>)> {
+        let mut lenses: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| &entry.uri == uri)
+            .filter_map(|entry| match &entry.stored {
+                Stored::Translation(Output::Range, preview) => {
+                    Some((preview.range, Lens::Translated(&preview.translation)))
+                }
+                Stored::Failure { range, .. } => Some((*range, Lens::Failed)),
+                Stored::Translation(Output::Document, _) => None,
+            })
+            .collect();
+        lenses.sort_by_key(|(range, _)| range.start);
+        lenses
     }
 
     pub fn failed_range(&self, uri: &Uri, position: Position) -> Option<Range> {

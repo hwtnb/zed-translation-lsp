@@ -37,7 +37,7 @@ const NOT_SET_UP: &str = concat!(
     menu!(),
     "\" from the code actions to choose one"
 );
-const NO_SETTINGS_FILE: &str =
+pub(crate) const NO_SETTINGS_FILE: &str =
     "Could not open Zed's settings file. Run zed: open settings file from the Command Palette";
 /// The setup section of the README of this version.
 const GUIDE: &str = concat!(
@@ -122,7 +122,7 @@ impl TranslationProvider for UnsetProvider {
 }
 
 /// Where Zed keeps the user's settings, as Zed itself locates them.
-fn settings_file() -> Option<PathBuf> {
+pub(crate) fn settings_file() -> Option<PathBuf> {
     #[cfg(windows)]
     let directory = dirs::config_dir()?.join("Zed");
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]

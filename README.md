@@ -196,6 +196,7 @@ These settings sit next to `provider` in `initialization_options`. Each can be o
 | `Translate selection to …` | To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. |
 | Word lookup | Select up to three words or one identifier on one line, such as `retain` or `retain_completed`. Hover shows a dictionary entry instead of a translation. The DeepL API and Google Cloud Translation translate the selection instead. |
 | `… and open in tab` | In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. |
+| CodeLens | With `"code_lens": "on"` in Zed's settings, comments get `Translate \| Settings`, and translated ranges show the first line of the translation; click it to read all of it. Markdown and Plain Text get a menu line above the first line. |
 | Cancel | To stop one accepted translation, place the cursor or a selection in its range and choose `Cancel translation of lines …` from Code Actions. `Cancel all translations` stops all translation work without canceling an account menu. |
 
 The rules of these operations are described under [Usage](docs/usage.md).

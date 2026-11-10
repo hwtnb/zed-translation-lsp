@@ -337,6 +337,7 @@ impl<P: TranslationProvider> Server<P> {
             }
             _ => (),
         }
+        self.ui.refresh_lenses()?;
         for (id, pending) in self.scheduler.take_waiters(ticket) {
             let response = match &result {
                 Err(error) => Err(error.clone()),

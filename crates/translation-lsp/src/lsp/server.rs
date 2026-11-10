@@ -1,6 +1,7 @@
 mod administration;
 mod commands;
 mod lifecycle;
+mod menu;
 mod scheduler;
 mod selection;
 mod translation;
@@ -29,16 +30,20 @@ use futures_util::{StreamExt, stream};
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CancelParams, CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams,
-    CodeActionProviderCapability, Command, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, MarkupContent,
-    MarkupKind, NumberOrString, Position, PositionEncodingKind, Range, ServerCapabilities,
+    CodeActionProviderCapability, CodeLens, CodeLensOptions, CodeLensParams, Command,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    ExecuteCommandOptions, ExecuteCommandParams, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, MarkupContent, MarkupKind,
+    MessageType, NumberOrString, Position, PositionEncodingKind, Range, ServerCapabilities,
     ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
     WorkDoneProgressCancelParams,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Notification,
     },
-    request::{CodeActionRequest, ExecuteCommand, HoverRequest, Request as LspRequest, Shutdown},
+    request::{
+        CodeActionRequest, CodeLensRequest, ExecuteCommand, HoverRequest, Request as LspRequest,
+        Shutdown,
+    },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -74,7 +79,7 @@ use super::{
     document::Document,
     preview::{
         Preview,
-        cache::{Cache, Stored, overlaps},
+        cache::{Cache, Lens, Stored, overlaps},
         files::PreviewFiles,
     },
     ui::{Purpose, Ui, UiCapabilities},
@@ -85,8 +90,23 @@ type RequestResult<T> = Result<T, ResponseError>;
 
 const COMMAND: &str = "translation-lsp.translate-selection";
 const RETRY_COMMAND: &str = "translation-lsp.retry";
+/// The command of a CodeLens that only shows a text.
+const LENS_COMMAND: &str = "translation-lsp.lens";
+/// The command of a CodeLens that shows the whole translation or failure of
+/// its range in an editor message.
+const SHOW_COMMAND: &str = "translation-lsp.show-translation";
 const DOCUMENT_COMMAND: &str = "translation-lsp.open-translation";
 const SETTINGS_COMMAND: &str = "translation-lsp.settings";
+/// The command of the CodeLens that opens the server menu.
+const MENU_COMMAND: &str = "translation-lsp.menu";
+/// Turns comment Hover and automatic selection translation off until the
+/// server stops.
+const AUTOMATIC_OFF_COMMAND: &str = "translation-lsp.turn-off-automatic-translation";
+/// Turns comment Hover and automatic selection translation back to what the
+/// settings say.
+const AUTOMATIC_ON_COMMAND: &str = "translation-lsp.turn-on-automatic-translation";
+/// Opens Zed's settings file in the editor.
+const OPEN_SETTINGS_COMMAND: &str = "translation-lsp.open-zed-settings";
 const ACTION_KIND: &str = "translation";
 const TRANSLATION_READY: &str = "Translation ready. Hover over the selected text to view it.";
 const WORKER_EVENT_CHANNEL_CAPACITY: usize = 8;
@@ -140,6 +160,12 @@ struct Server<P: TranslationProvider> {
     jobs: Option<JobSender<P::Context>>,
     worker: Option<thread::JoinHandle<()>>,
     admin_jobs: Option<JobSender<P::Context>>,
+    /// The range translations in progress when the editor was last asked to
+    /// request CodeLenses again.
+    lens_tickets: Vec<u64>,
+    /// The ranges of the cards that show translations, by the requests that
+    /// tell which button the user pressed.
+    cards: HashMap<RequestId, TranslationTarget>,
 }
 
 pub fn run_stdio() -> ServerResult<()> {
@@ -335,10 +361,19 @@ pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
                 resolve_provider: Some(false),
                 ..Default::default()
             })),
+            code_lens_provider: Some(CodeLensOptions {
+                resolve_provider: Some(false),
+            }),
             execute_command_provider: Some(ExecuteCommandOptions {
                 commands: [
                     COMMAND.to_owned(),
                     RETRY_COMMAND.to_owned(),
+                    LENS_COMMAND.to_owned(),
+                    SHOW_COMMAND.to_owned(),
+                    MENU_COMMAND.to_owned(),
+                    AUTOMATIC_OFF_COMMAND.to_owned(),
+                    AUTOMATIC_ON_COMMAND.to_owned(),
+                    OPEN_SETTINGS_COMMAND.to_owned(),
                     DOCUMENT_COMMAND.to_owned(),
                     CANCEL_COMMAND.to_owned(),
                     CANCEL_ALL_COMMAND.to_owned(),
@@ -416,6 +451,8 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
                         Some((Purpose::OpenDocument, response)) => {
                             server.preview_files.response(&server.ui, &response);
                         }
+                        Some((Purpose::Card, response)) => server.card_response(response)?,
+                        Some((Purpose::RefreshLenses, _)) => (),
                         None => (),
                     },
                 },
@@ -427,6 +464,7 @@ pub(crate) fn serve_initialized<P: TranslationProvider>(
             }
             server.dispatch().map_err(|e| e.message)?;
             server.publish_activity();
+            server.refresh_running_lenses()?;
         }
         Ok(())
     })();
@@ -510,6 +548,8 @@ impl<P: TranslationProvider> Server<P> {
             jobs: Some(sender),
             worker: Some(worker),
             admin_jobs: Some(admin_sender),
+            lens_tickets: Vec::new(),
+            cards: HashMap::new(),
         })
     }
 
@@ -634,6 +674,10 @@ impl<P: TranslationProvider> Server<P> {
         let result = match request.method.as_str() {
             CodeActionRequest::METHOD => parse(request.params)
                 .and_then(|params| self.code_actions(params))
+                .and_then(to_value)
+                .map(Some),
+            CodeLensRequest::METHOD => parse(request.params)
+                .and_then(|params| self.code_lenses(params))
                 .and_then(to_value)
                 .map(Some),
             HoverRequest::METHOD => {
@@ -781,6 +825,160 @@ impl<P: TranslationProvider> Server<P> {
         }
         translations.extend(actions);
         Ok(translations)
+    }
+
+    /// The CodeLenses of a document. Markdown and Plain Text get the menu on
+    /// a line above the first one, with the tab translation of the document.
+    /// In code, a comment gets Translate until it has a translation, a
+    /// failure, or one in progress, and each comment ends with Settings, which
+    /// opens the menu. When `comment_lens` is off, only those comments get a
+    /// line, and the menu takes the line above the first one, as in Markdown.
+    /// A translation shows its first line, which shows all of it; a failure,
+    /// Retry; and one in progress, Cancel.
+    fn code_lenses(&mut self, params: CodeLensParams) -> RequestResult<Vec<CodeLens>> {
+        let uri = params.text_document.uri;
+        let limit = Duration::from_millis(self.settings.comment_parse_timeout_ms);
+        let Some(document) = self.documents.get_mut(&uri) else {
+            return Ok(Vec::new());
+        };
+        let prose = document.language.is_some_and(Language::is_prose);
+        let comment_lines = !prose
+            && self
+                .settings
+                .features
+                .enables(Feature::CommentLens, document.language);
+        let comments = if !comment_lines {
+            Vec::new()
+        } else {
+            let ranges = document.comment_ranges(&uri, limit);
+            report_comment_failure(&self.ui, &uri, document)?;
+            ranges
+        };
+        let document = &self.documents[&uri];
+        let ready = self.provider.context().is_ok();
+        let translates = ready
+            && self
+                .settings
+                .features
+                .enables(Feature::SelectionAction, document.language);
+        let target = |range| {
+            to_value(TranslationTarget {
+                uri: uri.clone(),
+                version: document.version,
+                session: document.session,
+                range,
+                target_language: self.settings.target_language.clone(),
+            })
+            .map(|target| Some(vec![target]))
+        };
+        // Zed shows the CodeLenses of one line on one line, separated by `|`.
+        let mut lenses = Vec::new();
+        if ready {
+            for (range, kind) in self.cache.lenses(&uri) {
+                match kind {
+                    Lens::Translated(translation) => {
+                        lenses.push(lens(
+                            range,
+                            lens_title(translation),
+                            SHOW_COMMAND,
+                            target(range)?,
+                        ));
+                    }
+                    Lens::Failed => {
+                        lenses.push(lens(
+                            range,
+                            "Translation failed".into(),
+                            SHOW_COMMAND,
+                            target(range)?,
+                        ));
+                        lenses.push(lens(range, "Retry".into(), RETRY_COMMAND, target(range)?));
+                    }
+                }
+            }
+            let mut running: Vec<_> = self
+                .scheduler
+                .translations()
+                .iter()
+                .filter(|(_, work)| {
+                    work.owners.range_output()
+                        && work.target.uri == uri
+                        && self.target_is_current(&work.target)
+                })
+                .collect();
+            running.sort_by_key(|(ticket, _)| **ticket);
+            for (&ticket, work) in running {
+                let range = work.target.range;
+                lenses.push(lens(range, "Translating…".into(), LENS_COMMAND, None));
+                lenses.push(lens(
+                    range,
+                    "Cancel".into(),
+                    CANCEL_COMMAND,
+                    Some(vec![to_value(ticket)?]),
+                ));
+            }
+        }
+        if prose {
+            let tab = match document.full_range() {
+                Some(range)
+                    if ready
+                        && self.ui.capabilities.show_document
+                        && document.supports_document_preview()
+                        && self
+                            .settings
+                            .features
+                            .enables(Feature::DocumentAction, document.language) =>
+                {
+                    target(range)?
+                }
+                _ => None,
+            };
+            let mut menu = self.menu_lenses(tab);
+            menu.append(&mut lenses);
+            return Ok(menu);
+        }
+        let mut ranges: Vec<Range> = Vec::new();
+        for lens in &lenses {
+            if !ranges.contains(&lens.range) {
+                ranges.push(lens.range);
+            }
+        }
+        for range in comments {
+            if !ranges.contains(&range) {
+                if translates {
+                    lenses.push(lens(range, "Translate".into(), COMMAND, target(range)?));
+                }
+                ranges.push(range);
+            }
+        }
+        lenses.extend(
+            ranges
+                .into_iter()
+                .map(|range| lens(range, "Settings".into(), MENU_COMMAND, None)),
+        );
+        if !comment_lines {
+            let mut menu = self.menu_lenses(None);
+            menu.append(&mut lenses);
+            return Ok(menu);
+        }
+        Ok(lenses)
+    }
+
+    /// Asks the editor for CodeLenses again when the range translations in
+    /// progress change, so that their Cancel lenses come and go.
+    fn refresh_running_lenses(&mut self) -> ServerResult<()> {
+        let mut tickets: Vec<u64> = self
+            .scheduler
+            .translations()
+            .iter()
+            .filter(|(_, work)| work.owners.range_output())
+            .map(|(ticket, _)| *ticket)
+            .collect();
+        tickets.sort_unstable();
+        if tickets != self.lens_tickets {
+            self.lens_tickets = tickets;
+            self.ui.refresh_lenses()?;
+        }
+        Ok(())
     }
 
     fn hover(&mut self, id: RequestId, params: HoverParams) -> RequestResult<Option<Value>> {
@@ -945,6 +1143,30 @@ impl<P: TranslationProvider> Drop for Server<P> {
 }
 
 /// The name of the file as the user sees it, not as the URI encodes it.
+/// The first line of a translation, cut to fit above a line of code.
+/// A CodeLens above `range` that runs `command`.
+fn lens(range: Range, title: String, command: &str, arguments: Option<Vec<Value>>) -> CodeLens {
+    CodeLens {
+        range,
+        command: Some(Command {
+            title,
+            command: command.into(),
+            arguments,
+        }),
+        data: None,
+    }
+}
+
+fn lens_title(translation: &str) -> String {
+    const LENGTH: usize = 72;
+    let line = translation.lines().next().unwrap_or_default();
+    if line.chars().nth(LENGTH).is_some() {
+        format!("{}…", line.chars().take(LENGTH).collect::<String>())
+    } else {
+        line.to_owned()
+    }
+}
+
 fn file_name(uri: &Uri) -> String {
     let name = uri
         .path()

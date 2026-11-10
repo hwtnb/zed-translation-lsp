@@ -86,6 +86,12 @@ async fn anthropic_declares_automatic_selection_and_the_key_menu() {
         [
             COMMAND,
             RETRY_COMMAND,
+            LENS_COMMAND,
+            SHOW_COMMAND,
+            MENU_COMMAND,
+            AUTOMATIC_OFF_COMMAND,
+            AUTOMATIC_ON_COMMAND,
+            OPEN_SETTINGS_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
             CANCEL_ALL_COMMAND,

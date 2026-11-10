@@ -2,7 +2,10 @@ use std::future::Future;
 
 use tokio::time::sleep_until;
 
-use crate::providers::{Intent, Source};
+use crate::providers::{
+    Intent, Source,
+    unset::{NO_SETTINGS_FILE, settings_file},
+};
 
 use super::*;
 
@@ -16,6 +19,16 @@ pub(super) struct Job<C> {
 
 pub(super) enum Task<C> {
     AccountMenu {
+        ui: Ui,
+    },
+    /// A menu of server commands, each a title and the command it runs.
+    Menu {
+        ui: Ui,
+        message: String,
+        choices: Vec<(String, String)>,
+    },
+    /// Opens Zed's settings file in the editor.
+    OpenSettings {
         ui: Ui,
     },
     Translation {
@@ -45,8 +58,10 @@ pub(super) struct Completion<T> {
 
 /// What an account operation gives.
 pub(super) enum Administered {
-    /// The command chosen from the account menu, or none.
+    /// The command chosen from the account menu or another menu, or none.
     AccountChoice(Option<String>),
+    /// An operation that has nothing to tell.
+    Done,
     /// A message for the user.
     Message(String),
 }
@@ -169,6 +184,35 @@ pub(super) async fn run_job<P: TranslationProvider>(
                             .map(|command| command.command.to_owned())
                     }))
                 })
+            })
+            .await;
+            Finished::Administration(Completion { ticket, result })
+        }
+        Task::Menu {
+            ui,
+            message,
+            choices,
+        } => {
+            let result = until_deadline(&mut deadline, || true, async {
+                let titles: Vec<_> = choices.iter().map(|(title, _)| title.clone()).collect();
+                ui.choose(&message, &titles).await.map(|choice| {
+                    Administered::AccountChoice(choice.and_then(|title| {
+                        choices
+                            .into_iter()
+                            .find(|(choice, _)| *choice == title)
+                            .map(|(_, command)| command)
+                    }))
+                })
+            })
+            .await;
+            Finished::Administration(Completion { ticket, result })
+        }
+        Task::OpenSettings { ui } => {
+            let result = until_deadline(&mut deadline, || true, async {
+                let unopened = || ProviderError::failed(NO_SETTINGS_FILE);
+                let path = settings_file().ok_or_else(unopened)?;
+                ui.edit(&path).await.map_err(|_| unopened())?;
+                Ok(Administered::Done)
             })
             .await;
             Finished::Administration(Completion { ticket, result })

@@ -234,6 +234,23 @@ impl Comments {
         Some(group)
     }
 
+    /// Every group in order, as [`Comments::at`] finds them, which leaves out
+    /// unclosed blocks.
+    pub fn groups(&self, text: &str) -> Vec<Range<usize>> {
+        let mut groups = Vec::new();
+        let mut index = 0;
+        while index < self.0.len() {
+            match self.at(text, self.0[index].range.start) {
+                Some(group) if group.start == index => {
+                    index = group.end;
+                    groups.push(group);
+                }
+                _ => index += 1,
+            }
+        }
+        groups
+    }
+
     pub fn range(&self, group: Range<usize>) -> Range<usize> {
         self.0[group.start].range.start..self.0[group.end - 1].range.end
     }

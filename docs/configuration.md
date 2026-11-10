@@ -26,7 +26,8 @@ Add the following entry to `lsp` in your existing Zed settings. Choose a model a
           "comment_hover": true,
           "automatic_selection": true,
           "selection_action": true,
-          "document_action": true
+          "document_action": true,
+          "comment_lens": true
         },
         "translation_limits": {
           "input_kib": {
@@ -106,7 +107,7 @@ A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans
 
 ## Features
 
-`features` turns each way of starting a translation on or off, for every language or for one language. Every value is a boolean.
+`features` turns each way of starting a translation, and the CodeLens line on comments, on or off, for every language or for one language. Every value is a boolean.
 
 | Setting inside `features` | What it turns on or off | Language IDs |
 | --- | --- | --- |
@@ -114,6 +115,7 @@ A value that is an ISO 639 language code, alone or with subtags such as `zh-Hans
 | `automatic_selection` | Starting a translation after a stable Markdown selection. | `markdown` |
 | `selection_action` | The `Translate selection to …` Code Action. | Every language ID in the table below |
 | `document_action` | The `Translate selection to … and open in tab` and `Translate document to … and open in tab` Code Actions. | `markdown`, `plaintext` |
+| `comment_lens` | The [CodeLens](usage.md#codelens) line on a comment with no translation, failure, or translation in progress. | `rust`, `javascript`, `typescript`, `typescriptreact`, `csharp`, `c`, `cpp`, `python`, `go`, `java`, `kotlin`, `swift`, `ruby`, `php`, `html`, `vue`, `svelte`, `astro`, `xml`, `css`, `sql`, `lua`, `zig`, `proto`, `graphql`, `json`, `jsonc`, `yaml`, `toml`, `shellscript`, `powershell`, `dockerfile`, `dockercompose`, `makefile` |
 
 `features`, each setting inside it, `languages`, each language inside `languages`, and each setting of a language can be omitted. For a feature in a language, the value under `languages.<language ID>` applies. Without it, the value written directly inside `features` applies. Without that either, the feature is on.
 
@@ -132,7 +134,7 @@ The following example turns tab translations off in every language, and comment 
 }
 ```
 
-Where `comment_hover` is off, Hover over a comment starts no translation. A translation started by `Translate selection to …` still appears on Hover. Where `selection_action` or `document_action` is off, its Code Actions are not listed. The cancel, retry, and account menu Code Actions are not affected.
+Where `comment_hover` is off, Hover over a comment starts no translation. A translation started by `Translate selection to …` still appears on Hover. Where `selection_action` or `document_action` is off, its Code Actions are not listed. The cancel, retry, and account menu Code Actions are not affected. Where `comment_lens` is off, the server menu moves above the first line of the file.
 
 The keys of `languages` are the following language IDs, in lowercase:
 

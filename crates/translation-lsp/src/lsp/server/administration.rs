@@ -105,6 +105,7 @@ impl<P: TranslationProvider> Server<P> {
                 self.ui.inform(&message)?;
                 Ok(Value::Null)
             }
+            Ok(Administered::Done) => Ok(Value::Null),
             Err(error) => Err(provider_failure(error)),
         };
         if let Err(error) = &result {
@@ -113,8 +114,9 @@ impl<P: TranslationProvider> Server<P> {
         respond(connection, id, result)
     }
 
-    /// Starts the account menu or an account command of the provider. Its
-    /// request is answered when the operation finishes.
+    /// Starts the account menu, an account command of the provider, the
+    /// server menu, or the opening of Zed's settings file. Its request is
+    /// answered when the operation finishes.
     pub(super) fn start_administration(
         &mut self,
         connection: &Connection,
@@ -146,15 +148,22 @@ impl<P: TranslationProvider> Server<P> {
             .try_send(Job {
                 ticket,
                 deadline: receiver,
-                task: if command == SETTINGS_COMMAND {
-                    Task::AccountMenu {
+                task: match command.as_str() {
+                    SETTINGS_COMMAND => Task::AccountMenu {
                         ui: self.ui.clone(),
-                    }
-                } else {
-                    Task::Administration {
+                    },
+                    MENU_COMMAND => Task::Menu {
+                        ui: self.ui.clone(),
+                        message: self.menu_message().into(),
+                        choices: self.menu_choices(),
+                    },
+                    OPEN_SETTINGS_COMMAND => Task::OpenSettings {
+                        ui: self.ui.clone(),
+                    },
+                    _ => Task::Administration {
                         command: command.clone(),
                         ui: self.ui.clone(),
-                    }
+                    },
                 },
             })
             .map_err(|_| {

@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::language::Language;
 
-/// What starts a translation.
+/// What starts a translation, or offers to.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Feature {
@@ -12,6 +12,9 @@ pub(crate) enum Feature {
     AutomaticSelection,
     SelectionAction,
     DocumentAction,
+    /// The CodeLens line on a comment with no translation, failure, or one in
+    /// progress.
+    CommentLens,
 }
 
 impl Feature {
@@ -22,7 +25,13 @@ impl Feature {
             Self::AutomaticSelection => language == Language::Markdown,
             Self::SelectionAction => true,
             Self::DocumentAction => language.is_prose(),
+            Self::CommentLens => !language.is_prose(),
         }
+    }
+
+    /// Whether the feature starts translations without being asked.
+    pub fn automatic(self) -> bool {
+        matches!(self, Self::CommentHover | Self::AutomaticSelection)
     }
 
     pub(super) fn language_ids(self) -> Vec<&'static str> {
@@ -41,6 +50,7 @@ impl fmt::Display for Feature {
             Self::AutomaticSelection => "automatic_selection",
             Self::SelectionAction => "selection_action",
             Self::DocumentAction => "document_action",
+            Self::CommentLens => "comment_lens",
         })
     }
 }
@@ -56,18 +66,35 @@ pub(crate) struct Features {
     /// Every other key is a feature name.
     #[serde(flatten)]
     switches: Switches,
+    /// Whether the user turned the automatic features off until the server
+    /// stops, which no setting writes.
+    #[serde(skip)]
+    automatic_paused: bool,
 }
 
 impl Features {
     /// `language` is `None` for a language ID that `extension.toml` does not
     /// register, which only the switches for every language apply to.
     pub fn enables(&self, feature: Feature, language: Option<Language>) -> bool {
+        if self.automatic_paused && feature.automatic() {
+            return false;
+        }
         language
             .and_then(|language| self.languages.get(language.id()))
             .and_then(|switches| switches.get(&feature))
             .or_else(|| self.switches.get(&feature))
             .copied()
             .unwrap_or(true)
+    }
+
+    /// Whether the automatic features are turned off until the server stops.
+    pub fn automatic_paused(&self) -> bool {
+        self.automatic_paused
+    }
+
+    /// Turns the automatic features off, or back to what the settings say.
+    pub fn pause_automatic(&mut self, paused: bool) {
+        self.automatic_paused = paused;
     }
 }
 
@@ -120,11 +147,12 @@ mod tests {
     ];
 
     const GENERIC: &str = "Invalid translation settings: check field names and value types";
-    const FEATURES: [(Feature, &str); 4] = [
+    const FEATURES: [(Feature, &str); 5] = [
         (Feature::CommentHover, "comment_hover"),
         (Feature::AutomaticSelection, "automatic_selection"),
         (Feature::SelectionAction, "selection_action"),
         (Feature::DocumentAction, "document_action"),
+        (Feature::CommentLens, "comment_lens"),
     ];
 
     fn features(features: Value) -> Result<Features, ConfigError> {
@@ -335,6 +363,7 @@ mod tests {
                 "document_action",
                 &["markdown", "plaintext"][..],
             ),
+            (Feature::CommentLens, "comment_lens", comments),
         ] {
             assert_eq!(feature.language_ids(), language_ids);
             for language_id in LANGUAGE_IDS {
@@ -371,6 +400,27 @@ mod tests {
              to rust, javascript, typescript, typescriptreact, csharp, c, cpp, python, go, java, \
              kotlin, swift, ruby, php, html, vue, svelte, astro, xml, css, sql, lua, zig, proto, \
              graphql, json, jsonc, yaml, toml, shellscript, powershell, dockerfile, dockercompose, makefile"
+        );
+    }
+
+    #[test]
+    fn pausing_turns_off_only_the_automatic_features_until_resumed() {
+        let mut features =
+            features(json!({"languages": {"rust": {"comment_hover": false}}})).unwrap();
+        let enabled = |features: &Features, language| {
+            FEATURES.map(|(feature, _)| features.enables(feature, Some(language)))
+        };
+        features.pause_automatic(true);
+        assert!(features.automatic_paused());
+        assert_eq!(
+            enabled(&features, Language::Markdown),
+            [false, false, true, true, true]
+        );
+        features.pause_automatic(false);
+        assert_eq!(enabled(&features, Language::Markdown), [true; 5]);
+        assert_eq!(
+            enabled(&features, Language::Rust),
+            [false, true, true, true, true]
         );
     }
 }

@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
+use lsp_server::{ErrorCode, Message, Notification, Request, RequestId, Response, ResponseError};
 use reqwest::Url;
 use serde_json::{Value, json};
 
@@ -70,6 +70,7 @@ struct Client {
     creates: Vec<Request>,
     documents: Vec<Request>,
     prompts: Vec<Request>,
+    lens_refreshes: Vec<Request>,
     progress: Vec<Value>,
     statuses: Vec<Value>,
 }
@@ -130,6 +131,7 @@ impl Client {
             creates: Vec::new(),
             documents: Vec::new(),
             prompts: Vec::new(),
+            lens_refreshes: Vec::new(),
             progress: Vec::new(),
             statuses: Vec::new(),
         }
@@ -184,6 +186,12 @@ impl Client {
             json!([
                 "translation-lsp.translate-selection",
                 "translation-lsp.retry",
+                "translation-lsp.lens",
+                "translation-lsp.show-translation",
+                "translation-lsp.menu",
+                "translation-lsp.turn-off-automatic-translation",
+                "translation-lsp.turn-on-automatic-translation",
+                "translation-lsp.open-zed-settings",
                 "translation-lsp.open-translation",
                 "translation-lsp.cancel-range",
                 "translation-lsp.cancel-all"
@@ -256,6 +264,9 @@ impl Client {
             }
             Message::Request(request) if request.method == "window/showMessageRequest" => {
                 self.prompts.push(request);
+            }
+            Message::Request(request) if request.method == "workspace/codeLens/refresh" => {
+                self.lens_refreshes.push(request);
             }
             Message::Request(request)
                 if self.activity_capabilities.0
@@ -494,6 +505,390 @@ fn assert_error(reply: Reply, code: i32) {
 }
 
 /// The editor starts the server with `--stdio` or with no argument at all.
+/// A client that takes CodeLens refresh requests, with `uri` open, and that
+/// opens files if `documents`.
+fn lens_client(args: &[&str], uri: &str, documents: bool) -> Client {
+    lens_client_with(args, uri, documents, json!({}))
+}
+
+/// A [`lens_client`] whose settings have `features`.
+fn lens_client_with(args: &[&str], uri: &str, documents: bool, features: Value) -> Client {
+    let mut client = Client::spawn(args, false, false);
+    client
+        .call(
+            "initialize",
+            json!({
+                "initializationOptions": {"provider": {"name": "mock"}, "features": features},
+                "processId": null,
+                "rootUri": null,
+                "capabilities": {
+                    "general": { "positionEncodings": ["utf-16"] },
+                    "workspace": {"codeLens": {"refreshSupport": true}},
+                    "window": {"showDocument": {"support": documents}},
+                }
+            }),
+        )
+        .unwrap();
+    client.notify("initialized", json!({}));
+    client.open(uri, "rust", COMMENT_DOCUMENT, 1);
+    client
+}
+
+fn lenses(client: &mut Client, uri: &str) -> Vec<Value> {
+    let lenses = client
+        .call(
+            "textDocument/codeLens",
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .unwrap();
+    lenses.as_array().unwrap().clone()
+}
+
+/// The titles of `lenses`, which Zed shows on one line when they share it.
+fn lens_titles(lenses: &[Value]) -> Vec<&str> {
+    lenses
+        .iter()
+        .map(|lens| lens["command"]["title"].as_str().unwrap())
+        .collect()
+}
+
+/// The CodeLenses of `uri` once the comment's translation is in progress.
+fn running_lenses(client: &mut Client, uri: &str) -> Vec<Value> {
+    loop {
+        let found = lenses(client, uri);
+        if lens_titles(&found).contains(&"Translating…") {
+            break found;
+        }
+    }
+}
+
+/// Answers the card that `client` shows next, which has a button that
+/// translates again, with `button`, or as closed. Gives the card's type and
+/// its message between the rules around it.
+fn answer_card(client: &mut Client, button: Option<&str>) -> (u64, String) {
+    let card = client.prompt();
+    assert_eq!(
+        card.params["actions"],
+        json!([{"title": "Retry translating this text"}])
+    );
+    let answer = button.map_or(Value::Null, |title| json!({"title": title}));
+    client.send(Response::new_ok(card.id, answer).into());
+    let message = card.params["message"].as_str().unwrap();
+    (
+        card.params["type"].as_u64().unwrap(),
+        message
+            .strip_prefix("---\n\n")
+            .and_then(|message| message.strip_suffix("\n\n---"))
+            .unwrap()
+            .to_owned(),
+    )
+}
+
+#[test]
+fn a_translated_range_gets_a_code_lens_that_shows_the_whole_translation() {
+    let uri = "file:///lens.rs";
+    let mut client = lens_client(&[], uri, false);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    assert!(!client.lens_refreshes.is_empty());
+    let found = lenses(&mut client, uri);
+    assert_eq!(
+        lens_titles(&found),
+        [COMMENT_JA.lines().next().unwrap(), "Settings"]
+    );
+    assert!(found.iter().all(|lens| lens["range"] == range));
+    assert_eq!(found[1]["command"]["command"], "translation-lsp.menu");
+    let show = found[0]["command"].clone();
+    assert_eq!(show["command"], "translation-lsp.show-translation");
+    client
+        .call("workspace/executeCommand", show.clone())
+        .unwrap();
+    assert_eq!(
+        answer_card(&mut client, Some("Retry translating this text")),
+        (3, COMMENT_JA.to_owned())
+    );
+    // Retry translates the range again, as its CodeLens does.
+    let ready = client.notice();
+    assert_eq!(ready["type"], 3);
+    assert_eq!(ready["message"], format!("lens.rs:2-3: {READY}"));
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        [COMMENT_JA.lines().next().unwrap(), "Settings"]
+    );
+
+    client.change(
+        uri,
+        2,
+        json!([{"range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 0}}, "text": "\n"}]),
+    );
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        ["Translate", "Settings"]
+    );
+    let error = client.call("workspace/executeCommand", show).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ContentModified as i32);
+    assert!(client.prompts.is_empty());
+    client.finish(true);
+}
+
+#[test]
+fn a_failed_range_gets_code_lenses_that_show_the_reason_and_retry() {
+    let uri = "file:///failed-lens.rs";
+    let mut client = lens_client(&["--mock-fail"], uri, false);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    client
+        .call(
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": range["start"]}),
+        )
+        .unwrap_err();
+    let found = lenses(&mut client, uri);
+    assert_eq!(
+        lens_titles(&found),
+        ["Translation failed", "Retry", "Settings"]
+    );
+    assert!(found.iter().all(|lens| lens["range"] == range));
+    assert_eq!(found[1]["command"]["command"], "translation-lsp.retry");
+    client
+        .call("workspace/executeCommand", found[0]["command"].clone())
+        .unwrap();
+    let (kind, message) = answer_card(&mut client, None);
+    assert_eq!(kind, 1);
+    assert!(
+        message.contains("Simulated mock translation failure"),
+        "{message}"
+    );
+    client.finish(true);
+}
+
+#[test]
+fn a_range_in_translation_gets_a_code_lens_that_cancels_it() {
+    let uri = "file:///running-lens.rs";
+    let mut client = lens_client(&["--mock-delay-ms", "2000"], uri, false);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let hover = client.request_hover(uri, range["start"].clone());
+    let found = running_lenses(&mut client, uri);
+    assert_eq!(lens_titles(&found), ["Translating…", "Cancel", "Settings"]);
+    assert!(found.iter().all(|lens| lens["range"] == range));
+    assert!(!client.lens_refreshes.is_empty());
+    client
+        .call("workspace/executeCommand", found[1]["command"].clone())
+        .unwrap();
+    let error = client.receive(hover, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RequestCanceled as i32);
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        ["Translate", "Settings"]
+    );
+    client.finish(true);
+}
+
+#[test]
+fn a_comment_gets_a_code_lens_that_translates_it() {
+    let uri = "file:///translate-lens.rs";
+    let mut client = lens_client(&[], uri, false);
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    let found = lenses(&mut client, uri);
+    assert_eq!(lens_titles(&found), ["Translate", "Settings"]);
+    assert!(found.iter().all(|lens| lens["range"] == range));
+    let translate = found[0]["command"].clone();
+    assert_eq!(translate["command"], "translation-lsp.translate-selection");
+    assert!(
+        client
+            .call("workspace/executeCommand", translate)
+            .unwrap()
+            .is_null()
+    );
+    assert_eq!(
+        client.notice()["message"],
+        format!("translate-lens.rs:2-3: {READY}")
+    );
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        [COMMENT_JA.lines().next().unwrap(), "Settings"]
+    );
+    client.finish(true);
+}
+
+#[test]
+fn markdown_gets_the_menu_as_code_lenses_above_its_first_line() {
+    let uri = "file:///lens.rs";
+    let mut client = lens_client(&[], uri, true);
+    let markdown = "file:///menu.md";
+    client.open(markdown, "markdown", MARKDOWN_DOCUMENT, 1);
+    let found = lenses(&mut client, markdown);
+    assert_eq!(
+        lens_titles(&found),
+        [
+            "Translation LSP: Translate in tab",
+            "Auto-translate: On",
+            "Zed settings"
+        ]
+    );
+    let top = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}});
+    assert!(found.iter().all(|lens| lens["range"] == top));
+    let tab = &found[0]["command"];
+    assert_eq!(tab["command"], "translation-lsp.open-translation");
+    assert_eq!(
+        tab["arguments"][0]["range"],
+        json!({"start": {"line": 0, "character": 0}, "end": position(MARKDOWN_DOCUMENT)})
+    );
+    assert_eq!(
+        found[2]["command"]["command"],
+        "translation-lsp.open-zed-settings"
+    );
+    assert!(
+        client
+            .call("workspace/executeCommand", found[1]["command"].clone())
+            .unwrap()
+            .is_null()
+    );
+    assert_eq!(
+        lens_titles(&lenses(&mut client, markdown))[1],
+        "Auto-translate: Off"
+    );
+    // Code keeps its menu in Settings.
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        ["Translate", "Settings"]
+    );
+    client.finish(true);
+}
+
+#[test]
+fn comment_lens_off_leaves_lines_only_on_translated_comments_and_the_menu_on_top() {
+    let uri = "file:///quiet-lens.rs";
+    let mut client = lens_client_with(&[], uri, true, json!({"comment_lens": false}));
+    let top = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}});
+    let found = lenses(&mut client, uri);
+    assert_eq!(
+        lens_titles(&found),
+        ["Translation LSP: Auto-translate: On", "Zed settings"]
+    );
+    assert!(found.iter().all(|lens| lens["range"] == top));
+
+    // A comment that Hover translated gets its line back.
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    let found = lenses(&mut client, uri);
+    assert_eq!(
+        lens_titles(&found),
+        [
+            "Translation LSP: Auto-translate: On",
+            "Zed settings",
+            COMMENT_JA.lines().next().unwrap(),
+            "Settings"
+        ]
+    );
+    assert!(found[2..].iter().all(|lens| lens["range"] == range));
+    client.finish(true);
+
+    // The setting for one language leaves the others with their comment lines.
+    let mut client = lens_client_with(
+        &[],
+        uri,
+        true,
+        json!({"languages": {"python": {"comment_lens": false}}}),
+    );
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        ["Translate", "Settings"]
+    );
+    client.finish(true);
+}
+
+/// Opens the server menu with `settings`, checks its message and titles, and
+/// picks `choice`. Gives the request of the command that opened the menu.
+fn choose_in_menu(
+    client: &mut Client,
+    settings: &Value,
+    message: &str,
+    titles: [&str; 2],
+    choice: &str,
+) -> RequestId {
+    let id = client.execute(settings.clone());
+    let menu = client.prompt();
+    assert_eq!(menu.params["message"], message);
+    assert_eq!(
+        menu.params["actions"],
+        json!(titles.map(|title| json!({"title": title})))
+    );
+    client.send(Response::new_ok(menu.id, json!({"title": choice})).into());
+    id
+}
+
+#[test]
+fn the_settings_code_lens_turns_automatic_translation_off_and_on_and_opens_zed_settings() {
+    const ON: &str =
+        "Automatic translation: On  \n(comment Hover and automatic selection translation)";
+    const OFF: &str = "Automatic translation: Off until the language server restarts";
+    let uri = "file:///settings-lens.rs";
+    let mut client = lens_client(&["--mock-delay-ms", "1000"], uri, true);
+    let start = range_for(COMMENT_DOCUMENT, COMMENT)["start"].clone();
+    let hover = client.request_hover(uri, start.clone());
+    let found = running_lenses(&mut client, uri);
+    let settings = found[2]["command"].clone();
+    assert_eq!(settings["title"], "Settings");
+
+    // Turning automatic translation off cancels the comment Hover in progress
+    // and starts no other, but leaves the comment's Translate.
+    let off = choose_in_menu(
+        &mut client,
+        &settings,
+        ON,
+        ["Turn off automatic translation", "Open Zed settings file"],
+        "Turn off automatic translation",
+    );
+    assert!(client.receive(off, TIMEOUT).unwrap().is_null());
+    let error = client.receive(hover, TIMEOUT).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RequestCanceled as i32);
+    assert!(client.hover(uri, start.clone()).is_null());
+    assert_eq!(
+        lens_titles(&lenses(&mut client, uri)),
+        ["Translate", "Settings"]
+    );
+
+    let on = choose_in_menu(
+        &mut client,
+        &settings,
+        OFF,
+        ["Turn on automatic translation", "Open Zed settings file"],
+        "Turn on automatic translation",
+    );
+    assert!(client.receive(on, TIMEOUT).unwrap().is_null());
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    assert_preview(&client.hover(uri, start), COMMENT, COMMENT_JA, &range);
+
+    let open = choose_in_menu(
+        &mut client,
+        &settings,
+        ON,
+        ["Turn off automatic translation", "Open Zed settings file"],
+        "Open Zed settings file",
+    );
+    let document = client.document();
+    assert_eq!(document.params["external"], false);
+    let path = document.params["uri"].as_str().unwrap().to_lowercase();
+    assert!(
+        path.starts_with("file:///") && path.ends_with("/zed/settings.json"),
+        "{path}"
+    );
+    client.send(Response::new_ok(document.id, json!({"success": true})).into());
+    assert!(client.receive(open, TIMEOUT).unwrap().is_null());
+    client.finish(true);
+}
+
 #[test]
 fn server_starts_with_or_without_the_stdio_argument() {
     for arguments in [&[][..], &["--stdio"], &["--stdio", "--mock-delay-ms", "1"]] {

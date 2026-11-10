@@ -389,6 +389,12 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         [
             COMMAND,
             RETRY_COMMAND,
+            LENS_COMMAND,
+            SHOW_COMMAND,
+            MENU_COMMAND,
+            AUTOMATIC_OFF_COMMAND,
+            AUTOMATIC_ON_COMMAND,
+            OPEN_SETTINGS_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
             CANCEL_ALL_COMMAND,

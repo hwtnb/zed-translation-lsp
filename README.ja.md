@@ -196,6 +196,7 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、Vue.js�
 | `Translate selection to …` | すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。 |
 | 単語を辞書で引く | 1行で3語以下の語句か識別子1つ（`retain`、`retain_completed` など）を選択します。ホバーには訳文の代わりに辞書の項目が表示されます。DeepL APIとGoogle Cloud Translationでは、辞書で引かずに翻訳します。 |
 | `… and open in tab` | Markdownまたはプレーンテキスト（Zedの言語名は `Plain Text`）では、`Translate selection to … and open in tab` で訳文を別タブに開けます。選択がない場合は `Translate document to … and open in tab` となり、文書全体を翻訳します。 |
+| CodeLens | Zedの設定で `"code_lens": "on"` にすると、コメントに `Translate \| Settings` を、翻訳済みの範囲に訳文の1行目を表示します。クリックすると訳文の全体を読めます。Markdownとプレーンテキストでは、1行目の上にメニューの行を表示します。 |
 | 取り消し | 1件を止めるには、その範囲にカーソルか選択範囲を置き、コードアクションの `Cancel translation of lines …` を実行します。`Cancel all translations` はアカウントメニューを残してすべての翻訳を取り消します。 |
 
 これらの操作の規則は[使い方](docs/ja/usage.md)で説明します。

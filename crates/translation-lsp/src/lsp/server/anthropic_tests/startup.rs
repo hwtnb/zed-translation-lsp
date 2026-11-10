@@ -102,6 +102,12 @@ fn anthropic_without_a_key_file_starts_and_reports_the_missing_file() {
         json!([
             COMMAND,
             RETRY_COMMAND,
+            LENS_COMMAND,
+            SHOW_COMMAND,
+            MENU_COMMAND,
+            AUTOMATIC_OFF_COMMAND,
+            AUTOMATIC_ON_COMMAND,
+            OPEN_SETTINGS_COMMAND,
             DOCUMENT_COMMAND,
             CANCEL_COMMAND,
             CANCEL_ALL_COMMAND,
