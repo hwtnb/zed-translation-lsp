@@ -108,7 +108,7 @@ async fn without_a_usable_key_the_code_actions_offer_only_the_key_menu() {
     // A command the editor still holds is answered with where to save the key.
     let target = target(&server, &comment, range);
     let explicit = server
-        .queue(1.into(), target, PendingReply::Command)
+        .queue(1.into(), target, PendingReply::Command { notice: true })
         .unwrap_err();
     let hovered = server.hover(2.into(), hover(&comment, 0)).unwrap_err();
     for error in [explicit, hovered] {
@@ -455,7 +455,7 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
     for (id, index) in [(1, 0), (2, 2)] {
         let target = target(&server, &uri, line(index));
         server
-            .queue(id.into(), target, PendingReply::Command)
+            .queue(id.into(), target, PendingReply::Command { notice: true })
             .unwrap();
         server
             .finish(&connection, next(&completions).await)
@@ -497,7 +497,7 @@ async fn results_and_failures_kept_for_one_key_are_not_used_for_another() {
     // The same range is sent again, with the new key.
     let target = target(&server, &uri, line(0));
     server
-        .queue(6.into(), target, PendingReply::Command)
+        .queue(6.into(), target, PendingReply::Command { notice: true })
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
@@ -527,7 +527,7 @@ async fn automatic_translation_stopped_for_a_rejected_key_starts_again_with_the_
     let uri = open(&mut server, "stopped.md", "markdown", SOURCE);
     let target = target(&server, &uri, line(0));
     server
-        .queue(1.into(), target, PendingReply::Command)
+        .queue(1.into(), target, PendingReply::Command { notice: true })
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
@@ -591,7 +591,7 @@ async fn in_code_the_key_menu_appears_only_where_a_translation_failed() {
     let comment = Range::new(Position::new(0, 0), Position::new(0, 13));
     let target = target(&server, &uri, comment);
     server
-        .queue(1.into(), target, PendingReply::Command)
+        .queue(1.into(), target, PendingReply::Command { notice: true })
         .unwrap();
     server
         .finish(&connection, next(&completions).await)

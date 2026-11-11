@@ -86,6 +86,8 @@ async fn anthropic_declares_automatic_selection_and_the_key_menu() {
         [
             COMMAND,
             RETRY_COMMAND,
+            LENS_TRANSLATE_COMMAND,
+            LENS_RETRY_COMMAND,
             LENS_COMMAND,
             SHOW_COMMAND,
             MENU_COMMAND,
@@ -211,7 +213,7 @@ async fn a_selected_term_is_shown_as_an_entry_and_a_one_word_comment_as_a_transl
         target_language: "ja".into(),
     };
     server
-        .queue(2.into(), target, PendingReply::Command)
+        .queue(2.into(), target, PendingReply::Command { notice: true })
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
@@ -256,7 +258,11 @@ async fn billing_stop_drains_queued_work_with_one_notice_and_resumes_after_expli
         let target = target(&server, &uri, line(index));
         assert_eq!(
             server
-                .queue((index as i32 + 1).into(), target, PendingReply::Command)
+                .queue(
+                    (index as i32 + 1).into(),
+                    target,
+                    PendingReply::Command { notice: true }
+                )
                 .unwrap(),
             Some(Value::Null)
         );
@@ -310,7 +316,11 @@ async fn billing_stop_drains_queued_work_with_one_notice_and_resumes_after_expli
     fixture.always(None);
     let target = target(&server, &uri, line(0));
     server
-        .queue(20.into(), target.clone(), PendingReply::Command)
+        .queue(
+            20.into(),
+            target.clone(),
+            PendingReply::Command { notice: true },
+        )
         .unwrap();
     server
         .finish(&connection, next(&completions).await)

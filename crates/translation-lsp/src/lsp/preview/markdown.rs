@@ -19,7 +19,7 @@ use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 
 /// The options of Zed's Markdown parser: `PARSE_OPTIONS` in its
 /// `crates/markdown/src/parser.rs`.
-const ZED_OPTIONS: Options = Options::ENABLE_TABLES
+pub(super) const ZED_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_FOOTNOTES)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS)

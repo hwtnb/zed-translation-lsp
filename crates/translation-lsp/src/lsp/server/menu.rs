@@ -95,7 +95,7 @@ impl<P: TranslationProvider> Server<P> {
             return Ok(());
         }
         // A retry answers no request, so the card's request stands in for one.
-        if let Err(error) = self.queue(response.id, target, PendingReply::Retry) {
+        if let Err(error) = self.queue(response.id, target, PendingReply::Retry { notice: false }) {
             self.ui.error(&error.message)?;
         }
         Ok(())

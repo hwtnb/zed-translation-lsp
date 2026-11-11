@@ -234,7 +234,7 @@ async fn explicit_outputs_reuse_completed_ranges_without_automatic_hover_promoti
             if tab {
                 TranslationRequest::Document
             } else {
-                TranslationRequest::Reply(1.into(), PendingReply::Command)
+                TranslationRequest::Reply(1.into(), PendingReply::Command { notice: true })
             }
         };
         server
@@ -309,7 +309,7 @@ async fn automatic_selection_and_retry_do_not_reuse_tab_results() {
             .unwrap();
         client.receiver.try_iter().for_each(drop);
         let request = if retry {
-            TranslationRequest::Reply(1.into(), PendingReply::Retry)
+            TranslationRequest::Reply(1.into(), PendingReply::Retry { notice: true })
         } else {
             TranslationRequest::Selection
         };
@@ -343,7 +343,11 @@ async fn cross_output_reuse_checks_input_limits_and_document_freshness() {
         .unwrap();
     client.receiver.try_iter().for_each(drop);
     let error = server
-        .queue(1.into(), target.clone(), PendingReply::Command)
+        .queue(
+            1.into(),
+            target.clone(),
+            PendingReply::Command { notice: true },
+        )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams as i32);
     assert!(

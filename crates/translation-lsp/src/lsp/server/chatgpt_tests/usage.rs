@@ -204,7 +204,11 @@ async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_
         let target = range_target(&server, &uri, line);
         assert_eq!(
             server
-                .queue((line as i32 + 1).into(), target, PendingReply::Command)
+                .queue(
+                    (line as i32 + 1).into(),
+                    target,
+                    PendingReply::Command { notice: true }
+                )
                 .unwrap(),
             Some(Value::Null)
         );
@@ -243,7 +247,11 @@ async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_
     // An unsuccessful fresh retry still reports its own error even while the pause is unchanged.
     let target = range_target(&server, &uri, 0);
     server
-        .queue(20.into(), target.clone(), PendingReply::Command)
+        .queue(
+            20.into(),
+            target.clone(),
+            PendingReply::Command { notice: true },
+        )
         .unwrap();
     server
         .finish(&connection, next(&completions).await)
@@ -254,7 +262,11 @@ async fn usage_stop_drains_old_admissions_without_http_or_duplicate_notices_and_
     );
     fixture.state.lock().unwrap().failure = None;
     server
-        .queue(21.into(), target.clone(), PendingReply::Command)
+        .queue(
+            21.into(),
+            target.clone(),
+            PendingReply::Command { notice: true },
+        )
         .unwrap();
     server
         .finish(&connection, next(&completions).await)

@@ -77,6 +77,8 @@ fn each_provider_declares_its_name_and_key_commands() {
     let shared = [
         COMMAND,
         RETRY_COMMAND,
+        LENS_TRANSLATE_COMMAND,
+        LENS_RETRY_COMMAND,
         LENS_COMMAND,
         SHOW_COMMAND,
         MENU_COMMAND,

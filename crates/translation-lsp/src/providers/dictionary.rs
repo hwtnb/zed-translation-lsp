@@ -145,15 +145,31 @@ fn render(term: &str, entry: &Entry) -> Option<String> {
 /// `text` on one line as Markdown that shows it as written.
 pub(crate) fn inline(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let bytes = text.as_bytes();
     let mut markdown = String::with_capacity(text.len());
     let mut leading_digits = true;
+    // The run of `-` or `.` that the character is in.
+    let mut run = 0..0;
     for (index, character) in text.char_indices() {
+        if matches!(character, '-' | '.') && !run.contains(&index) {
+            let length = bytes[index..]
+                .iter()
+                .take_while(|byte| **byte == bytes[index])
+                .count();
+            run = index..index + length;
+        }
         let escaped = match character {
             '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '!' | '|' | '~' | '^' | '&' | '#'
             | '$' => true,
-            // A list marker at the start of a list item would start another list.
-            '-' | '+' => index == 0,
-            '.' | ')' => leading_digits && index > 0,
+            // Zed makes typographic quotes of these.
+            '\'' | '"' => true,
+            // A list marker at the start of a list item would start another
+            // list, and Zed makes a dash of `--` and `---`.
+            '-' => index == 0 || run.len() > 1,
+            '+' => index == 0,
+            // Zed makes an ellipsis of `...`.
+            '.' => leading_digits && index > 0 || run.len() > 2,
+            ')' => leading_digits && index > 0,
             _ => false,
         };
         leading_digits &= character.is_ascii_digit();

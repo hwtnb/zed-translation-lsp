@@ -90,6 +90,10 @@ type RequestResult<T> = Result<T, ResponseError>;
 
 const COMMAND: &str = "translation-lsp.translate-selection";
 const RETRY_COMMAND: &str = "translation-lsp.retry";
+/// [`COMMAND`] run from a CodeLens, whose range shows the translation.
+const LENS_TRANSLATE_COMMAND: &str = "translation-lsp.translate-lens";
+/// [`RETRY_COMMAND`] run from a CodeLens, whose range shows the translation.
+const LENS_RETRY_COMMAND: &str = "translation-lsp.retry-lens";
 /// The command of a CodeLens that only shows a text.
 const LENS_COMMAND: &str = "translation-lsp.lens";
 /// The command of a CodeLens that shows the whole translation or failure of
@@ -368,6 +372,8 @@ pub(crate) fn capabilities<P: TranslationProvider>() -> InitializeResult {
                 commands: [
                     COMMAND.to_owned(),
                     RETRY_COMMAND.to_owned(),
+                    LENS_TRANSLATE_COMMAND.to_owned(),
+                    LENS_RETRY_COMMAND.to_owned(),
                     LENS_COMMAND.to_owned(),
                     SHOW_COMMAND.to_owned(),
                     MENU_COMMAND.to_owned(),
@@ -891,7 +897,12 @@ impl<P: TranslationProvider> Server<P> {
                             SHOW_COMMAND,
                             target(range)?,
                         ));
-                        lenses.push(lens(range, "Retry".into(), RETRY_COMMAND, target(range)?));
+                        lenses.push(lens(
+                            range,
+                            "Retry".into(),
+                            LENS_RETRY_COMMAND,
+                            target(range)?,
+                        ));
                     }
                 }
             }
@@ -945,7 +956,12 @@ impl<P: TranslationProvider> Server<P> {
         for range in comments {
             if !ranges.contains(&range) {
                 if translates {
-                    lenses.push(lens(range, "Translate".into(), COMMAND, target(range)?));
+                    lenses.push(lens(
+                        range,
+                        "Translate".into(),
+                        LENS_TRANSLATE_COMMAND,
+                        target(range)?,
+                    ));
                 }
                 ranges.push(range);
             }

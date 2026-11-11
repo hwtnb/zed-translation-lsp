@@ -64,7 +64,11 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     assert!(message.contains("OpenAI completed without translation text"));
     let target = server.selection.as_ref().unwrap().target.clone();
     let reply = server
-        .queue(1.into(), target.clone(), PendingReply::Command)
+        .queue(
+            1.into(),
+            target.clone(),
+            PendingReply::Command { notice: true },
+        )
         .unwrap()
         .unwrap();
     respond(&connection, 1.into(), Ok(reply)).unwrap();
@@ -79,7 +83,7 @@ async fn markdown_repeated_selections_report_failure_and_recover_manually() {
     );
     fixture.state.lock().unwrap().response_mode.clear();
     let reply = server
-        .queue(2.into(), target, PendingReply::Command)
+        .queue(2.into(), target, PendingReply::Command { notice: true })
         .unwrap()
         .unwrap();
     respond(&connection, 2.into(), Ok(reply)).unwrap();
@@ -599,7 +603,7 @@ async fn reselecting_a_cached_overlap_updates_display_order_without_http() {
     second.range.start.character = 5;
     for target in [first.clone(), second.clone()] {
         server
-            .queue(1.into(), target, PendingReply::Command)
+            .queue(1.into(), target, PendingReply::Command { notice: true })
             .unwrap();
         server
             .finish(&connection, next(&completions).await)
@@ -623,7 +627,7 @@ async fn reselecting_a_cached_overlap_updates_display_order_without_http() {
     );
     assert_eq!(
         server
-            .queue(3.into(), first, PendingReply::Command)
+            .queue(3.into(), first, PendingReply::Command { notice: true })
             .unwrap(),
         Some(Value::Null)
     );
@@ -661,7 +665,7 @@ async fn comment_and_selection_share_automatic_capacity_but_manual_promotion_fre
             .contains("queue is full")
     );
     server
-        .queue(2.into(), first, PendingReply::Command)
+        .queue(2.into(), first, PendingReply::Command { notice: true })
         .unwrap();
     assert!(server.hover(3.into(), hover()).unwrap().is_none());
     server

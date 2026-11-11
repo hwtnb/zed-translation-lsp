@@ -143,7 +143,7 @@ async fn hover_limits_control_actions_background_and_manual_admission() {
         };
         let result = server.queue_translation(
             target,
-            TranslationRequest::Reply(1.into(), PendingReply::Command),
+            TranslationRequest::Reply(1.into(), PendingReply::Command { notice: true }),
         );
         assert_eq!(result.is_ok(), accepted);
         if !accepted {

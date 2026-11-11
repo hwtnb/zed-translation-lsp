@@ -22,7 +22,7 @@
 
 ## 手動の選択翻訳
 
-すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。明示実行では完了通知 `Translation ready. Hover over the selected text to view it.` が出ます。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。ChatGPTプロバイダーで未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。Anthropic APIまたはOpenAI APIのプロバイダーでキーが保存されていない場合は、`Anthropic API key…` または `OpenAI API key…` からキーを保存してください。選択がないとホバー用の翻訳項目は表示されません。
+すぐに実行したい場合やバックグラウンド翻訳が失敗した場合は、コードアクションの `Translate selection to …` を使います。このコードアクションは、完了すると通知 `Translation ready. Hover over the selected text to view it.` を表示します。コード言語やMarkdown以外でも範囲選択による翻訳を使えます。ChatGPTプロバイダーで未接続またはプラン利用が無効の場合は、`ChatGPT account…` から接続・利用許可を実行してください。Anthropic APIまたはOpenAI APIのプロバイダーでキーが保存されていない場合は、`Anthropic API key…` または `OpenAI API key…` からキーを保存してください。選択がないとホバー用の翻訳項目は表示されません。
 
 ## 単語を辞書で引く
 
@@ -82,9 +82,9 @@ Zedの設定で `"code_lens": "on"` にすると、本文の上の行に短い�
 | 翻訳中の範囲 | `Translating… \| Cancel` と、コードでは `Settings` |
 | Markdownとプレーンテキストの1行目の上 | `Translation LSP: Translate in tab \| Auto-translate: On \| <アカウントメニュー> \| Zed settings` |
 
-`Translate` は、`Translate selection to …` と同じようにコメントを翻訳します。プロバイダーが使える状態で、`selection_action` が有効なときに表示します。翻訳済み、失敗、翻訳中の範囲は、コメントのホバー、選択、`Translate` で翻訳した範囲です。タブに開く翻訳には行を表示しません。文書を編集すると、訳文が無効になった範囲の行は消えます。
+`Translate` は、`Translate selection to …` と同じようにコメントを翻訳します。プロバイダーが使える状態で、`selection_action` が有効なときに表示します。`Retry` は、失敗した範囲をもう一度翻訳します。どちらのあとも、行に訳文を表示し、コードアクションで出す完了通知 `Translation ready. Hover over the selected text to view it.` は出しません。同じ範囲をコードアクションでも待っている場合は、完了通知を出します。翻訳済み、失敗、翻訳中の範囲は、コメントのホバー、選択、`Translate` で翻訳した範囲です。タブに開く翻訳には行を表示しません。文書を編集すると、訳文が無効になった範囲の行は消えます。
 
-訳文の1行目をクリックすると訳文の全体を、`Translation failed` をクリックすると失敗の理由をカードに表示します。カードは閉じるまで残ります。カードの `Retry translating this text` ボタンで、その範囲をもう一度翻訳します。カードにあるZedのコピーボタンは、本文をMarkdownのままコピーします。記号の前のバックスラッシュと、前後の `---` の行も含みます。
+訳文の1行目をクリックすると訳文の全体を、`Translation failed` をクリックすると失敗の理由をカードに表示します。カードは閉じるまで残ります。カードの `Retry translating this text` ボタンで、その範囲をもう一度翻訳します。新しい訳文はCodeLensに表示し、完了通知は出しません。カードにあるZedのコピーボタンは、本文をMarkdownのままコピーします。記号の前のバックスラッシュと、前後の `---` の行も含みます。
 
 `Translate in tab` は、`Translate document to … and open in tab` と同じように文書全体を翻訳します。プロバイダーが使える状態で `document_action` が有効なときに、`window/showDocument` に対応したクライアントで表示します。アカウントメニューの項目は、`ChatGPT account…` などのプロバイダーのアカウントメニューです。`Zed settings` はZedの設定ファイルを開きます。これも `window/showDocument` に対応したクライアントでだけ表示します。
 

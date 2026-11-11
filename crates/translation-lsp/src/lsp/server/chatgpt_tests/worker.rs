@@ -285,7 +285,7 @@ async fn chatgpt_worker_never_caches_failed_compact_streams() {
                 target_language: "ja".into(),
             };
             server
-                .queue(4.into(), target, PendingReply::Command)
+                .queue(4.into(), target, PendingReply::Command { notice: true })
                 .unwrap();
             server
                 .finish(&connection, next(&completions).await)

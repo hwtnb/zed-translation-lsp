@@ -37,7 +37,7 @@ impl<P: TranslationProvider> Server<P> {
         }
         let immediate = matches!(
             request,
-            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry)
+            TranslationRequest::Reply(_, PendingReply::Command { .. } | PendingReply::Retry { .. })
         );
         match self
             .scheduler
@@ -119,12 +119,19 @@ impl<P: TranslationProvider> Server<P> {
                 self.preview_files.open(&self.ui, &preview, markdown)?;
                 Ok(None)
             }
-            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
+            TranslationRequest::Reply(
+                _,
+                PendingReply::Command { notice: true } | PendingReply::Retry { notice: true },
+            ) => {
                 self.ui
                     .inform(&format!("{}: {TRANSLATION_READY}", location(&target)))
                     .map_err(|_| failure(ErrorCode::InternalError, "Client disconnected"))?;
                 Ok(Some(Value::Null))
             }
+            TranslationRequest::Reply(
+                _,
+                PendingReply::Command { notice: false } | PendingReply::Retry { notice: false },
+            ) => Ok(Some(Value::Null)),
             TranslationRequest::Selection => Ok(None),
         }
     }
@@ -316,7 +323,7 @@ impl<P: TranslationProvider> Server<P> {
                         Stored::Translation(Output::Range, preview.clone()),
                     );
                 }
-                if work.owners.manual() {
+                if work.owners.notice() {
                     self.ui
                         .inform(&format!("{}: {TRANSLATION_READY}", location(&work.target)))?;
                 }

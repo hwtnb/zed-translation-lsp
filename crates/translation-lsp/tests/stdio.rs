@@ -187,6 +187,8 @@ impl Client {
             json!([
                 "translation-lsp.translate-selection",
                 "translation-lsp.retry",
+                "translation-lsp.translate-lens",
+                "translation-lsp.retry-lens",
                 "translation-lsp.lens",
                 "translation-lsp.show-translation",
                 "translation-lsp.menu",
@@ -592,11 +594,37 @@ fn lens_titles(lenses: &[Value]) -> Vec<&str> {
 
 /// The CodeLenses of `uri` once the comment's translation is in progress.
 fn running_lenses(client: &mut Client, uri: &str) -> Vec<Value> {
+    lenses_until(client, uri, "a translation in progress", |titles| {
+        titles.contains(&"Translating…")
+    })
+}
+
+/// The CodeLenses of `uri` once no translation of it is in progress.
+fn finished_lenses(client: &mut Client, uri: &str) -> Vec<Value> {
+    lenses_until(client, uri, "no translation in progress", |titles| {
+        !titles.contains(&"Translating…")
+    })
+}
+
+/// The CodeLenses of `uri` once their titles are `wanted`, which fails after
+/// [`TIMEOUT`].
+fn lenses_until(
+    client: &mut Client,
+    uri: &str,
+    wanted: &str,
+    done: impl Fn(&[&str]) -> bool,
+) -> Vec<Value> {
+    let started = Instant::now();
     loop {
         let found = lenses(client, uri);
-        if lens_titles(&found).contains(&"Translating…") {
+        if done(&lens_titles(&found)) {
             break found;
         }
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "No CodeLenses with {wanted} in {TIMEOUT:?}: {:?}",
+            lens_titles(&found)
+        );
     }
 }
 
@@ -650,13 +678,18 @@ fn a_translated_range_gets_a_code_lens_that_shows_the_whole_translation() {
         answer_card(&mut client, Some("Retry translating this text")),
         (3, COMMENT_JA.to_owned())
     );
-    // Retry translates the range again, as its CodeLens does.
-    let ready = client.notice();
-    assert_eq!(ready["type"], 3);
-    assert_eq!(ready["message"], format!("lens.rs:2-3: {READY}"));
+    // Retry translates the range again, and its CodeLens shows the
+    // translation, so no message says that it is ready. The server reads the
+    // answer before the CodeLens request, so the CodeLenses show the retry
+    // until it ends.
     assert_eq!(
-        lens_titles(&lenses(&mut client, uri)),
+        lens_titles(&finished_lenses(&mut client, uri)),
         [COMMENT_JA.lines().next().unwrap(), "Settings"]
+    );
+    assert!(
+        client.notifications.is_empty(),
+        "{:?}",
+        client.notifications
     );
 
     client.change(
@@ -692,7 +725,7 @@ fn a_failed_range_gets_code_lenses_that_show_the_reason_and_retry() {
         ["Translation failed", "Retry", "Settings"]
     );
     assert!(found.iter().all(|lens| lens["range"] == range));
-    assert_eq!(found[1]["command"]["command"], "translation-lsp.retry");
+    assert_eq!(found[1]["command"]["command"], "translation-lsp.retry-lens");
     client
         .call("workspace/executeCommand", found[0]["command"].clone())
         .unwrap();
@@ -701,6 +734,49 @@ fn a_failed_range_gets_code_lenses_that_show_the_reason_and_retry() {
     assert!(
         message.contains("Simulated mock translation failure"),
         "{message}"
+    );
+    // The card's Retry translates the range again, which fails again and
+    // says so.
+    client
+        .call("workspace/executeCommand", found[0]["command"].clone())
+        .unwrap();
+    answer_card(&mut client, Some("Retry translating this text"));
+    let failed = client.notice();
+    assert_eq!(failed["type"], 1);
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .contains("Simulated mock translation failure"),
+        "{failed}"
+    );
+    finished_lenses(&mut client, uri);
+    assert!(
+        client.notifications.is_empty(),
+        "{:?}",
+        client.notifications
+    );
+    // A retry from the CodeLens that fails again says so, as before.
+    assert!(
+        client
+            .call("workspace/executeCommand", found[1]["command"].clone())
+            .unwrap()
+            .is_null()
+    );
+    finished_lenses(&mut client, uri);
+    let failed = client.notice();
+    assert_eq!(failed["type"], 1);
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .contains("Simulated mock translation failure"),
+        "{failed}"
+    );
+    assert!(
+        client.notifications.is_empty(),
+        "{:?}",
+        client.notifications
     );
     client.finish(true);
 }
@@ -736,21 +812,49 @@ fn a_comment_gets_a_code_lens_that_translates_it() {
     assert_eq!(lens_titles(&found), ["Translate", "Settings"]);
     assert!(found.iter().all(|lens| lens["range"] == range));
     let translate = found[0]["command"].clone();
-    assert_eq!(translate["command"], "translation-lsp.translate-selection");
+    assert_eq!(translate["command"], "translation-lsp.translate-lens");
     assert!(
         client
-            .call("workspace/executeCommand", translate)
+            .call("workspace/executeCommand", translate.clone())
             .unwrap()
             .is_null()
     );
+    // The CodeLens shows the translation, so no message says it is ready.
     assert_eq!(
-        client.notice()["message"],
-        format!("translate-lens.rs:2-3: {READY}")
-    );
-    assert_eq!(
-        lens_titles(&lenses(&mut client, uri)),
+        lens_titles(&finished_lenses(&mut client, uri)),
         [COMMENT_JA.lines().next().unwrap(), "Settings"]
     );
+    assert!(
+        client.notifications.is_empty(),
+        "{:?}",
+        client.notifications
+    );
+    // Nor after the Retry of a CodeLens, which a failed range shows; the
+    // Code Action that retries says it is ready.
+    for (command, notice) in [
+        ("translation-lsp.retry-lens", false),
+        ("translation-lsp.retry", true),
+    ] {
+        let retry = json!({"command": command, "arguments": translate["arguments"]});
+        assert!(
+            client
+                .call("workspace/executeCommand", retry)
+                .unwrap()
+                .is_null()
+        );
+        finished_lenses(&mut client, uri);
+        if notice {
+            assert_eq!(
+                client.notice()["message"],
+                format!("translate-lens.rs:2-3: {READY}")
+            );
+        }
+        assert!(
+            client.notifications.is_empty(),
+            "{:?}",
+            client.notifications
+        );
+    }
     client.finish(true);
 }
 

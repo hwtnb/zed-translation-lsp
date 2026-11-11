@@ -12,8 +12,13 @@ pub(super) enum PendingReply {
     /// A Hover at the position, received at the instant its response
     /// deadline counts from.
     Hover(Position, Instant),
-    Command,
-    Retry,
+    /// A selection translation. `notice` as for a retry.
+    Command { notice: bool },
+    /// A retry. `notice`: whoever asked waits for a message that the
+    /// translation is ready, as after a Code Action, and unlike after a
+    /// CodeLens or the Retry button of a card: a CodeLens of the range shows
+    /// the translation.
+    Retry { notice: bool },
 }
 
 pub(super) enum TranslationRequest {
@@ -26,7 +31,8 @@ impl TranslationRequest {
     pub fn explicit(&self) -> bool {
         matches!(
             self,
-            Self::Document | Self::Reply(_, PendingReply::Command | PendingReply::Retry)
+            Self::Document
+                | Self::Reply(_, PendingReply::Command { .. } | PendingReply::Retry { .. })
         )
     }
 
@@ -39,7 +45,7 @@ impl TranslationRequest {
     }
 
     pub fn reuses_completed(&self) -> bool {
-        !matches!(self, Self::Reply(_, PendingReply::Retry))
+        !matches!(self, Self::Reply(_, PendingReply::Retry { .. }))
     }
 
     fn timeout(&self, settings: &Settings) -> Duration {
@@ -67,8 +73,11 @@ pub(super) struct Owners {
     selection: bool,
     /// A comment Hover, which keeps its translation past its response.
     comment_hover: bool,
-    /// A selection translation or retry run from a Code Action.
+    /// A selection translation or a retry, run from a Code Action, a
+    /// CodeLens, or a card.
     manual: bool,
+    /// A manual request that waits for a message that the translation is ready.
+    notice: bool,
     /// A tab translation.
     tab: bool,
 }
@@ -79,8 +88,12 @@ impl Owners {
             TranslationRequest::Reply(_, PendingReply::Hover(..)) => {
                 self.comment_hover |= is_comment;
             }
-            TranslationRequest::Reply(_, PendingReply::Command | PendingReply::Retry) => {
+            TranslationRequest::Reply(
+                _,
+                PendingReply::Command { notice } | PendingReply::Retry { notice },
+            ) => {
                 self.manual = true;
+                self.notice |= notice;
             }
             TranslationRequest::Selection => self.selection = true,
             TranslationRequest::Document => self.tab = true,
@@ -109,6 +122,10 @@ impl Owners {
     }
     pub fn manual(self) -> bool {
         self.manual
+    }
+    /// Whether a request waits for a message that the translation is ready.
+    pub fn notice(self) -> bool {
+        self.notice
     }
     pub fn tab(self) -> bool {
         self.tab
@@ -579,7 +596,28 @@ mod tests {
     }
 
     fn manual() -> TranslationRequest {
-        TranslationRequest::Reply(0.into(), PendingReply::Command)
+        TranslationRequest::Reply(0.into(), PendingReply::Command { notice: true })
+    }
+
+    #[test]
+    fn only_requests_that_wait_for_it_ask_for_the_ready_message() {
+        let quiet = || TranslationRequest::Reply(0.into(), PendingReply::Retry { notice: false });
+        let loud = || TranslationRequest::Reply(0.into(), PendingReply::Retry { notice: true });
+        for (requests, notice) in [
+            (vec![quiet()], false),
+            (vec![loud()], true),
+            (vec![manual()], true),
+            (vec![quiet(), manual()], true),
+            (vec![loud(), quiet()], true),
+            (vec![TranslationRequest::Selection, quiet()], false),
+        ] {
+            let mut owners = Owners::default();
+            for request in &requests {
+                owners.add(request, true);
+            }
+            assert!(owners.manual());
+            assert_eq!(owners.notice(), notice);
+        }
     }
 
     #[test]
@@ -770,7 +808,7 @@ mod shared_outputs_tests {
             let request = if ticket == 1 {
                 TranslationRequest::Document
             } else {
-                TranslationRequest::Reply(1.into(), PendingReply::Command)
+                TranslationRequest::Reply(1.into(), PendingReply::Command { notice: true })
             };
             scheduler
                 .insert(
@@ -871,7 +909,7 @@ mod separate_outputs_tests {
     }
 
     fn manual() -> TranslationRequest {
-        TranslationRequest::Reply(0.into(), PendingReply::Command)
+        TranslationRequest::Reply(0.into(), PendingReply::Command { notice: true })
     }
 
     #[test]

@@ -3,6 +3,8 @@ use std::sync::{Arc, atomic::Ordering};
 
 use lsp_types::CodeActionContext;
 
+use crate::lsp::server::menu::RETRY;
+
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
@@ -25,7 +27,11 @@ async fn retained_manual_and_auto_work_survive_waiter_and_selection_cancellation
         .unwrap();
     assert_eq!(
         server
-            .queue(2.into(), target.clone(), PendingReply::Command)
+            .queue(
+                2.into(),
+                target.clone(),
+                PendingReply::Command { notice: true }
+            )
             .unwrap(),
         Some(Value::Null)
     );
@@ -321,4 +327,73 @@ async fn retry_action_refreshes_failed_range_without_discarding_readable_transla
             .contains("Alpha")
     );
     assert!(server.cache.failed_range(&uri, cursor.start).is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_a_code_action_waiting_on_a_range_says_that_it_is_ready() {
+    let (fixture, mut server, connection, client, completions, uri) =
+        range_server(Settings::default()).await;
+    let target = range_target(&server, &uri, 0);
+    let params = |command: &str| ExecuteCommandParams {
+        command: command.into(),
+        arguments: vec![serde_json::to_value(&target).unwrap()],
+        work_done_progress_params: Default::default(),
+    };
+    let ready = |client: &Connection| {
+        client
+            .receiver
+            .try_iter()
+            .filter(|m| matches!(m, Message::Notification(n) if n.params["message"].as_str().is_some_and(|m| m.contains(TRANSLATION_READY))))
+            .count()
+    };
+    // Answers the card of the range with its Retry.
+    let retry_card = |server: &mut Server<ChatGptProvider>, id: i32| {
+        server
+            .execute_command(&connection, id.into(), params(SHOW_COMMAND))
+            .unwrap();
+        let card = client
+            .receiver
+            .try_iter()
+            .find_map(|m| match m {
+                Message::Request(r) if r.method == "window/showMessageRequest" => Some(r.id),
+                _ => None,
+            })
+            .unwrap();
+        server
+            .card_response(Response::new_ok(card, json!({"title": RETRY})))
+            .unwrap();
+    };
+    server
+        .execute_command(&connection, 1.into(), params(LENS_TRANSLATE_COMMAND))
+        .unwrap();
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!((response_calls(&fixture), ready(&client)), (1, 0));
+    // The CodeLens of a translated range translates nothing again.
+    assert_eq!(
+        server
+            .execute_command(&connection, 2.into(), params(LENS_TRANSLATE_COMMAND))
+            .unwrap(),
+        Some(Value::Null)
+    );
+    assert!(server.scheduler.translations().is_empty());
+    assert_eq!((response_calls(&fixture), ready(&client)), (1, 0));
+    retry_card(&mut server, 3);
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert_eq!((response_calls(&fixture), ready(&client)), (2, 0));
+    // A Code Action on the range while the card's retry runs joins it and
+    // waits for the message. Zed offers no retry for a range in translation.
+    retry_card(&mut server, 4);
+    server
+        .execute_command(&connection, 5.into(), params(COMMAND))
+        .unwrap();
+    assert_eq!(server.scheduler.translations().len(), 1);
+    server
+        .finish(&connection, next(&completions).await)
+        .unwrap();
+    assert!(server.scheduler.translations().is_empty());
+    assert_eq!((response_calls(&fixture), ready(&client)), (3, 1));
 }

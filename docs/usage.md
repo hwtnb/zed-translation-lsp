@@ -22,7 +22,7 @@ Selecting prose just to copy it can also send it for translation.
 
 ## Manual selection translation
 
-To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. Manual execution shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. With the Anthropic API or OpenAI API provider, if no key is saved, save one through `Anthropic API key…` or `OpenAI API key…` first. The Hover translation action is hidden when there is no selection.
+To translate immediately or recover from a background failure, use the `Translate selection to …` Code Action. The Code Action shows `Translation ready. Hover over the selected text to view it.` when complete. Selection translation is also available in code languages and other supported documents. With the ChatGPT provider, if disconnected or plan use is disabled, connect or grant permission through `ChatGPT account…` first. With the Anthropic API or OpenAI API provider, if no key is saved, save one through `Anthropic API key…` or `OpenAI API key…` first. The Hover translation action is hidden when there is no selection.
 
 ## Looking up a word
 
@@ -82,9 +82,9 @@ With `"code_lens": "on"` in Zed's settings, the server shows short commands on a
 | A range being translated | `Translating… \| Cancel`, then `Settings` in code |
 | Above the first line of Markdown and Plain Text | `Translation LSP: Translate in tab \| Auto-translate: On \| <account menu> \| Zed settings` |
 
-`Translate` translates the comment as `Translate selection to …` does, and appears with a provider ready and `selection_action` on. Translated, failed, and running ranges come from comment Hover, selections, and `Translate`; tab translations get no line. Editing the document removes the lines of the ranges whose translations it invalidates.
+`Translate` translates the comment as `Translate selection to …` does, and appears with a provider ready and `selection_action` on. `Retry` translates a failed range again. After either, the line shows the translation, without the message `Translation ready. Hover over the selected text to view it.` that the Code Actions show; if a Code Action waits for the same range, the message still shows. Translated, failed, and running ranges come from comment Hover, selections, and `Translate`; tab translations get no line. Editing the document removes the lines of the ranges whose translations it invalidates.
 
-Click the first line of a translation to read all of it in a card, or `Translation failed` to read the reason. The card stays until you close it. Its `Retry translating this text` button translates the range again. Zed's copy button on the card copies the text as Markdown, with backslashes before symbols and `---` lines before and after it.
+Click the first line of a translation to read all of it in a card, or `Translation failed` to read the reason. The card stays until you close it. Its `Retry translating this text` button translates the range again, and the CodeLens shows the new translation without a message that it is ready. Zed's copy button on the card copies the text as Markdown, with backslashes before symbols and `---` lines before and after it.
 
 `Translate in tab` translates the whole document as `Translate document to … and open in tab` does. It appears with a provider ready and `document_action` on, in a client that supports `window/showDocument`. The account menu item is the provider's account menu, such as `ChatGPT account…`. `Zed settings` opens Zed's settings file, also only in a client that supports `window/showDocument`.
 

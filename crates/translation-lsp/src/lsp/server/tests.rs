@@ -392,6 +392,8 @@ fn provider_capabilities_drive_commands_and_account_actions() {
         [
             COMMAND,
             RETRY_COMMAND,
+            LENS_TRANSLATE_COMMAND,
+            LENS_RETRY_COMMAND,
             LENS_COMMAND,
             SHOW_COMMAND,
             MENU_COMMAND,

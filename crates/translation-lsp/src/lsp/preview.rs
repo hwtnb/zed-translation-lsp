@@ -136,7 +136,9 @@ fn fenced_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use pulldown_cmark::{Event, Parser, Tag};
+    use std::time::{Duration, Instant};
+
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
     use crate::providers::chatgpt::test_support::Fixture;
 
@@ -160,6 +162,65 @@ mod tests {
         });
         assert_eq!(parsed.next().unwrap(), "*");
         assert!(parsed.any(|text| text == "\n"));
+    }
+
+    /// The text of `markdown` when it is one paragraph in Zed, without the
+    /// word joiners that keep URLs from being links.
+    fn zed_text(markdown: &str) -> Option<String> {
+        let mut text = String::new();
+        for event in Parser::new_ext(markdown, markdown::ZED_OPTIONS) {
+            match event {
+                Event::Text(part) => text.push_str(&part),
+                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => (),
+                _ => return None,
+            }
+        }
+        Some(text.replace('\u{2060}', ""))
+    }
+
+    #[test]
+    fn messages_show_dashes_quotes_and_dots_as_written() {
+        for (text, markdown) in [
+            ("--verbose", "\\-\\-verbose"),
+            ("---", "\\-\\-\\-"),
+            ("a - b", "a - b"),
+            ("It's \"quoted\"...", "It\\'s \\\"quoted\\\"\\.\\.\\."),
+            ("1.5", "1\\.5"),
+            ("e.g.", "e.g."),
+            ("a..b", "a..b"),
+            (
+                "`--verbose` を付けると、各試行を表示する。",
+                "\\`\\-\\-verbose\\` を付けると、各試行を表示する。",
+            ),
+        ] {
+            assert_eq!(inline(text), markdown);
+            assert_eq!(zed_text(markdown).as_deref(), Some(text), "{markdown:?}");
+        }
+        // Lines of pieces from a fixed sequence of pseudorandom numbers.
+        const PIECES: &[&str] = &[
+            "-", "--", ".", "...", "'", "\"", "a", "語", " ", "1", "e.g.", "+", ")", "*", "`", "<",
+            ":", "//", "x://y", "[", "]", "(", "!", "#", "=", "|", "~", "_", "&", ";", "\\",
+        ];
+        let started = Instant::now();
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..2000 {
+            let length = 1 + next(12);
+            let text: String = (0..length).map(|_| PIECES[next(PIECES.len())]).collect();
+            let markdown = inline(&text);
+            let written = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                zed_text(&markdown).as_deref(),
+                Some(written.as_str()),
+                "{text:?} → {markdown:?}"
+            );
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]

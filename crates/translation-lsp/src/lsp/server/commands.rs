@@ -8,6 +8,12 @@ use super::{
 pub(super) enum ServerCommand {
     TranslateSelection(TranslationTarget),
     Retry(TranslationTarget),
+    /// The translation of a range from its CodeLens, which shows it when it
+    /// is ready.
+    LensTranslate(TranslationTarget),
+    /// A retry from the CodeLens of a range, which shows the translation when
+    /// it is ready.
+    LensRetry(TranslationTarget),
     /// Shows the translation or failure of a range in a card.
     Show(TranslationTarget),
     OpenTab(TranslationTarget),
@@ -45,6 +51,8 @@ impl ServerCommand {
         match command.as_str() {
             COMMAND => Ok(Self::TranslateSelection(target(arguments)?)),
             RETRY_COMMAND => Ok(Self::Retry(target(arguments)?)),
+            LENS_TRANSLATE_COMMAND => Ok(Self::LensTranslate(target(arguments)?)),
+            LENS_RETRY_COMMAND => Ok(Self::LensRetry(target(arguments)?)),
             SHOW_COMMAND => Ok(Self::Show(target(arguments)?)),
             DOCUMENT_COMMAND => Ok(Self::OpenTab(target(arguments)?)),
             CANCEL_COMMAND => Ok(Self::Cancel(parse(one(
@@ -86,6 +94,8 @@ impl ServerCommand {
         let (command, arguments) = match self {
             Self::TranslateSelection(target) => (COMMAND, Some(vec![to_value(target)?])),
             Self::Retry(target) => (RETRY_COMMAND, Some(vec![to_value(target)?])),
+            Self::LensTranslate(target) => (LENS_TRANSLATE_COMMAND, Some(vec![to_value(target)?])),
+            Self::LensRetry(target) => (LENS_RETRY_COMMAND, Some(vec![to_value(target)?])),
             Self::Show(target) => (SHOW_COMMAND, Some(vec![to_value(target)?])),
             Self::OpenTab(target) => (DOCUMENT_COMMAND, Some(vec![to_value(target)?])),
             Self::Cancel(ticket) => (CANCEL_COMMAND, Some(vec![to_value(ticket)?])),
@@ -122,6 +132,8 @@ impl<P: TranslationProvider> Server<P> {
         let command = ServerCommand::parse::<P>(params)?;
         if let ServerCommand::TranslateSelection(target)
         | ServerCommand::Retry(target)
+        | ServerCommand::LensTranslate(target)
+        | ServerCommand::LensRetry(target)
         | ServerCommand::Show(target)
         | ServerCommand::OpenTab(target) = &command
             && target.target_language != self.settings.target_language
@@ -178,9 +190,18 @@ impl<P: TranslationProvider> Server<P> {
             }
             ServerCommand::TranslateSelection(target) => {
                 self.check_feature(Feature::SelectionAction, &target)?;
-                self.queue(id, target, PendingReply::Command)
+                self.queue(id, target, PendingReply::Command { notice: true })
             }
-            ServerCommand::Retry(target) => self.queue(id, target, PendingReply::Retry),
+            ServerCommand::LensTranslate(target) => {
+                self.check_feature(Feature::SelectionAction, &target)?;
+                self.queue(id, target, PendingReply::Command { notice: false })
+            }
+            ServerCommand::Retry(target) => {
+                self.queue(id, target, PendingReply::Retry { notice: true })
+            }
+            ServerCommand::LensRetry(target) => {
+                self.queue(id, target, PendingReply::Retry { notice: false })
+            }
             ServerCommand::Show(target) => {
                 let gone = || {
                     failure(
