@@ -255,7 +255,23 @@ impl Comments {
         self.0[group.start].range.start..self.0[group.end - 1].range.end
     }
 
+    /// The text of a group, as it is sent to be translated. The body of a
+    /// block comment or a docstring of more than one line leaves out its
+    /// margin, as [`without_margin`] does.
     pub fn body(&self, text: &str, group: Range<usize>) -> String {
+        let body = self.contents(text, group.clone());
+        let comment = &self.0[group.start];
+        match comment.kind {
+            // Only line comments make groups of more than one.
+            Kind::Block { .. } | Kind::Contents(_) => {
+                without_margin(&body, text[comment.range.start..].starts_with("/*"))
+            }
+            _ => body,
+        }
+    }
+
+    /// The text between the marks of a group, as written.
+    fn contents(&self, text: &str, group: Range<usize>) -> String {
         let mut body = String::new();
         for index in group.clone() {
             let comment = &self.0[index];
@@ -333,6 +349,97 @@ fn line_break(character: char, kind: LineKind) -> bool {
         || matches!(kind, LineKind::JavaScript(_) | LineKind::CSharp(_))
             && matches!(character, '\u{2028}' | '\u{2029}')
         || matches!(kind, LineKind::CSharp(_)) && character == '\u{85}'
+}
+
+/// `body` without the margin that the lines of a comment share, if it has more
+/// than one line:
+///
+/// - `stars`, for a comment that opens with `/*`: a first line of only `*`
+///   and `!`, the rest of an opening such as `/**` or `/*!`, is blank; and when
+///   every line after the first that is not blank starts with whitespace, `*`,
+///   and whitespace or its end, that start goes, with at most one whitespace
+///   character after the `*`;
+/// - the whitespace that the lines after the first that are not blank start
+///   with in common goes from each of them, and all whitespace from the start
+///   of the first line;
+/// - blank lines at the start and the end go, and so does whitespace at the
+///   end of the last line.
+///
+/// Lines end at CR LF, LF, and CR, and keep their endings. Whitespace is
+/// spaces and tabs.
+fn without_margin(body: &str, stars: bool) -> String {
+    let mut lines: Vec<(&str, &str)> = Vec::new();
+    let mut rest = body;
+    while let Some(end) = rest.find(['\n', '\r']) {
+        let ending = if rest[end..].starts_with("\r\n") {
+            2
+        } else {
+            1
+        };
+        lines.push((&rest[..end], &rest[end..end + ending]));
+        rest = &rest[end + ending..];
+    }
+    if lines.is_empty() {
+        return body.to_owned();
+    }
+    lines.push((rest, ""));
+    let blank = |line: &str| line.trim_start_matches([' ', '\t']).is_empty();
+    /// `line` after its decoration, if it starts with one.
+    fn star(line: &str) -> Option<&str> {
+        let after = line.trim_start_matches([' ', '\t']).strip_prefix('*')?;
+        match after.as_bytes().first() {
+            None => Some(after),
+            Some(b' ' | b'\t') => Some(&after[1..]),
+            Some(_) => None,
+        }
+    }
+    let opening = lines[0].0.trim_matches([' ', '\t']);
+    if stars && !opening.is_empty() && opening.bytes().all(|byte| matches!(byte, b'*' | b'!')) {
+        lines[0].0 = "";
+    }
+    if stars
+        && lines[1..]
+            .iter()
+            .all(|(line, _)| blank(line) || star(line).is_some())
+    {
+        for (line, _) in &mut lines[1..] {
+            *line = star(line).unwrap_or(line);
+        }
+    }
+    let indent = lines[1..]
+        .iter()
+        .filter(|(line, _)| !blank(line))
+        .map(|(line, _)| &line[..line.len() - line.trim_start_matches([' ', '\t']).len()])
+        .reduce(|common, indent| {
+            let shared = common
+                .bytes()
+                .zip(indent.bytes())
+                .take_while(|(left, right)| left == right)
+                .count();
+            &common[..shared]
+        })
+        .unwrap_or("");
+    lines[0].0 = lines[0].0.trim_start_matches([' ', '\t']);
+    for (line, _) in &mut lines[1..] {
+        *line = line
+            .strip_prefix(indent)
+            .unwrap_or(if blank(line) { "" } else { line });
+    }
+    let first = lines.iter().position(|(line, _)| !blank(line));
+    let last = lines.iter().rposition(|(line, _)| !blank(line));
+    let (Some(first), Some(last)) = (first, last) else {
+        return String::new();
+    };
+    let mut shaped = String::with_capacity(body.len());
+    for (number, (line, ending)) in lines[first..=last].iter().enumerate() {
+        if number + first == last {
+            shaped.push_str(line.trim_end_matches([' ', '\t']));
+        } else {
+            shaped.push_str(line);
+            shaped.push_str(ending);
+        }
+    }
+    shaped
 }
 
 fn newline_len(text: &str) -> Option<usize> {

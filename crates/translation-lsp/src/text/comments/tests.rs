@@ -96,7 +96,7 @@ fn python_docstring_delimiters_newlines_and_non_docstring_contexts() {
         );
         assert_eq!(
             body_at("python", &source, "Read.").1,
-            format!("Read.{ending}    Carefully.{ending}    ")
+            format!("Read.{ending}Carefully.")
         );
     }
     for literal in [
@@ -483,7 +483,7 @@ fn json_and_toml_keep_comments_around_errors_but_never_read_string_contents() {
         }
     }
     assert!(bodies("json", "/* unclosed").is_empty());
-    assert_eq!(bodies("json", "/**/ /* a\n * b */"), ["", "a\n * b "]);
+    assert_eq!(bodies("json", "/**/ /* a\n * b */"), ["", "a\nb"]);
     assert_eq!(bodies("toml", "\u{feff}# bom\na#b = 1"), ["bom", "b = 1"]);
 }
 
@@ -1009,7 +1009,7 @@ fn powershell_comments_exclude_strings_requires_and_the_shebang() {
             [
                 format!("Leading{ending}group."),
                 "inline 😀".to_owned(),
-                format!("block{ending}   comment "),
+                format!("block{ending}comment"),
                 "after".to_owned(),
                 "inner ".to_owned(),
                 "nested".to_owned(),
@@ -2145,7 +2145,7 @@ fn css_comments_exclude_strings_escapes_and_urls() {
             "/* after percentage */",
         ]
     );
-    assert_eq!(bodies("css", "/* Retry\n   now */"), ["Retry\n   now "]);
+    assert_eq!(bodies("css", "/* Retry\n   now */"), ["Retry\nnow"]);
 }
 
 fn html(text: &str) -> Vec<String> {
@@ -2321,7 +2321,7 @@ fn ruby_comments_exclude_literals_and_follow_what_precedes_an_operator() {
             "=begin\nblock\n=end",
         ]
     );
-    assert_eq!(bodies("ruby", "=begin\nOne\ntwo\n=end"), ["One\ntwo\n"]);
+    assert_eq!(bodies("ruby", "=begin\nOne\ntwo\n=end"), ["One\ntwo"]);
     // An unclosed literal or `=begin` hides the rest.
     for text in [
         "# a\n\"# b",
@@ -2404,7 +2404,7 @@ fn ruby_variables_are_declared_where_ruby_declares_them() {
     }
     assert_eq!(
         bodies("ruby", "=begin\r\nOne\r\n=end\r\n# Two"),
-        ["One\r\n", "Two"]
+        ["One", "Two"]
     );
 }
 
@@ -2776,25 +2776,179 @@ fn line_groups_preserve_endings_and_break_on_blank_code_kind_and_indent() {
 }
 
 #[test]
-fn bodies_strip_only_one_opening_ascii_space_and_keep_tabs_unicode_and_stars() {
+fn single_line_bodies_strip_only_one_opening_ascii_space_and_keep_tabs_and_unicode() {
     for language in ["rust", "javascript", "typescript", "typescriptreact"] {
-        let text = "/** \t`id` 🚀\r\n * keep  \r\n */";
-        assert_eq!(
-            body_at(language, text, "/**").1,
-            "\t`id` 🚀\r\n * keep  \r\n "
-        );
-        assert_eq!(body_at(language, "/*\n * next */", "/*").1, "\n * next ");
         assert_eq!(body_at(language, "/**/", "/**/").1, "");
         for (text, expected) in [
             ("//\tkeep", "\tkeep"),
             ("//  keep", " keep"),
             ("//\u{a0}keep", "\u{a0}keep"),
             ("/*\tkeep */", "\tkeep "),
+            ("/** \t`id` 🚀 */", "\t`id` 🚀 "),
         ] {
             assert_eq!(body_at(language, text, text).1, expected);
         }
     }
     assert_eq!(body_at("rust", "/*! inner */", "/*!").1, "inner ");
+}
+
+#[test]
+fn bodies_of_more_lines_leave_out_their_margin() {
+    for (comment, stars, expected) in [
+        ("a\n * b ", true, "a\nb"),
+        ("\n  x * y\n  * z\n ", true, "x * y\n* z"),
+        ("\t`id` 🚀\r\n * keep  \r\n ", true, "`id` 🚀\r\nkeep"),
+        ("\n * next ", true, "next"),
+        (
+            "\n * Steps:\n *   - a\n *\n *       code\n ",
+            true,
+            "Steps:\n  - a\n\n      code",
+        ),
+        ("\n *\tx\n ", true, "x"),
+        ("\r * a\r * b\r ", true, "a\rb"),
+        ("\r\n *\r\n ", true, ""),
+        // `**` is not a decoration, and neither is a `*` on only some lines.
+        ("\n ** a\n ** b\n", true, "** a\n** b"),
+        (" a\n * b\n c ", true, "a\n* b\nc"),
+        // Comments without decorations keep their `*` lists.
+        ("Items:\n    * a\n    * b\n    ", false, "Items:\n* a\n* b"),
+        ("\n    a\n      b\n", false, "a\n  b"),
+        ("\n\t a\n\t  b\n", false, "a\n b"),
+        ("\n    a\n\n  \n    b\n", false, "a\n\n\nb"),
+        ("  one line  ", true, "  one line  "),
+        // The rest of an opening such as `/**` or `/*!` is not text.
+        ("*\n * a\n ", true, "a"),
+        ("!\n * a\n ", true, "a"),
+        ("**! \n * a\n", true, "a"),
+        ("* a\n * b\n", true, "* a\nb"),
+        ("*\n    a\n", false, "*\na"),
+    ] {
+        assert_eq!(without_margin(comment, stars), expected, "{comment:?}");
+    }
+    // Every language's block comments and docstrings, with or without the
+    // decoration of `*`.
+    for (language, text) in [
+        ("c", "/* a\n * b */"),
+        ("cpp", "/* a\n * b */"),
+        ("csharp", "/** a\n * b */"),
+        ("java", "/** a\n * b */"),
+        ("javascript", "/** a\n * b */"),
+        ("typescript", "/* a\n * b */"),
+        ("typescriptreact", "/* a\n * b */"),
+        ("rust", "/** a\n * b */"),
+        ("rust", "/*! a\n * b */"),
+        ("go", "/* a\n * b */"),
+        ("kotlin", "/** a\n * b */"),
+        ("swift", "/** a\n * b */"),
+        ("php", "<?php /** a\n * b */"),
+        ("css", "/* a\n * b */"),
+        ("sql", "/* a\n * b */"),
+        ("proto", "/* a\n * b */"),
+        ("jsonc", "/* a\n * b */"),
+        ("vue", "<script>\n/* a\n * b */\n</script>"),
+        ("svelte", "<script>\n/* a\n * b */\n</script>"),
+        ("astro", "---\n/* a\n * b */\n---"),
+    ] {
+        let marker = if text.contains("/*!") { "/*!" } else { "/*" };
+        assert_eq!(body_at(language, text, marker).1, "a\nb", "{language}");
+    }
+    // These read `/**` as `/*` and a `*` of the text, and so does Rust `/***`.
+    for (language, text, expected) in [
+        ("css", "/**\n * a\n */", "a"),
+        ("go", "/**\n * a\n */", "a"),
+        ("sql", "/**\n * a\n */", "a"),
+        ("proto", "/**\n * a\n */", "a"),
+        ("json", "/**\n * a\n */", "a"),
+        ("jsonc", "/**\n * a\n */", "a"),
+        ("css", "/*!\n * Bootstrap v5\n */", "Bootstrap v5"),
+        ("rust", "/***\n * a\n */", "a"),
+        ("css", "/**\n *\n */", ""),
+        // A comment on one line stays as it was.
+        ("css", "/** a */", "* a "),
+        ("css", "/*! a */", "! a "),
+    ] {
+        assert_eq!(
+            body_at(language, text, "/*").1,
+            expected,
+            "{language} {text:?}"
+        );
+    }
+    for (language, text, marker) in [
+        ("powershell", "<# a\n * b #>", "<#"),
+        (
+            "python",
+            "def f():\n    \"\"\"a\n    * b\n    \"\"\"",
+            "\"\"\"",
+        ),
+        ("html", "<!-- a\n * b -->", "<!--"),
+        ("xml", "<!-- a\n * b -->", "<!--"),
+        ("vue", "<!-- a\n * b -->", "<!--"),
+        ("lua", "--[[ a\n * b ]]", "--[["),
+        ("ruby", "=begin\na\n * b\n=end", "=begin"),
+    ] {
+        assert_eq!(body_at(language, text, marker).1, "a\n* b", "{language}");
+    }
+    // A comment of only decorations has no words to translate.
+    let uri = "file:///empty.c".parse().unwrap();
+    let text = "/**\n *\n */\n";
+    let comments = parsed("c", &uri, text);
+    assert_eq!(comments.body(text, 0..1), "");
+}
+
+/// `text` with LF for each line ending, which a checkout may have changed.
+fn with_line_feeds(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+#[test]
+fn samples_are_sent_without_decorations_and_indentation() {
+    let java = with_line_feeds(include_str!("../../../../../samples/hover.java"));
+    assert_eq!(
+        body_at("java", &java, "/**").1,
+        [
+            "Sends the request again after a temporary failure.",
+            "",
+            "<p>The wait doubles after each failure. See",
+            "https://example.com/docs/retries for the list of temporary failures.",
+            "",
+            "@param retryCount how many times to try again; {@code 0} turns retries off",
+            "@return the number of attempts that were made",
+            "@throws IllegalStateException if the client is closed",
+        ]
+        .join("\n")
+    );
+    assert_eq!(
+        body_at("java", &java, "/*\n").1,
+        "Steps:\n- Wait 200 ms before the first retry.\n- Double the wait after each failure."
+    );
+    let python = with_line_feeds(include_str!("../../../../../samples/hover.py"));
+    assert_eq!(
+        body_at("python", &python, "\"\"\"").1,
+        [
+            "Send the request again after a temporary failure.",
+            "",
+            "The wait doubles after each failure. See",
+            "https://example.com/docs/retries for the list of temporary failures.",
+            "",
+            "Args:",
+            "    retry_count: How many times to try again. Use 0 to turn retries off.",
+            "    verbose: Print each attempt, like `--verbose` on the command line.",
+            "",
+            "Returns:",
+            "    The number of attempts that were made.",
+            "",
+            "Example:",
+            "    >>> send(3)",
+            "    3",
+        ]
+        .join("\n")
+    );
+    // Line comments keep the indentation after their marks.
+    let rust = with_line_feeds(include_str!("../../../../../samples/hover.rs"));
+    assert_eq!(
+        body_at("rust", &rust, "//   - An").1,
+        "  - An indented item of a list.\n  - Another item, with *emphasis* and ~~text struck out~~."
+    );
 }
 
 #[test]
@@ -3014,7 +3168,7 @@ fn lua_comments_exclude_strings_and_long_strings_and_skip_a_first_line_of_hash()
         bodies("lua", "--- One\n--- two\n-- Three\n"),
         ["One\ntwo", "Three"]
     );
-    assert_eq!(bodies("lua", "--[==[\nLong\n]==]"), ["Long\n"]);
+    assert_eq!(bodies("lua", "--[==[\nLong\n]==]"), ["Long"]);
     // Only a line feed ends a first line that starts with `#`.
     assert!(lua("#!\r-- hidden").is_empty());
 }
@@ -3147,7 +3301,7 @@ fn vue_comments_are_read_by_block() {
             "<!-- end -->",
         ]
     );
-    assert_eq!(bodies("vue", "<!-- One\ntwo -->"), ["One\ntwo "]);
+    assert_eq!(bodies("vue", "<!-- One\ntwo -->"), ["One\ntwo"]);
 }
 
 #[test]
@@ -3297,7 +3451,7 @@ fn xml_comments_exclude_markup_sections_and_declarations() {
         xml(text),
         ["<!-- prolog -->", "<!-- in subset -->", "<!--inline-->"]
     );
-    assert_eq!(bodies("xml", "<!-- One\ntwo -->"), ["One\ntwo "]);
+    assert_eq!(bodies("xml", "<!-- One\ntwo -->"), ["One\ntwo"]);
 }
 
 fn make(text: &str) -> Vec<String> {

@@ -264,14 +264,26 @@ mod tests {
     #[test]
     fn comment_ranges_list_the_groups_with_words_in_order() {
         let uri: Uri = "untitled:sample".parse().unwrap();
-        let text = "// first\n// second\nfn f() {}\n//\n/* third */ /* open";
+        // A comment of only decorations has no words.
+        let text = "// first\n// second\nfn f() {}\n//\n/**\n *\n */\n/* third */ /* open";
         let mut document = Document::new(1, 1, "rust".into(), text.into());
         assert_eq!(
             document.comment_ranges(&uri, LIMIT),
             [
                 Range::new(Position::new(0, 0), Position::new(1, 9)),
-                Range::new(Position::new(4, 0), Position::new(4, 11)),
+                Range::new(Position::new(7, 0), Position::new(7, 11)),
             ]
+        );
+    }
+
+    #[test]
+    fn comments_of_only_decorations_have_no_range_in_css() {
+        let uri: Uri = "untitled:sample.css".parse().unwrap();
+        let text = "/**\n *\n */\na {}\n/**\n * Theme colors.\n */";
+        let mut document = Document::new(1, 1, "css".into(), text.into());
+        assert_eq!(
+            document.comment_ranges(&uri, LIMIT),
+            [Range::new(Position::new(4, 0), Position::new(6, 3))]
         );
     }
 

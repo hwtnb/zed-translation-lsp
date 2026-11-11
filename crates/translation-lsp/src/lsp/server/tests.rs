@@ -219,7 +219,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
             .unwrap()
             .is_none()
     );
-    finish(&mut server, "\tkeep\r\n * star ");
+    finish(&mut server, "keep\r\nstar");
     let left_start = source.find("/* left").unwrap();
     let left_range = server
         .documents

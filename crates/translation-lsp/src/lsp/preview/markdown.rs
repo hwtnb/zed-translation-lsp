@@ -1,6 +1,7 @@
 //! The Markdown that Hover shows a translation in. The formatting that the
 //! translation writes on purpose stays: code, headings, lists, block quotes,
-//! tables, rules, `*` emphasis, and links to URLs of the original. Every other
+//! tables, rules, `*` emphasis, `~~` struck text, and links to URLs of the
+//! original. Every other
 //! character shows as written, and each line break of the translation shows as
 //! a line break.
 //!
@@ -32,7 +33,8 @@ const ZED_OPTIONS: Options = Options::ENABLE_TABLES
 
 /// The options that read the formatting a translation keeps. Every other
 /// extension is left out, so that its markup reads as text and is escaped.
-const KEPT_OPTIONS: Options = Options::ENABLE_TABLES;
+/// Of struck text, only `~~text~~` stays: Zed reads `~text~` as subscript.
+const KEPT_OPTIONS: Options = Options::ENABLE_TABLES.union(Options::ENABLE_STRIKETHROUGH);
 
 /// A word joiner, put after the `:` of a URL so that Zed makes no link of it.
 const LINK_BREAK: char = '\u{2060}';
@@ -311,6 +313,8 @@ enum Owner {
     CodeBlock,
     /// Emphasis or strong emphasis written with `*`.
     Star,
+    /// Text struck out with `~~`.
+    Struck,
     /// A link `[text](URL)` to one of the URLs of the original, whose `[` is
     /// at `start`.
     Link {
@@ -333,6 +337,7 @@ impl Owner {
             Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => Self::Table,
             Tag::CodeBlock(_) => Self::CodeBlock,
             Tag::Emphasis | Tag::Strong if text[start] == b'*' => Self::Star,
+            Tag::Strikethrough if text[start..].starts_with(b"~~") => Self::Struck,
             Tag::Link {
                 link_type: LinkType::Inline,
                 dest_url,
@@ -364,21 +369,29 @@ impl Owner {
             Self::Table => matches!(byte, b'|' | b'-' | b':'),
             Self::CodeBlock | Self::Autolink => true,
             Self::Star => byte == b'*',
+            Self::Struck => byte == b'~',
             Self::Link { start } => closing || index == start,
         };
         if markup { Role::Markup } else { Role::Text }
     }
 }
 
-/// The length of the marker that starts a list item: a bullet, or digits and
-/// `.` or `)`.
+/// The length of the start of a list item up to the end of its marker: a
+/// bullet, or digits and `.` or `)`. Before its marker, an item can start with
+/// the indentation, and after a tab, with the line break or `>` before it.
 fn marker_length(item: &[u8]) -> usize {
-    let digits = item.iter().take_while(|b| b.is_ascii_digit()).count();
-    if digits > 0 {
-        digits + usize::from(matches!(item.get(digits), Some(b'.' | b')')))
-    } else {
-        usize::from(matches!(item.first(), Some(b'-' | b'+' | b'*')))
-    }
+    let before = item
+        .iter()
+        .take_while(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'>'))
+        .count();
+    let marker = &item[before..];
+    let digits = marker.iter().take_while(|b| b.is_ascii_digit()).count();
+    before
+        + if digits > 0 {
+            digits + usize::from(matches!(marker.get(digits), Some(b'.' | b')')))
+        } else {
+            usize::from(matches!(marker.first(), Some(b'-' | b'+' | b'*')))
+        }
 }
 
 /// Assigns roles to the bytes of a text in order.
@@ -756,9 +769,21 @@ fn shown(markdown: &str) -> Option<Vec<String>> {
         match event {
             Event::Text(part) | Event::Code(part) => text.push_str(&part),
             Event::SoftBreak => text.push(' '),
-            Event::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Link | TagEnd::TableCell) => (),
+            Event::End(
+                TagEnd::Emphasis
+                | TagEnd::Strong
+                | TagEnd::Strikethrough
+                | TagEnd::Link
+                | TagEnd::TableCell,
+            ) => (),
             Event::HardBreak | Event::Rule | Event::End(_) => text.push('\n'),
-            Event::Start(Tag::Emphasis | Tag::Strong | Tag::TableCell | Tag::Link { .. }) => (),
+            Event::Start(
+                Tag::Emphasis
+                | Tag::Strong
+                | Tag::Strikethrough
+                | Tag::TableCell
+                | Tag::Link { .. },
+            ) => (),
             Event::Start(
                 Tag::Paragraph
                 | Tag::Heading { .. }

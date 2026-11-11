@@ -8,6 +8,8 @@ This page describes how to request, read, cancel, and retry translations, and wh
 
 Hover over a supported code comment, or place the cursor in it and run Zed's `editor: hover`. Adjacent line comments of the same kind and indentation are translated together; blank lines or code split the group. Each block comment is handled separately. Comment markers and one following ASCII space are removed from the text submitted for translation.
 
+A block comment or a docstring of more than one line is also sent without its margin. In a comment that starts with `/*`, a first line of only `*` and `!`, such as the rest of `/**` or `/*!`, is removed. When every line after the first that is not blank starts with `*`, that `*` and one space or tab after it are removed. Then the indentation that the lines after the first share, the spaces and tabs at the start of the first line, blank lines at the start and end, and spaces and tabs at the end of the last line are removed. The lines keep their indentation relative to each other and the blank lines between them.
+
 Zed controls Hover placement and width. The extension cannot guarantee placement above the text or that the popup leaves all source text visible.
 
 ## Markdown selection
@@ -36,8 +38,8 @@ The translation of a comment, of a selection in code, or of Plain Text shows as 
 
 - code spans, and code blocks fenced or indented after a blank line
 - headings that start with `#` or are underlined with `===` or `---`
-- lists that start with `-`, `*`, `+`, or a number, block quotes, tables, and rules
-- emphasis with `*` and `**`
+- lists that start with `-`, `*`, `+`, or a number, indented or not, block quotes, tables, and rules
+- emphasis with `*` and `**`, and text struck out with `~~`
 - links written as `[text](URL)` to a URL that the original text contains
 
 Every other character shows as written: `__init__`, `--verbose`, `\d+\.\d+`, `Vec<T>`, `<!-- note -->`, `~a~`, and `[^1]` stay as they are, and quotes and `...` are not replaced with typographic ones. Each line break of the translation shows as a line break, and one blank line or more separates paragraphs. Spaces at the start of a line inside a paragraph do not show. A translation whose formatting cannot be kept this way shows its lines as written, without formatting.
@@ -121,4 +123,4 @@ To look up a term, the model receives the term and, marked separately, the line 
 
 Explicit selection and document actions send the requested text even when it is indented or contains only code. The model is instructed to preserve code and identifiers. Markdown prose eligibility limits only automatic background translation; the extension does not report the original text as a successful translation without contacting the provider.
 
-The extension submits the extracted comment body, the selected text, or the whole document when you explicitly choose document translation. For a term, it also submits the term's line. It does not submit conversation history or write translations back into the source document.
+The extension submits the extracted comment body, without the marks and margin described under [Comment Hover](#comment-hover), the selected text, or the whole document when you explicitly choose document translation. For a term, it also submits the term's line. It does not submit conversation history or write translations back into the source document.

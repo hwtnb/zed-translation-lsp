@@ -24,8 +24,20 @@ fn display(markdown: &str) -> String {
                 shown.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
             }
             Event::SoftBreak => shown.push(' '),
-            Event::Start(Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::TableCell)
-            | Event::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Link | TagEnd::TableCell) => {}
+            Event::Start(
+                Tag::Emphasis
+                | Tag::Strong
+                | Tag::Strikethrough
+                | Tag::Link { .. }
+                | Tag::TableCell,
+            )
+            | Event::End(
+                TagEnd::Emphasis
+                | TagEnd::Strong
+                | TagEnd::Strikethrough
+                | TagEnd::Link
+                | TagEnd::TableCell,
+            ) => {}
             Event::Start(_) | Event::End(_) | Event::HardBreak | Event::Rule => shown.push('\n'),
             _ => (),
         }
@@ -62,7 +74,7 @@ fn accidental_markdown_shows_as_written() {
         "--verbose を付ける",
         r#"It's "quoted"..."#,
         r"\d+\.\d+ に一致する",
-        "~a~、~~a~~、a^b^",
+        "~a~、a^b^",
         "[^1]、[note]",
         "<!-- x -->",
         "Vec<T>、<div>",
@@ -121,7 +133,7 @@ type Is = fn(&Event) -> bool;
 
 #[test]
 fn intended_markdown_stays() {
-    let cases: [(&str, Is, &[&str]); 16] = [
+    let cases: [(&str, Is, &[&str]); 20] = [
         (
             "`retry_count` を使う",
             |e| matches!(e, Event::Code(_)),
@@ -202,6 +214,27 @@ fn intended_markdown_stays() {
             |e| matches!(e, Event::Start(Tag::List(None))),
             &["一", "入れ子", "二"],
         ),
+        // A list may be indented.
+        (
+            "オプション:\n  - a\n  - b",
+            |e| matches!(e, Event::Start(Tag::List(None))),
+            &["オプション:", "a", "b"],
+        ),
+        (
+            " 1. a\n 2. b",
+            |e| matches!(e, Event::Start(Tag::List(Some(1)))),
+            &["a", "b"],
+        ),
+        (
+            "前文\n\n  * a\n  * b",
+            |e| matches!(e, Event::Start(Tag::List(None))),
+            &["前文", "a", "b"],
+        ),
+        (
+            "~~取り消し~~ の文",
+            |e| matches!(e, Event::Start(Tag::Strikethrough)),
+            &["取り消し の文"],
+        ),
     ];
     for (translation, expected, lines) in cases {
         let markdown = rendered(translation);
@@ -214,6 +247,81 @@ fn intended_markdown_stays() {
     // Formatting inside formatting stays too.
     let markdown = rendered("> - *一* と `a_b`\n>   続き");
     assert_eq!(markdown, "> - *一* と `a_b`\\\n>   続き");
+}
+
+#[test]
+fn lists_indented_with_tabs_stay() {
+    // An item after a tab starts at the line break or `>` before it.
+    for (translation, items, lines) in [
+        ("- a\n\t- b", 2, &["a", "b"][..]),
+        ("- a\n\n\t- b", 2, &["a", "b"]),
+        ("* x\n\t1. y", 2, &["x", "y"]),
+        (">\t- a", 1, &["a"]),
+    ] {
+        let markdown = rendered(translation);
+        assert_eq!(
+            structure(&markdown)
+                .iter()
+                .filter(|event| matches!(event, Event::Start(Tag::Item)))
+                .count(),
+            items,
+            "{translation:?} → {markdown:?}"
+        );
+        assert_eq!(display_lines(&markdown), lines, "{markdown:?}");
+        let (normalized, rendered) = traced(translation);
+        check(&normalized, &rendered).unwrap();
+    }
+}
+
+/// The text that `markdown` strikes out, in Zed, and whether it has other
+/// formatting than paragraphs and struck text.
+fn struck(markdown: &str) -> (Vec<String>, bool) {
+    let mut struck = Vec::new();
+    let mut inside = false;
+    let mut other = false;
+    for event in Parser::new_ext(markdown, ZED_OPTIONS) {
+        match event {
+            Event::Start(Tag::Strikethrough) => {
+                inside = true;
+                struck.push(String::new());
+            }
+            Event::End(TagEnd::Strikethrough) => inside = false,
+            Event::Text(text) if inside => struck.last_mut().unwrap().push_str(&text),
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::Text(_) => (),
+            _ => other = true,
+        }
+    }
+    (struck, other)
+}
+
+#[test]
+fn only_two_tildes_strike_text_out() {
+    for (translation, expected) in [
+        ("~~a~~", &["a"][..]),
+        ("前~~取り消し~~後", &["取り消し"]),
+        ("日本語 ~~struck~~ 日本語", &["struck"]),
+        ("~a~", &[]),
+        ("~~a~", &[]),
+        ("~/.config と ~/.cache", &[]),
+        ("a ~~ b ~~ c", &[]),
+        ("前~取り消し~後", &[]),
+    ] {
+        let markdown = rendered(translation);
+        assert_eq!(
+            struck(&markdown),
+            (
+                expected.iter().map(|text| text.to_string()).collect(),
+                false
+            ),
+            "{translation:?} → {markdown:?}"
+        );
+        let shown = expected.iter().fold(translation.to_owned(), |shown, text| {
+            shown.replace(&format!("~~{text}~~"), text)
+        });
+        assert_eq!(display(&markdown).trim(), shown, "{markdown:?}");
+        let (normalized, rendered) = traced(translation);
+        check(&normalized, &rendered).unwrap();
+    }
 }
 
 /// The destinations of the links and images of `markdown`.
@@ -503,6 +611,8 @@ const PIECES: &[&str] = &[
     "~~~\n",
     "~",
     "~~",
+    "~~a~~",
+    "~a~",
     "^",
     "#",
     "# ",
@@ -573,8 +683,8 @@ fn corpus(count: usize) -> Vec<String> {
 enum Seen {
     /// Text or code that shows.
     Shown,
-    /// Formatting that stays: markers of blocks, `*` emphasis, code
-    /// delimiters, and the syntax of links to URLs of the original.
+    /// Formatting that stays: markers of blocks, `*` emphasis, `~~` struck
+    /// text, code delimiters, and the syntax of links to URLs of the original.
     Formatting,
     /// Anything else that does not show.
     Hidden,
@@ -599,6 +709,7 @@ enum Construct {
     Table,
     CodeBlock,
     Star,
+    Struck,
     Link,
     Other,
 }
@@ -613,6 +724,7 @@ impl Construct {
                 Self::Table => matches!(byte, b'|' | b'-' | b':'),
                 Self::CodeBlock | Self::Link => true,
                 Self::Star => byte == b'*',
+                Self::Struck => byte == b'~',
             }
     }
 }
@@ -669,6 +781,9 @@ fn check(translation: &str, rendered: &Writer) -> Result<(), String> {
                     }
                     Tag::CodeBlock(_) => Construct::CodeBlock,
                     Tag::Emphasis | Tag::Strong if bytes[range.start] == b'*' => Construct::Star,
+                    Tag::Strikethrough if bytes[range.start..].starts_with(b"~~") => {
+                        Construct::Struck
+                    }
                     Tag::Link {
                         link_type: LinkType::Inline | LinkType::Autolink,
                         dest_url,
@@ -683,7 +798,11 @@ fn check(translation: &str, rendered: &Writer) -> Result<(), String> {
                 }
                 if !matches!(
                     tag,
-                    Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::TableCell
+                    Tag::Emphasis
+                        | Tag::Strong
+                        | Tag::Strikethrough
+                        | Tag::Link { .. }
+                        | Tag::TableCell
                 ) {
                     sequence.push(Err(Separator::Block));
                 }
@@ -696,7 +815,11 @@ fn check(translation: &str, rendered: &Writer) -> Result<(), String> {
                 }
                 if !matches!(
                     end,
-                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Link | TagEnd::TableCell
+                    TagEnd::Emphasis
+                        | TagEnd::Strong
+                        | TagEnd::Strikethrough
+                        | TagEnd::Link
+                        | TagEnd::TableCell
                 ) {
                     sequence.push(Err(Separator::Block));
                 }
@@ -897,7 +1020,7 @@ fn shown_text_matches_the_translation_for_a_fixed_corpus() {
             fallbacks += 1;
         }
     }
-    // Few translations fall back to plain lines: 3 of these when measured.
+    // Few translations fall back to plain lines: 2 of these when measured.
     assert!(fallbacks < corpus.len() / 100, "{fallbacks} fallbacks");
     assert!(started.elapsed() < Duration::from_secs(60));
 }
@@ -941,8 +1064,9 @@ enum Edit {
 fn the_check_rejects_broken_conversions() {
     // A letter, the space between two words, the space after formatting, one
     // line feed of a blank line between paragraphs, the backslash of a line
-    // break inside a paragraph, or a line feed of a code block goes; that
-    // backslash turns into a line feed; or a character is added that shows.
+    // break inside a paragraph, a line feed of a code block, or a `~` of
+    // struck text goes; that backslash turns into a line feed; or a character
+    // is added that shows.
     for (translation, edit) in [
         ("alpha beta", Edit::Remove("l")),
         ("alpha beta", Edit::Remove(" ")),
@@ -954,6 +1078,7 @@ fn the_check_rejects_broken_conversions() {
         ("alpha beta", Edit::Prepend('<')),
         ("alpha beta", Edit::Append('>')),
         ("alpha beta", Edit::Append('\\')),
+        ("~~struck~~ text", Edit::Remove("~")),
     ] {
         let (normalized, rendered) = traced(translation);
         check(&normalized, &rendered).unwrap();
@@ -1022,6 +1147,9 @@ fn conversion_time() {
         "<!--",
         "[^1]",
         "~",
+        "~~",
+        "~~a",
+        "~~a~~ ",
         "    a\n",
         "1. ",
         "#",

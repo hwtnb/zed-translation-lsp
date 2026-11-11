@@ -80,7 +80,7 @@ The text submitted for translation is described under [What is sent](../usage.md
 
 - The lines of a paragraph are joined into one segment, so that a sentence broken across lines is translated as one sentence. A paragraph ends at a blank line, at a line that ends with a colon, and before a line that starts with `@`, such as a documentation tag.
 - A Markdown heading, a list item with the lines after it, a quote, and a table cell are each a segment. The translation is put back after the marks that began the line, such as `## `, `- `, or `> `, and the row under a table's header is kept as it was.
-- In a block comment whose lines start with `*`, such as `/** … */`, the `*` of each line is kept and is not read as a list item.
+- In text whose lines after the first all start with indentation and `*`, such as a selection inside a `/** … */` comment, the `*` of each line is kept and is not read as a list item. A whole comment is sent without these `*`.
 - Code blocks between fences such as `` ``` `` are not sent and are kept as they were, as are blank lines and thematic breaks.
 - Code spans between backticks and URLs starting with `http://` or `https://` are sent marked as XML, and DeepL is asked to leave the marked parts untranslated. The server puts the original text back in place of each mark.
 - A segment with no letters outside its code spans and URLs is not sent.

@@ -68,8 +68,11 @@ relative to the repository root.
 
 - Translation previews leave the source document unchanged. Send the selected
   text or comment body as prose and display the completed translation directly.
-  Except for dictionary entries and `hover.format: "text"`, Hover shows it
-  through `lsp/preview/markdown.rs`: the formatting the translation means
+  A block comment or docstring of more than one line is sent without its
+  margin: `*` decorations, shared indentation, and blank lines around it
+  (`text/comments.rs`). Except for dictionary entries and
+  `hover.format: "text"`, Hover shows it through `lsp/preview/markdown.rs`:
+  the formatting the translation means
   stays and every other character shows as written, and the translation of a
   Markdown document keeps its Markdown. Links in Hover, except in dictionary
   entries, open only URLs of the original. Prompt the model to preserve code,
