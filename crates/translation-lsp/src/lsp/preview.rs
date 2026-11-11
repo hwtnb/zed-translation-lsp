@@ -1,10 +1,16 @@
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 use uuid::Uuid;
 
-use crate::providers::dictionary::inline;
+use crate::{
+    config::hover::{HoverFormat, HoverSettings},
+    providers::dictionary::inline,
+};
 
 pub(super) mod cache;
 pub(super) mod files;
+pub(super) mod markdown;
+
+use markdown::Urls;
 
 #[derive(Clone)]
 pub(crate) struct Preview<C> {
@@ -12,11 +18,24 @@ pub(crate) struct Preview<C> {
     pub context: C,
     pub range: Range,
     pub translation: String,
-    /// The translation is a dictionary entry in Markdown.
-    pub entry: bool,
+    pub form: Form,
     pub is_comment: bool,
     /// The provider's line under the Hover title.
     pub note: Option<&'static str>,
+    /// The `hover` settings that the translation completed under.
+    pub hover: HoverSettings,
+}
+
+/// What a translation is, which decides how Hover shows it.
+#[derive(Clone)]
+pub(crate) enum Form {
+    /// A dictionary entry in Markdown.
+    Entry,
+    /// The translation of a Markdown document, which is Markdown, with the
+    /// URLs of its original.
+    Markdown(Urls),
+    /// Any other translation, with the URLs of its original.
+    Text(Urls),
 }
 
 impl<C> Preview<C> {
@@ -32,9 +51,10 @@ impl<C> Preview<C> {
             context,
             range,
             translation,
-            entry: false,
+            form: Form::Text(Urls::default()),
             is_comment,
             note,
+            hover: HoverSettings::default(),
         }
     }
 
@@ -44,19 +64,31 @@ impl<C> Preview<C> {
         if position < self.range.start || position > self.range.end {
             return None;
         }
-        let header = match self.note {
-            Some(note) => format!("> **Translation LSP**\n>\n> {note}"),
-            None => "> **Translation LSP**".into(),
+        let body = match (&self.form, self.hover.format) {
+            (Form::Entry, _) => self.translation.clone(),
+            // A link to elsewhere would be one the original does not have.
+            (Form::Markdown(urls), HoverFormat::Markdown) => {
+                markdown::document(&self.translation, urls)
+                    .unwrap_or_else(|| fenced_text(&self.translation))
+            }
+            (Form::Text(urls), HoverFormat::Markdown) => markdown::render(&self.translation, urls),
+            (Form::Markdown(_) | Form::Text(_), HoverFormat::Text) => {
+                fenced_text(&self.translation)
+            }
         };
-        let body = if self.entry {
-            self.translation.clone()
+        let value = if self.hover.header {
+            let header = match self.note {
+                Some(note) => format!("> **Translation LSP**\n>\n> {note}"),
+                None => "> **Translation LSP**".into(),
+            };
+            format!("{header}\n\n---\n\n{body}")
         } else {
-            fenced_text(&self.translation)
+            body
         };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("{header}\n\n---\n\n{body}"),
+                value,
             }),
             range: Some(self.range),
         })
@@ -66,7 +98,7 @@ impl<C> Preview<C> {
     /// lines of a message but not those of a code block in it, so the text is
     /// escaped instead of fenced.
     pub fn message(&self) -> String {
-        if self.entry {
+        if matches!(self.form, Form::Entry) {
             self.translation.clone()
         } else {
             plain_text(&self.translation)
@@ -143,27 +175,36 @@ mod tests {
         fixture.connected(&auth, 3600).await;
         let source =
             "\t`id` 🚀\r\n````\r\n<script>**text**</script> ![image](https://example.invalid/)";
-        for note in [Some("Mock translation (fixed sample)"), None] {
-            let preview = Preview::new(
+        for (note, format) in [
+            (Some("Mock translation (fixed sample)"), HoverFormat::Text),
+            (None, HoverFormat::Text),
+            (
+                Some("Mock translation (fixed sample)"),
+                HoverFormat::Markdown,
+            ),
+            (None, HoverFormat::Markdown),
+        ] {
+            let mut preview = Preview::new(
                 auth.key().unwrap(),
                 Range::new(Position::new(0, 0), Position::new(0, 1)),
                 source.into(),
                 false,
                 note,
             );
-            let HoverContents::Markup(content) =
-                preview.hover(preview.range.start).unwrap().contents
-            else {
-                panic!("Expected Markdown");
-            };
-            assert!(content.value.starts_with("> **Translation LSP**"));
-            assert!(!content.value.contains("ChatGPT 翻訳"));
+            preview.hover.format = format;
+            let value = value(&preview);
+            assert!(value.starts_with("> **Translation LSP**"));
+            assert!(!value.contains("ChatGPT 翻訳"));
             assert_eq!(
-                content.value.contains("Mock translation (fixed sample)"),
+                value.contains("Mock translation (fixed sample)"),
                 note.is_some()
             );
-            assert!(content.value.ends_with(&fenced_text(source)));
-            let events: Vec<_> = Parser::new(&content.value).collect();
+            let body = match format {
+                HoverFormat::Text => fenced_text(source),
+                HoverFormat::Markdown => markdown::render(source, &Urls::default()),
+            };
+            assert!(value.ends_with(&format!("\n\n---\n\n{body}")));
+            let events: Vec<_> = Parser::new(&value).collect();
             assert_eq!(
                 events
                     .iter()
@@ -178,12 +219,10 @@ mod tests {
                     .count(),
                 1
             );
-            assert_eq!(
+            assert!(
                 events
                     .iter()
-                    .filter(|event| matches!(event, Event::Start(Tag::CodeBlock(_))))
-                    .count(),
-                1
+                    .any(|event| matches!(event, Event::Start(Tag::CodeBlock(_))))
             );
             assert!(!events.iter().any(|event| matches!(
                 event,
@@ -191,6 +230,61 @@ mod tests {
             )));
         }
         assert!(fixture.state.lock().unwrap().records.is_empty());
+    }
+
+    fn value<C>(preview: &Preview<C>) -> String {
+        let HoverContents::Markup(content) = preview.hover(preview.range.start).unwrap().contents
+        else {
+            panic!("Expected Markdown");
+        };
+        content.value
+    }
+
+    #[test]
+    fn hover_settings_choose_the_header_and_the_form_of_the_body() {
+        let translation = "`a_b` を使う。\n次の行";
+        let mut preview = Preview::new(
+            (),
+            Range::default(),
+            translation.into(),
+            false,
+            Some("Note"),
+        );
+        let header = "> **Translation LSP**\n>\n> Note\n\n---\n\n";
+        let markdown = "`a_b` を使う。\\\n次の行";
+        let fenced = "```text\n`a_b` を使う。\n次の行\n```";
+        for (shows_header, format, expected) in [
+            (true, HoverFormat::Markdown, format!("{header}{markdown}")),
+            (false, HoverFormat::Markdown, markdown.into()),
+            // The format of earlier versions, unchanged.
+            (true, HoverFormat::Text, format!("{header}{fenced}")),
+            (false, HoverFormat::Text, fenced.into()),
+        ] {
+            preview.hover = HoverSettings {
+                header: shows_header,
+                format,
+            };
+            assert_eq!(value(&preview), expected);
+        }
+        // An entry is Markdown in both formats, and so is the translation of a
+        // Markdown document in Markdown.
+        for (form, format, body) in [
+            (Form::Entry, HoverFormat::Markdown, translation),
+            (Form::Entry, HoverFormat::Text, translation),
+            (
+                Form::Markdown(Urls::default()),
+                HoverFormat::Markdown,
+                translation,
+            ),
+            (Form::Markdown(Urls::default()), HoverFormat::Text, fenced),
+        ] {
+            preview.form = form;
+            preview.hover = HoverSettings {
+                header: false,
+                format,
+            };
+            assert_eq!(value(&preview), body);
+        }
     }
 
     #[test]

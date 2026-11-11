@@ -148,7 +148,7 @@ async fn worker_translation_is_cached_and_read_by_hover() {
         pending["contents"]["value"]
             .as_str()
             .unwrap()
-            .contains("訳Read this.")
+            .contains("訳Read this\\.")
     );
     let preview = server.cache.latest(&uri).unwrap();
     assert_eq!(preview.translation, "訳Read this.");
@@ -200,7 +200,7 @@ async fn a_selected_term_is_shown_as_an_entry_and_a_one_word_comment_as_a_transl
         comment["contents"]["value"]
             .as_str()
             .unwrap()
-            .ends_with("```text\n訳Retain\n```")
+            .ends_with("\n\n訳Retain")
     );
 
     let target = TranslationTarget {

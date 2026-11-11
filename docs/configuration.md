@@ -29,6 +29,10 @@ Add the following entry to `lsp` in your existing Zed settings. Choose a model a
           "document_action": true,
           "comment_lens": true
         },
+        "hover": {
+          "header": true,
+          "format": "markdown"
+        },
         "translation_limits": {
           "input_kib": {
             "hover": 16,
@@ -178,6 +182,17 @@ The keys of `languages` are the following language IDs, in lowercase:
 | Plain Text | `plaintext` |
 
 Any other key of `languages`, such as `javascriptreact`, is a settings error. So is a feature written for a language outside its language IDs, such as `languages.rust.document_action`.
+
+## Hover
+
+`hover` sets how Hover shows a translation. `hover` and each setting inside it can be omitted.
+
+| Setting inside `hover` | Default | Allowed values | Effect |
+| --- | --- | --- | --- |
+| `header` | `true` | `true`, `false` | With `false`, Hover shows a translation without the title `Translation LSP`, the provider's note, and the rule below them. Hover still titles a failure. |
+| `format` | `"markdown"` | `"markdown"`, `"text"` | `"markdown"` shows a translation with the formatting it writes and other characters as written. `"text"` shows it in a code block as written. A dictionary entry shows formatted with both. See [How Hover shows a translation](usage.md#how-hover-shows-a-translation). |
+
+Any other setting inside `hover`, or any other value, is a settings error.
 
 ## Timing
 

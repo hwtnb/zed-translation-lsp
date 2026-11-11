@@ -184,8 +184,10 @@ These settings sit next to `provider` in `initialization_options`. Each can be o
 | `source_language` | `auto` | The language of the original text. With `auto`, the model identifies it. |
 | `features.comment_hover` | `true` | Whether Hover over a comment starts a translation. |
 | `features.automatic_selection` | `true` | Whether a stable Markdown selection starts a translation in the background. |
+| `hover.header` | `true` | Whether Hover shows the title `Translation LSP` above a translation. |
+| `hover.format` | `markdown` | How Hover shows a translation: `markdown` keeps the formatting the translation writes and shows other characters as written; `text` shows it in a code block. |
 
-`features` can also turn each way of translating on or off for one language. See [Translation languages](docs/configuration.md#translation-languages) and [Features](docs/configuration.md#features).
+`features` can also turn each way of translating on or off for one language. See [Translation languages](docs/configuration.md#translation-languages), [Features](docs/configuration.md#features), and [Hover](docs/configuration.md#hover).
 
 ## Basic usage
 

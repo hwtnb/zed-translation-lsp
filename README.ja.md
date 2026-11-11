@@ -184,8 +184,10 @@ C#、C、C++、Python、Go、Java、Kotlin、Swift、Ruby、PHP、HTML、Vue.js�
 | `source_language` | `auto` | 原文の言語です。`auto` ではモデルが判別します。 |
 | `features.comment_hover` | `true` | コメントへのホバーで翻訳を始めるかどうかです。 |
 | `features.automatic_selection` | `true` | Markdownの選択が安定したときにバックグラウンドで翻訳を始めるかどうかです。 |
+| `hover.header` | `true` | ホバーで訳文の上に見出しの `Translation LSP` を表示するかどうかです。 |
+| `hover.format` | `markdown` | ホバーでの訳文の表示です。`markdown` は訳文が書いた書式を生かし、ほかの文字を書かれたとおりに表示します。`text` はコードブロックの中に表示します。 |
 
-`features` では、翻訳の始め方ごとのオンとオフを言語ごとにも切り替えられます。[翻訳する言語](docs/ja/configuration.md#翻訳する言語)と[機能の切り替え](docs/ja/configuration.md#機能の切り替え)を参照してください。
+`features` では、翻訳の始め方ごとのオンとオフを言語ごとにも切り替えられます。[翻訳する言語](docs/ja/configuration.md#翻訳する言語)、[機能の切り替え](docs/ja/configuration.md#機能の切り替え)、[ホバーの表示](docs/ja/configuration.md#ホバーの表示)を参照してください。
 
 ## 基本的な使い方
 

@@ -10,7 +10,10 @@ use tokio::{
 };
 
 use super::*;
-use crate::providers::{AccountChange, Intent, Source, mock::MockContext};
+use crate::{
+    lsp::preview::markdown::{Urls, render},
+    providers::{AccountChange, Intent, Source, mock::MockContext},
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
@@ -193,7 +196,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
             response.response_result.unwrap()["contents"]["value"]
                 .as_str()
                 .unwrap()
-                .contains(&format!("fake: {body}"))
+                .ends_with(&render(&format!("fake: {body}"), &Urls::default()))
         );
     };
     // Indentation before a comment token cannot start work.

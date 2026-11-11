@@ -1,5 +1,6 @@
 pub(crate) mod error;
 pub(crate) mod features;
+pub(crate) mod hover;
 pub(crate) mod language;
 pub(crate) mod limits;
 mod validation;
@@ -7,6 +8,7 @@ mod validation;
 use error::ConfigError;
 
 use features::Features;
+use hover::HoverSettings;
 use limits::TranslationLimits;
 use serde::Deserialize;
 use serde_json::Value;
@@ -24,6 +26,7 @@ pub(crate) struct Settings {
     pub selection_debounce_ms: u64,
     pub comment_parse_timeout_ms: u64,
     pub features: Features,
+    pub hover: HoverSettings,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -252,6 +255,7 @@ impl Default for Settings {
             selection_debounce_ms: 450,
             comment_parse_timeout_ms: 1_000,
             features: Features::default(),
+            hover: HoverSettings::default(),
         }
     }
 }

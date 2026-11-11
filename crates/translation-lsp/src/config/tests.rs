@@ -893,3 +893,44 @@ fn openai_compatible_services_are_https_or_this_computer() {
         "provider.base_url must be nonempty, without control characters, and at most 2048 bytes"
     );
 }
+
+#[test]
+fn hover_settings_default_to_a_header_and_markdown_and_reject_unknown_names() {
+    use hover::{HoverFormat, HoverSettings};
+    let hover = |options| Settings::from_options(Some(options)).unwrap().hover;
+    let default = HoverSettings {
+        header: true,
+        format: HoverFormat::Markdown,
+    };
+    assert_eq!(Settings::default().hover, default);
+    assert_eq!(hover(json!({})), default);
+    assert_eq!(hover(json!({"hover": {}})), default);
+    assert_eq!(
+        hover(json!({"hover": {"header": false}})),
+        HoverSettings {
+            header: false,
+            format: HoverFormat::Markdown,
+        }
+    );
+    assert_eq!(
+        hover(json!({"hover": {"format": "text"}})),
+        HoverSettings {
+            header: true,
+            format: HoverFormat::Text,
+        }
+    );
+    for options in [
+        json!({"hover": {"title": false}}),
+        json!({"hover": {"format": "html"}}),
+        json!({"hover": {"format": "Text"}}),
+        json!({"hover": {"header": "no"}}),
+        json!({"hover": {"format": null}}),
+        json!({"hover": null}),
+        json!({"hover": "text"}),
+    ] {
+        let error = Settings::from_options(Some(options.clone()))
+            .err()
+            .unwrap_or_else(|| panic!("Accepted {options}"));
+        assert!(matches!(error, ConfigError::Decode(_)), "{options}");
+    }
+}

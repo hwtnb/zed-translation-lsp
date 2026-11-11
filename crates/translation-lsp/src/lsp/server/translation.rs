@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     config::limits::SizeSetting,
-    providers::{Intent, error::Notification as ErrorNotification},
+    lsp::preview::{Form, markdown::Urls},
+    providers::{Intent, Source, error::Notification as ErrorNotification},
 };
 
 impl<P: TranslationProvider> Server<P> {
@@ -191,6 +192,17 @@ impl<P: TranslationProvider> Server<P> {
         );
         report_comment_failure(&self.ui, &target.uri, document)?;
         let input = input.map_err(|m| failure(ErrorCode::InvalidParams, m))?;
+        // The text sent, so that a comment's closing mark is not read as part
+        // of a URL.
+        let sent = match &input.source {
+            Source::Passage(text) => text,
+            Source::Term { term, .. } => term,
+        };
+        let urls = if document.language == Some(Language::Markdown) {
+            Urls::of_markdown(sent)
+        } else {
+            Urls::of(sent)
+        };
         let task = Task::Translation {
             intent,
             output: request.output(),
@@ -206,6 +218,7 @@ impl<P: TranslationProvider> Server<P> {
                 target,
                 context,
                 is_comment: input.is_comment,
+                urls,
                 task,
             },
             request,
@@ -270,7 +283,14 @@ impl<P: TranslationProvider> Server<P> {
                 work.is_comment,
                 P::capabilities().hover_note,
             );
-            preview.entry = translation.entry;
+            preview.form = if translation.entry {
+                Form::Entry
+            } else if self.documents[&work.target.uri].language == Some(Language::Markdown) {
+                Form::Markdown(work.urls.clone())
+            } else {
+                Form::Text(work.urls.clone())
+            };
+            preview.hover = self.settings.hover;
             Ok(preview)
         })();
         self.complete(connection, completion.ticket, &work, result, silent)?;

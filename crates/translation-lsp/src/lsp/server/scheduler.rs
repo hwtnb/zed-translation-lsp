@@ -1,4 +1,4 @@
-use crate::providers::Intent;
+use crate::{lsp::preview::markdown::Urls, providers::Intent};
 
 use super::*;
 
@@ -55,6 +55,8 @@ pub(super) struct PreparedTranslation<C> {
     pub target: TranslationTarget,
     pub context: C,
     pub is_comment: bool,
+    /// The URLs of the text sent, which links of the translation may open.
+    pub urls: Urls,
     pub task: Task<C>,
 }
 
@@ -117,6 +119,8 @@ pub(super) struct Translation<C> {
     pub context: C,
     pub target: TranslationTarget,
     pub is_comment: bool,
+    /// The URLs of the text sent, which links of the translation may open.
+    pub urls: Urls,
     pub deadline: watch::Sender<Option<Instant>>,
     pub owners: Owners,
     pub phase: Phase,
@@ -418,6 +422,7 @@ impl<C> Scheduler<C> {
             target,
             context,
             is_comment,
+            urls,
             task,
         } = prepared;
         let (deadline, _) = watch::channel(None);
@@ -427,6 +432,7 @@ impl<C> Scheduler<C> {
                 context,
                 target,
                 is_comment,
+                urls,
                 deadline,
                 owners: Owners::default(),
                 phase: Phase::Queued,
@@ -562,6 +568,7 @@ mod tests {
                 target,
                 context: MockContext,
                 is_comment: false,
+                urls: Urls::default(),
                 task,
             },
             request,
@@ -772,6 +779,7 @@ mod shared_outputs_tests {
                         target,
                         context: MockContext,
                         is_comment: false,
+                        urls: Urls::default(),
                         task,
                     },
                     request,
@@ -852,6 +860,7 @@ mod separate_outputs_tests {
                     target: target(line),
                     context: KeyId::SYNTHETIC,
                     is_comment: false,
+                    urls: Urls::default(),
                     task,
                 },
                 request,

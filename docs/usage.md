@@ -28,6 +28,30 @@ A selection of up to three words and 64 characters on one line that does not end
 
 The labels of an entry, such as `Example:`, are in English. The meanings and parts of speech are in the target language.
 
+## How Hover shows a translation
+
+Hover shows the title `Translation LSP` and, below a rule, the translation. With `hover.header` set to `false`, it shows only the translation. See [Hover](configuration.md#hover).
+
+The translation of a comment, of a selection in code, or of Plain Text shows as Markdown that keeps this formatting of the translation:
+
+- code spans, and code blocks fenced or indented after a blank line
+- headings that start with `#` or are underlined with `===` or `---`
+- lists that start with `-`, `*`, `+`, or a number, block quotes, tables, and rules
+- emphasis with `*` and `**`
+- links written as `[text](URL)` to a URL that the original text contains
+
+Every other character shows as written: `__init__`, `--verbose`, `\d+\.\d+`, `Vec<T>`, `<!-- note -->`, `~a~`, and `[^1]` stay as they are, and quotes and `...` are not replaced with typographic ones. Each line break of the translation shows as a line break, and one blank line or more separates paragraphs. Spaces at the start of a line inside a paragraph do not show. A translation whose formatting cannot be kept this way shows its lines as written, without formatting.
+
+Links open only URLs that the original text contains: text in the source that addresses the model can make the translation contain links that the source does not have. A URL of the original ends before the punctuation of the sentence around it, such as `.` or an unmatched `)`. In the translation:
+
+- A URL written alone is a link when it starts with a URL of the original and the text ends after it, or continues with whitespace or a character outside ASCII, possibly after punctuation. In `詳細はhttps://example.com/docsを参照`, `https://example.com/docs` is a link.
+- A link written as `[text](URL)` or `<URL>` stays when its URL is exactly one of the original.
+- A stretch of text without spaces that contains two URLs, such as a URL with another URL in its query, makes no link.
+
+Every other URL shows as text with an invisible word joiner (U+2060) after its `:`, and text copied from Hover includes it. URLs inside code show as written and are not links.
+
+With `hover.format` set to `"markdown"`, the translation of a Markdown document shows as its own Markdown. Its links and images stay when each destination is exactly one of the original, such as the same relative path, or starts with `#`. If any other destination appears, or a URL that escapes or character references divide, such as `https&#58;//`, the translation shows in a code block as written instead. Its URLs written alone follow the rules above, and URLs in the text of an image are never links. A dictionary entry shows as described under [Looking up a word](#looking-up-a-word). With `hover.format` set to `"text"`, every translation except a dictionary entry shows in a code block as written.
+
 ## Opening a translation in a tab
 
 In Markdown or Plain Text, use `Translate selection to … and open in tab` to read the translation in a separate document. With no selection, the action becomes `Translate document to … and open in tab` and translates the whole document. Both operations use `translation_limits.input_kib.document`, which defaults to 1 MiB. The client must support `window/showDocument`.
@@ -91,7 +115,7 @@ To retry a failed range without selecting its text again, place the cursor insid
 
 ## What is sent
 
-Completed translations are displayed as text. The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The passage is marked as the text to translate, and the model is instructed to translate any instructions or questions in it instead of following or answering them. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy. The DeepL API and Google Cloud Translation take no instructions: the server sends the text to them in segments, with code spans and URLs marked, and puts the translation together again, as described under [What is sent](providers/deepl.md#what-is-sent) of the DeepL API page.
+Hover shows completed translations as described under [How Hover shows a translation](#how-hover-shows-a-translation). The model receives the selected passage as a whole and is instructed to return only its translation, preserving meaning, code, identifiers, and URLs. The passage is marked as the text to translate, and the model is instructed to translate any instructions or questions in it instead of following or answering them. The server does not split the translation into JSON fragments or reject it for changes in Markdown formatting or line breaks. These instructions do not guarantee translation accuracy. The DeepL API and Google Cloud Translation take no instructions: the server sends the text to them in segments, with code spans and URLs marked, and puts the translation together again, as described under [What is sent](providers/deepl.md#what-is-sent) of the DeepL API page.
 
 To look up a term, the model receives the term and, marked separately, the line it is on, at most 200 characters on each side of it. It is instructed to reply with a JSON object of meanings, word parts, and an example. The server builds the entry from that object and escapes every text of the reply, so the reply cannot add links, images, or other formatting to the Hover. A reply that is not such an object is reported as an error; retry it from Code Actions.
 

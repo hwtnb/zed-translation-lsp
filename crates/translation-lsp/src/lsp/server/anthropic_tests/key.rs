@@ -215,7 +215,7 @@ async fn key_menu_opens_the_terminal_without_disturbing_work_in_progress() {
         response.response_result.unwrap()["contents"]["value"]
             .as_str()
             .unwrap()
-            .contains("訳Read this.")
+            .contains("訳Read this\\.")
     );
     assert_eq!(fixture.calls(), 1);
     assert_eq!(fs::read(fixture.keys.file()).unwrap(), KEY.as_bytes());

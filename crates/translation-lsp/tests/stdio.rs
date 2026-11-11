@@ -10,6 +10,7 @@ use std::{
 };
 
 use lsp_server::{ErrorCode, Message, Notification, Request, RequestId, Response, ResponseError};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use reqwest::Url;
 use serde_json::{Value, json};
 
@@ -485,19 +486,56 @@ fn range_for(document: &str, selected: &str) -> Value {
     json!({ "start": position(&document[..start]), "end": position(&document[..start + selected.len()]) })
 }
 
+const MOCK_HEADER: &str = "> **Translation LSP**\n>\n> Mock translation (fixed sample)\n\n---\n\n";
+
+/// The text that Markdown shows, with a line break for each break and the end
+/// of each block, and the tags that are not inline formatting. A soft break
+/// counts as a line break too: the translation of a Markdown document is its
+/// Markdown, while other translations show their line breaks as hard breaks.
+fn shown(markdown: &str) -> (String, Vec<String>) {
+    let mut text = String::new();
+    let mut tags = Vec::new();
+    // The options of Zed's Markdown parser.
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
+        | Options::ENABLE_OLD_FOOTNOTES
+        | Options::ENABLE_GFM
+        | Options::ENABLE_SUPERSCRIPT
+        | Options::ENABLE_SUBSCRIPT;
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Text(part) | Event::Code(part) => text.push_str(&part),
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::End(TagEnd::Paragraph | TagEnd::CodeBlock) => {
+                text.push('\n');
+            }
+            Event::Start(Tag::Paragraph) | Event::End(_) => (),
+            Event::Start(tag) => tags.push(format!("{tag:?}")),
+            event => tags.push(format!("{event:?}")),
+        }
+    }
+    (text, tags)
+}
+
 fn assert_preview(hover: &Value, original: &str, translation: &str, range: &Value) {
     assert_eq!(hover["range"], *range);
     assert_eq!(hover["contents"]["kind"], "markdown");
     let text = hover["contents"]["value"].as_str().unwrap();
-    assert!(
-        text.starts_with("> **Translation LSP**\n>\n> Mock translation (fixed sample)\n\n---\n\n")
-    );
     assert!(!text.contains("**Original**"));
     assert!(
         !text.contains(original),
         "Original must stay in the editor: {text}"
     );
-    assert!(text.contains(&format!("```text\n{translation}\n```")));
+    let (body, tags) = shown(text.strip_prefix(MOCK_HEADER).unwrap());
+    // The samples write no formatting but code spans.
+    assert_eq!(body.trim_end(), translation.replace('`', ""), "{text}");
+    assert!(tags.is_empty(), "{tags:?} in {text}");
 }
 
 fn assert_error(reply: Reply, code: i32) {
@@ -2951,6 +2989,37 @@ fn c_family_doxygen_hover_and_selection_share_the_comment_body() {
         }
     }
     client.finish(true);
+}
+
+#[test]
+fn hover_settings_choose_the_header_and_the_format() {
+    let uri = "file:///retry.c";
+    let source = sample!("comment.c");
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":1,"character":32}});
+    let translation = format!("@brief {COMMENT_JA}");
+    for (hover, body) in [
+        (json!({}), format!("{MOCK_HEADER}\\@brief {COMMENT_JA}")),
+        (
+            json!({"header": false, "format": "markdown"}),
+            format!("\\@brief {COMMENT_JA}"),
+        ),
+        (
+            json!({"format": "text"}),
+            format!("{MOCK_HEADER}```text\n{translation}\n```"),
+        ),
+        (
+            json!({"header": false, "format": "text"}),
+            format!("```text\n{translation}\n```"),
+        ),
+    ] {
+        let mut client = Client::configured(&[], false, false, json!({"hover": hover}));
+        client.open(uri, "c", source, 1);
+        let shown = client.hover(uri, range["start"].clone());
+        assert_eq!(shown["range"], range);
+        assert_eq!(shown["contents"]["kind"], "markdown");
+        assert_eq!(shown["contents"]["value"], body, "{hover}");
+        client.finish(true);
+    }
 }
 
 #[test]

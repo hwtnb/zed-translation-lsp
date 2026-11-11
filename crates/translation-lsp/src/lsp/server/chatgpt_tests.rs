@@ -272,7 +272,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             markdown["contents"]["value"]
                 .as_str()
                 .unwrap()
-                .ends_with("```text\nTranslated sentence.\n```")
+                .ends_with("\n\nTranslated sentence.")
         );
         assert_eq!(server.documents[&uri].text(), Some("First sentence."));
         let comment_uri: Uri = "file:///configured-en.rs".parse().unwrap();
@@ -302,7 +302,7 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             comment.response_result.unwrap()["contents"]["value"]
                 .as_str()
                 .unwrap()
-                .contains("Translated sentence.")
+                .ends_with("\n\nTranslated sentence\\.")
         );
         assert_eq!(
             server.documents[&comment_uri].text(),
@@ -455,18 +455,43 @@ fn command_notice(client: &Connection, id: i32, level: u64) -> RequestResult<Val
 
 #[tokio::test(flavor = "current_thread")]
 async fn documentation_comments_reach_http_and_return_translated_hover() {
-    for (language, source, body, translated) in [
+    // Hover shows the tags as written, and links only to the URLs of the text
+    // sent, without the marks that close a comment.
+    for (language, source, body, translated, shown) in [
         (
             "csharp",
             "/// <summary>Retry safely.</summary>\nclass Example {}",
             "<summary>Retry safely.</summary>",
             "<summary>安全に再試行します。</summary>",
+            "\\<summary\\>安全に再試行します。\\<\\/summary\\>",
         ),
         (
             "python",
             "\"\"\"Retry safely.\"\"\"",
             "Retry safely.",
             "安全に再試行します。",
+            "安全に再試行します。",
+        ),
+        (
+            "rust",
+            "// See https://example.com/docs.\nfn main() {}",
+            "See https://example.com/docs.",
+            "[資料](https://example.com/docs) と https://evil.example/x",
+            "[資料](https://example.com/docs) と https\\:\u{2060}\\/\\/evil\\.example\\/x",
+        ),
+        (
+            "c",
+            "/* See https://example.com/docs*/\nint x;",
+            "See https://example.com/docs",
+            "[資料](https://example.com/docs) と https://example.com/docs",
+            "[資料](https://example.com/docs) と <https://example.com/docs>",
+        ),
+        (
+            "html",
+            "<!-- See https://example.com/docs-->\n<p></p>",
+            "See https://example.com/docs",
+            "[資料](https://example.com/docs) と https://example.com/docs",
+            "[資料](https://example.com/docs) と <https://example.com/docs>",
         ),
     ] {
         let fixture = Fixture::new().await;
@@ -518,7 +543,8 @@ async fn documentation_comments_reach_http_and_return_translated_hover() {
             hover["contents"]["value"]
                 .as_str()
                 .unwrap()
-                .contains(translated)
+                .ends_with(&format!("\n\n{shown}")),
+            "{hover}"
         );
         assert_eq!(server.documents[&uri].text(), Some(source));
         assert!(client.receiver.try_recv().is_err());

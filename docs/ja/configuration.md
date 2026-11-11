@@ -29,6 +29,10 @@
           "document_action": true,
           "comment_lens": true
         },
+        "hover": {
+          "header": true,
+          "format": "markdown"
+        },
         "translation_limits": {
           "input_kib": {
             "hover": 16,
@@ -178,6 +182,17 @@ ISO 639の言語コードの値は、単独でも `zh-Hans` や `pt-BR` のよ�
 | Plain Text | `plaintext` |
 
 `javascriptreact` など、これ以外のキーは設定エラーです。`languages.rust.document_action` のように、機能をその言語IDにない言語へ書いた場合も設定エラーです。
+
+## ホバーの表示
+
+`hover` は、ホバーでの訳文の表示を設定します。`hover` も、その中の各設定も省略できます。
+
+| `hover` の中の設定 | 既定値 | 指定できる値 | 動作 |
+| --- | --- | --- | --- |
+| `header` | `true` | `true`、`false` | `false` にすると、見出しの `Translation LSP`、プロバイダーの注記、その下の区切り線を付けずに訳文を表示します。翻訳の失敗には見出しを付けます。 |
+| `format` | `"markdown"` | `"markdown"`、`"text"` | `"markdown"` は、訳文が書いた書式を生かし、ほかの文字を書かれたとおりに表示します。`"text"` は、訳文をコードブロックの中に書かれたとおりに表示します。辞書の項目は、どちらでも書式を付けて表示します。[ホバーでの訳文の表示](usage.md#ホバーでの訳文の表示)を参照してください。 |
+
+`hover` の中のほかの設定や、ほかの値は、設定エラーになります。
 
 ## タイミング
 

@@ -68,9 +68,15 @@ relative to the repository root.
 
 - Translation previews leave the source document unchanged. Send the selected
   text or comment body as prose and display the completed translation directly.
-  Prompt the model to preserve code, identifiers, URLs, and meaning. Do not require
-  JSON translation segments or enforce Markdown structure or byte equality on the
-  generated translation. Markdown parsing only determines input eligibility. A
+  Except for dictionary entries and `hover.format: "text"`, Hover shows it
+  through `lsp/preview/markdown.rs`: the formatting the translation means
+  stays and every other character shows as written, and the translation of a
+  Markdown document keeps its Markdown. Links in Hover, except in dictionary
+  entries, open only URLs of the original. Prompt the model to preserve code,
+  identifiers, URLs, and meaning. Do not require JSON translation segments or
+  enforce Markdown structure or byte equality on the generated translation.
+  Markdown parsing determines input eligibility and the formatting Hover keeps;
+  it never rejects a translation. A
   provider that takes no prompt, such as DeepL or Google Cloud Translation, is
   sent the segments of `providers/segments.rs`, with code spans and URLs marked
   to stay untranslated; a translation that loses a mark is an error, never a
