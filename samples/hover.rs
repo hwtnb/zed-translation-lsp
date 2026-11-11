@@ -25,7 +25,16 @@ fn send(retry_count: u32) -> u32 {
     retry_count
 }
 
+/// Prints what the upload would send. Pass `--dry-run` to skip the upload.
+///
+/// It's safe to call twice: the second call prints "nothing to do". Lines
+/// longer than 80 columns are cut and end with three dots...
+fn report() {
+    println!("nothing to do");
+}
+
 fn main() {
+    report();
     //   - An indented item of a list.
     //   - Another item, with *emphasis* and ~~text struck out~~.
     println!("{}", send(3));
