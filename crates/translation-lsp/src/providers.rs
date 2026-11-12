@@ -156,8 +156,19 @@ impl<T> OutputOptions<T> {
 pub(crate) struct Translated<C> {
     pub text: String,
     pub context: C,
-    /// The text is a dictionary entry in Markdown, not a translation.
-    pub entry: bool,
+    pub kind: Kind,
+}
+
+/// What a provider gave for a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A translation.
+    Translation,
+    /// A dictionary entry in Markdown.
+    Entry,
+    /// Nothing, because the model or the service found the whole text already
+    /// in the target language. Only automatic requests give it.
+    SameLanguage,
 }
 
 pub(crate) trait TranslationProvider: Clone + Send + 'static {

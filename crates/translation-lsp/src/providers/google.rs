@@ -10,12 +10,12 @@ use serde_json::{Value, json};
 #[cfg(test)]
 use super::api_key::test_support::Terminal as SyntheticTerminal;
 use super::{
-    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, ProviderCommand,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Kind, Output, ProviderCommand,
     Translated, TranslationProvider,
     admission::{Admission, Attempt},
     api_key::{KeyFile, KeyId, KeySpec, Origin, Terminal},
     error::{Error, RemoteError, RemoteKind, Service, credentials::CredentialError},
-    segments::{Markup, Segmented, batches},
+    segments::{Detected, Markup, Segmented, all_in, batches},
     transport::{self, safe},
 };
 #[cfg(test)]
@@ -72,6 +72,10 @@ fn key_commands(usable: bool) -> Vec<ProviderCommand> {
         vec![save]
     }
 }
+
+/// The codes that Google Cloud Translation takes for one language: `zh` is
+/// Chinese (Simplified), as `zh-CN` is.
+const CHINESE: &[(&str, &str)] = &[("zh", "zh-cn")];
 
 /// The code the API takes for a language setting, such as `ja` or `zh-CN`.
 /// `None` for `auto`, which the API detects.
@@ -141,14 +145,21 @@ async fn translations(
     response: reqwest::Response,
     count: usize,
     output_limit: SizeLimit,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<Detected>, Error> {
     let body = transport::json_body(response, SERVICE, output_limit).await?;
-    let translations: Option<Vec<String>> = body["data"]["translations"]
+    let translations: Option<Vec<Detected>> = body["data"]["translations"]
         .as_array()
         .map(|translations| {
             translations
                 .iter()
-                .map(|translation| translation["translatedText"].as_str().map(str::to_owned))
+                .map(|translation| {
+                    Some(Detected {
+                        text: translation["translatedText"].as_str()?.to_owned(),
+                        language: translation["detectedSourceLanguage"]
+                            .as_str()
+                            .map(str::to_owned),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -226,7 +237,7 @@ impl GoogleProvider {
         target_language: &str,
         source: &str,
         expected: KeyId,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<Detected>, Error> {
         let key = self.key.in_use(expected)?;
         let secrets = [&*key.text, source];
         // The settings were checked when the server started.
@@ -331,13 +342,29 @@ impl TranslationProvider for GoogleProvider {
                     .await?,
             );
         }
+        // Before the marks are checked: they keep a translation from being
+        // shown broken, and text in the target language shows no translation.
+        if intent == Intent::Automatic
+            && self.source_language.is_none()
+            && all_in(&translations, target_language, CHINESE)
+        {
+            return Ok(Translated {
+                text: String::new(),
+                context: expected,
+                kind: Kind::SameLanguage,
+            });
+        }
+        let translations: Vec<_> = translations
+            .into_iter()
+            .map(|translation| translation.text)
+            .collect();
         let text = segmented
             .assemble(Markup::Html, &translations)
             .ok_or_else(|| Error::failed(UNMARKED))?;
         Ok(Translated {
             text,
             context: expected,
-            entry: false,
+            kind: Kind::Translation,
         })
     }
 

@@ -12,7 +12,7 @@ use serde_json::json;
 #[cfg(test)]
 use super::api_key::test_support::Terminal as SyntheticTerminal;
 use super::{
-    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Kind, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     api_key::{KeyFile, KeyId, KeySpec, Origin, Terminal},
@@ -275,7 +275,7 @@ impl TranslationProvider for CompatibleProvider {
         target_language: &str,
         expected: Option<KeyId>,
     ) -> Result<Translated<Option<KeyId>>, Error> {
-        let instructions = prompt::instructions(target_language, &self.source_language);
+        let instructions = prompt::instructions(target_language, &self.source_language, intent);
         let reply = self
             .send(
                 intent,
@@ -286,11 +286,12 @@ impl TranslationProvider for CompatibleProvider {
                 expected,
             )
             .await?;
-        Ok(Translated {
-            text: prompt::translation(reply),
-            context: expected,
-            entry: false,
-        })
+        Ok(prompt::translated(
+            reply,
+            intent,
+            &self.source_language,
+            expected,
+        ))
     }
 
     async fn look_up(
@@ -317,7 +318,7 @@ impl TranslationProvider for CompatibleProvider {
         Ok(Translated {
             text: dictionary::entry(term, &reply, SERVICE)?,
             context: expected,
-            entry: true,
+            kind: Kind::Entry,
         })
     }
 

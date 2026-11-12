@@ -396,7 +396,7 @@ async fn a_term_is_sent_with_its_line_and_its_entry_is_rendered() {
             .await
     };
     let entry = look_up().await.unwrap();
-    assert!(entry.entry);
+    assert_eq!(entry.kind, Kind::Entry);
     assert_eq!(entry.text, "**retry\\_count** — 語\n\n1. 訳retry\\_count\n");
     let body: Value =
         serde_json::from_str(&fixture.state.lock().unwrap().records.last().unwrap().body).unwrap();
@@ -1146,5 +1146,52 @@ async fn manual_selections_reach_http() {
         let request: Value = serde_json::from_str(&requests[0].body).unwrap();
         assert_eq!(request["input"][0]["content"], prompt::message(body));
         state.records.clear();
+    }
+}
+
+/// Only an automatic request asks for the mark of text already in the target
+/// language, and only its reply is read as that mark.
+#[tokio::test(flavor = "current_thread")]
+async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
+    for (intent, kind, text) in [
+        (Intent::Automatic, Kind::SameLanguage, ""),
+        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.state.lock().unwrap().translation = Some(prompt::SAME_LANGUAGE.into());
+        let auth = fixture.auth();
+        fixture.connected(&auth, 3600).await;
+        let provider = ChatGptProvider::synthetic(
+            auth,
+            format!("{}/v1", fixture.base),
+            "synthetic-model".into(),
+        );
+        let translated = provider
+            .translate(
+                intent,
+                Output::Range,
+                "Private source sentence.",
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((translated.kind, translated.text.as_str()), (kind, text));
+        let state = fixture.state.lock().unwrap();
+        let record = state
+            .records
+            .iter()
+            .find(|record| record.path == "/v1/responses")
+            .unwrap();
+        let request: Value = serde_json::from_str(&record.body).unwrap();
+        let instructions = &request["instructions"];
+        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
+        assert_eq!(
+            instructions
+                .as_str()
+                .unwrap()
+                .contains(prompt::SAME_LANGUAGE),
+            intent == Intent::Automatic
+        );
     }
 }

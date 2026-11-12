@@ -358,3 +358,40 @@ impl Interaction for Confirm {
         Ok(self.0.then(|| choices[0].clone()))
     }
 }
+
+/// Only an automatic request asks for the mark of text already in the target
+/// language, and only its reply is read as that mark.
+#[tokio::test(flavor = "current_thread")]
+async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
+    for (intent, kind, text) in [
+        (Intent::Automatic, Kind::SameLanguage, ""),
+        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+    ] {
+        let fixture = HttpFixture::new().await;
+        let keys = keys();
+        let provider = OpenAiApiProvider::synthetic(format!("{}/v1", fixture.base), &keys.path);
+        fixture.reply(Reply::stream(completed(prompt::SAME_LANGUAGE)));
+        let translated = provider
+            .translate(
+                intent,
+                Output::Range,
+                SOURCE,
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((translated.kind, translated.text.as_str()), (kind, text));
+        let records = fixture.records();
+        let request = &records[0].body;
+        let instructions = &request["instructions"];
+        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
+        assert_eq!(
+            instructions
+                .as_str()
+                .unwrap()
+                .contains(prompt::SAME_LANGUAGE),
+            intent == Intent::Automatic
+        );
+    }
+}

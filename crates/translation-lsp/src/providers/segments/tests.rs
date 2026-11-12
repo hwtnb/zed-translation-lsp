@@ -1,4 +1,4 @@
-use super::{Markup, Segmented, batches};
+use super::{Detected, Markup, Segmented, all_in, batches};
 
 /// What the service is sent for `text`, and the text put back from
 /// translations that start each segment with `T:`.
@@ -239,4 +239,45 @@ fn html_marks_carry_their_index_through_attributes_the_service_adds() {
         segmented.assemble(Markup::Html, &["<x i=\"0\">a</x> <x i=\"1\">b</x>".into()]),
         None
     );
+}
+
+#[test]
+fn every_segment_must_be_detected_in_the_target_language() {
+    let detected = |languages: &[Option<&str>]| -> Vec<Detected> {
+        languages
+            .iter()
+            .map(|language| Detected {
+                text: "訳".into(),
+                language: language.map(str::to_owned),
+            })
+            .collect()
+    };
+    for (languages, target, same) in [
+        (&[Some("JA"), Some("ja")][..], "ja", true),
+        (&[Some("JA"), Some("EN")], "ja", false),
+        (&[Some("JA"), None], "ja", false),
+        (&[], "ja", false),
+        // The language subtag alone, without case or `_`.
+        (&[Some("PT")], "pt-BR", true),
+        (&[Some("EN")], "en_US", true),
+        (&[Some("en-GB")], "EN-US", true),
+        (&[Some("es")], "en", false),
+        // Chinese only in full.
+        (&[Some("ZH")], "zh", true),
+        (&[Some("ZH")], "ZH-HANS", false),
+        (&[Some("ZH")], "zh-Hant", false),
+        (&[Some("zh-CN")], "zh-cn", true),
+        (&[Some("zh-TW")], "zh-CN", false),
+        (&[Some("zh-CN")], "zh-Hans", false),
+    ] {
+        assert_eq!(
+            all_in(&detected(languages), target, &[]),
+            same,
+            "{languages:?} {target}"
+        );
+    }
+    let aliases = [("zh", "zh-cn")];
+    assert!(all_in(&detected(&[Some("zh-CN")]), "zh", &aliases));
+    assert!(all_in(&detected(&[Some("zh")]), "zh_CN", &aliases));
+    assert!(!all_in(&detected(&[Some("zh-TW")]), "zh", &aliases));
 }

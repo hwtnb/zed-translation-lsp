@@ -42,7 +42,7 @@ use uuid::Uuid;
 
 use crate::{
     lsp::ui::{Ui, UiCapabilities},
-    providers::{dictionary, error},
+    providers::{dictionary, error, prompt},
 };
 
 use super::{
@@ -93,6 +93,9 @@ pub(crate) struct FixtureState {
     pub response_mode: String,
     pub stream_error: Option<Value>,
     pub translation: Option<String>,
+    /// Requests that ask for the mark of text already in the target language
+    /// get it, and the others get their usual reply.
+    pub same_language: bool,
     pub failure: Option<(u16, Value)>,
     pub response_failures: VecDeque<(u16, Value)>,
     pub retry_after: Option<String>,
@@ -127,6 +130,7 @@ impl Fixture {
             response_mode: String::new(),
             stream_error: None,
             translation: None,
+            same_language: false,
             failure: None,
             response_failures: VecDeque::new(),
             retry_after: None,
@@ -766,6 +770,7 @@ async fn endpoint(
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
                 assert!(request.get("text").is_none());
                 let mut text = state.translation.clone().unwrap_or_else(|| dictionary::synthetic_reply(request["input"][0]["content"].as_str().unwrap()));
+                if state.same_language && request["instructions"].as_str().unwrap().contains(prompt::SAME_LANGUAGE) { text = prompt::SAME_LANGUAGE.into(); }
                 match state.response_mode.as_str() {
                     "empty_text" => text.clear(),
                     "output_limit" | "compact_output_limit" => text = "字".repeat(64*1024),

@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    Capabilities, Translated, TranslationProvider, dictionary,
+    Capabilities, Kind, Translated, TranslationProvider, dictionary,
     error::{Error, Service},
 };
 
@@ -17,6 +17,8 @@ pub(crate) struct MockOptions {
     pub delay: Duration,
     pub timeout_ms: Option<u64>,
     pub fail: bool,
+    /// Automatic translations find the text already in the target language.
+    pub same_language: bool,
 }
 
 impl MockOptions {
@@ -42,6 +44,7 @@ impl MockOptions {
                     options.delay = Duration::from_millis(milliseconds);
                 }
                 "--mock-fail" => options.fail = true,
+                "--mock-same-language" => options.same_language = true,
                 "--mock-timeout-ms" => {
                     let milliseconds: u64 = args.next().ok_or("Missing mock timeout")?.parse()?;
                     if !(1..=30_000).contains(&milliseconds) {
@@ -105,7 +108,7 @@ impl TranslationProvider for MockProvider {
 
     async fn translate(
         &self,
-        _intent: Intent,
+        intent: Intent,
         _output: Output,
         text: &str,
         target_language: &str,
@@ -137,10 +140,17 @@ impl TranslationProvider for MockProvider {
                 ));
             }
         };
+        if self.options.same_language && intent == Intent::Automatic {
+            return Ok(Translated {
+                text: String::new(),
+                context,
+                kind: Kind::SameLanguage,
+            });
+        }
         Ok(Translated {
             text: translation.into(),
             context,
-            entry: false,
+            kind: Kind::Translation,
         })
     }
 
@@ -165,7 +175,7 @@ impl TranslationProvider for MockProvider {
         Ok(Translated {
             text: dictionary::entry(term, TERM_ENTRY, Service::OpenAi)?,
             context,
-            entry: true,
+            kind: Kind::Entry,
         })
     }
 }

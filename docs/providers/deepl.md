@@ -89,6 +89,8 @@ A translated paragraph is one line, however many lines the original had. Indente
 
 Each request goes to `/v2/translate` with `tag_handling` set to `xml` and `ignore_tags` set to `x`, and holds the segments as separate texts, which DeepL translates independently of each other. One request holds at most 96 KiB of segments; a longer text is sent in several requests, one after another, and is shown only when every request has succeeded. A translation in which DeepL lost, repeated, or added a mark is reported as an error instead of being shown.
 
+With `source_language` set to `auto`, DeepL reports the language it detected in each segment as `detected_source_language`. For comment Hover and automatic Markdown selection, the server shows nothing when every segment is in the target language: the language codes are compared without their region, so `EN` is `en-US` and `PT` is `pt-BR`. DeepL reports Chinese as `ZH`, which names neither script, so it matches only the target language `zh`, not `zh-Hans` or `zh-Hant`. When `source_language` names a language, DeepL reports that language, and the server does not use it.
+
 ## Errors and pauses
 
 A rejected key (HTTP 403), an exhausted quota (HTTP 456), and a language code that DeepL does not take stop automatic translation and report the HTTP status and DeepL's message. After saving another key, checking the usage of the account, or correcting the settings, run a selection or document translation explicitly; automatic translation resumes when that succeeds. A stop for a rejected key ends when you save another key from `DeepL API key…`: the stop belongs to the key it happened with.

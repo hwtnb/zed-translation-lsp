@@ -859,6 +859,57 @@ fn a_comment_gets_a_code_lens_that_translates_it() {
 }
 
 #[test]
+fn a_comment_in_the_target_language_shows_nothing_until_translate() {
+    let uri = "file:///same-language.rs";
+    // The delay keeps a translation that Hover sends running until the
+    // CodeLens request after it, which the server reads next.
+    let mut client = lens_client(
+        &["--mock-same-language", "--mock-delay-ms", "1000"],
+        uri,
+        false,
+    );
+    let range = range_for(COMMENT_DOCUMENT, COMMENT);
+    assert_eq!(client.hover(uri, range["start"].clone()), Value::Null);
+    let untranslated = ["Translate", "Settings"];
+    assert_eq!(lens_titles(&lenses(&mut client, uri)), untranslated);
+    // Hover again is answered without sending the comment.
+    let hover = client.request_hover(uri, range["start"].clone());
+    assert_eq!(lens_titles(&lenses(&mut client, uri)), untranslated);
+    assert_eq!(client.receive(hover, TIMEOUT).unwrap(), Value::Null);
+    // Translate sends it as an explicit request, and Hover shows that.
+    let translate = lenses(&mut client, uri)[0]["command"].clone();
+    client.call("workspace/executeCommand", translate).unwrap();
+    assert_eq!(
+        lens_titles(&finished_lenses(&mut client, uri)),
+        [COMMENT_JA.lines().next().unwrap(), "Settings"]
+    );
+    assert_preview(
+        &client.hover(uri, range["start"].clone()),
+        COMMENT,
+        COMMENT_JA,
+        &range,
+    );
+    // An edit discards both, so Hover sends the comment again: its answer
+    // waits for the mock delay.
+    client.change(
+        uri,
+        2,
+        json!([{"range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 0}}, "text": "\n"}]),
+    );
+    let moved = range_for(&format!("\n{COMMENT_DOCUMENT}"), COMMENT);
+    let started = Instant::now();
+    assert_eq!(client.hover(uri, moved["start"].clone()), Value::Null);
+    assert!(started.elapsed() >= Duration::from_millis(990));
+    assert!(
+        client.notifications.is_empty(),
+        "{:?}",
+        client.notifications
+    );
+    client.finish(true);
+}
+
+#[test]
 fn markdown_gets_the_menu_as_code_lenses_above_its_first_line() {
     let uri = "file:///lens.rs";
     let mut client = lens_client(&[], uri, true);

@@ -68,6 +68,48 @@ pub(crate) fn batches(texts: &[String], bytes: usize, count: usize) -> Vec<&[Str
     batches
 }
 
+/// A translation of one segment, with the language that the service detected
+/// in it, which it gives only when no source language was sent.
+pub(crate) struct Detected {
+    pub text: String,
+    pub language: Option<String>,
+}
+
+/// Whether the service detected `target` in every segment of `segments`. No
+/// segment, or one without a detected language, is not `target`. `aliases`
+/// map the lowercase codes of a service to the code it means, such as `zh`
+/// to `zh-cn`.
+pub(crate) fn all_in(segments: &[Detected], target: &str, aliases: &[(&str, &str)]) -> bool {
+    !segments.is_empty()
+        && segments.iter().all(|segment| {
+            segment
+                .language
+                .as_deref()
+                .is_some_and(|language| same_language(language, target, aliases))
+        })
+}
+
+/// Whether two language codes name the same language, by the language subtag
+/// alone, ignoring case and `-` or `_`: `pt-BR` is `PT`.
+fn same_language(a: &str, b: &str, aliases: &[(&str, &str)]) -> bool {
+    let normal = |code: &str| {
+        let code = code.replace('_', "-").to_ascii_lowercase();
+        aliases
+            .iter()
+            .find(|(alias, _)| *alias == code)
+            .map_or(code, |(_, meant)| (*meant).to_owned())
+    };
+    let (a, b) = (normal(a), normal(b));
+    let language = |code: &str| code.split('-').next().unwrap_or_default().to_owned();
+    if language(&a) != language(&b) {
+        return false;
+    }
+    // A reader of one Chinese script may not read the other, so Chinese codes
+    // match only in full: `zh-Hans` is not a detected `zh`, which names
+    // neither.
+    language(&a) != "zh" || a == b
+}
+
 /// A text taken apart into segments, and the lines to put their translations
 /// back into.
 #[derive(Debug)]

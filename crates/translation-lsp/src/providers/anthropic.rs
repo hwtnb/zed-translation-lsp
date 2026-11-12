@@ -16,7 +16,7 @@ use crate::config::{AnthropicEffort, limits::TranslationLimits};
 use crate::config::{AnthropicModel, anthropic_thinking, limits::SizeLimit};
 
 use super::{
-    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, OutputOptions,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Kind, Output, OutputOptions,
     ProviderCommand, Translated, TranslationProvider,
     admission::{Admission, Attempt},
     api_key::{KeyFile, KeyId, KeySpec, Terminal},
@@ -283,7 +283,7 @@ impl TranslationProvider for AnthropicProvider {
         target_language: &str,
         expected: KeyId,
     ) -> Result<Translated<KeyId>, Error> {
-        let system = prompt::instructions(target_language, &self.source_language);
+        let system = prompt::instructions(target_language, &self.source_language, intent);
         let reply = self
             .send(
                 intent,
@@ -294,11 +294,12 @@ impl TranslationProvider for AnthropicProvider {
                 expected,
             )
             .await?;
-        Ok(Translated {
-            text: prompt::translation(reply),
-            context: expected,
-            entry: false,
-        })
+        Ok(prompt::translated(
+            reply,
+            intent,
+            &self.source_language,
+            expected,
+        ))
     }
 
     async fn look_up(
@@ -318,7 +319,7 @@ impl TranslationProvider for AnthropicProvider {
         Ok(Translated {
             text: dictionary::entry(term, &reply, SERVICE)?,
             context: expected,
-            entry: true,
+            kind: Kind::Entry,
         })
     }
 

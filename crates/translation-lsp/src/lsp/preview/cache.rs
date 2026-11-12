@@ -12,6 +12,10 @@ pub(crate) enum Stored<C> {
         range: Range,
         message: String,
     },
+    /// An automatic range translation that found its text already in the
+    /// target language. It shows nothing, and only automatic requests reuse
+    /// it.
+    SameLanguage { context: C, range: Range },
 }
 
 impl<C: PartialEq> Stored<C> {
@@ -27,21 +31,21 @@ impl<C: PartialEq> Stored<C> {
     fn output(&self) -> Output {
         match self {
             Self::Translation(output, _) => *output,
-            Self::Failure { .. } => Output::Range,
+            Self::Failure { .. } | Self::SameLanguage { .. } => Output::Range,
         }
     }
 
     fn range(&self) -> Range {
         match self {
             Self::Translation(_, preview) => preview.range,
-            Self::Failure { range, .. } => *range,
+            Self::Failure { range, .. } | Self::SameLanguage { range, .. } => *range,
         }
     }
 
     fn context(&self) -> &C {
         match self {
             Self::Translation(_, preview) => &preview.context,
-            Self::Failure { context, .. } => context,
+            Self::Failure { context, .. } | Self::SameLanguage { context, .. } => context,
         }
     }
 
@@ -49,6 +53,7 @@ impl<C: PartialEq> Stored<C> {
         match self {
             Self::Translation(_, preview) => &preview.translation,
             Self::Failure { message, .. } => message,
+            Self::SameLanguage { .. } => "",
         }
     }
 
@@ -61,6 +66,10 @@ impl<C: PartialEq> Stored<C> {
 
     fn is_failure(&self) -> bool {
         matches!(self, Self::Failure { .. })
+    }
+
+    fn is_same_language(&self) -> bool {
+        matches!(self, Self::SameLanguage { .. })
     }
 }
 
@@ -106,7 +115,7 @@ impl<C: Clone + PartialEq> Cache<C> {
             .filter(|e| &e.uri == uri)
             .filter_map(|e| match &e.stored {
                 Stored::Translation(_, preview) => Some((e.ticket, preview)),
-                Stored::Failure { .. } => None,
+                Stored::Failure { .. } | Stored::SameLanguage { .. } => None,
             })
             .max_by_key(|(ticket, _)| *ticket)
             .map(|(_, preview)| preview)
@@ -166,17 +175,31 @@ impl<C: Clone + PartialEq> Cache<C> {
         .cloned()
     }
 
+    /// Whether the newest range result of exactly `range` found its text
+    /// already in the target language.
+    pub fn same_language(&mut self, uri: &Uri, range: Range) -> bool {
+        self.use_newest(uri, |stored| {
+            stored.output() == Output::Range && stored.range() == range
+        })
+        .is_some_and(|stored| matches!(stored, Stored::SameLanguage { .. }))
+    }
+
     /// The message that shows the newest range translation or failure of
     /// exactly `range`: `Ok` with a translation, `Err` with the reason of a
     /// failure.
     pub fn message(&mut self, uri: &Uri, range: Range) -> Option<Result<String, String>> {
         let stored = self.use_newest(uri, |stored| {
-            stored.range() == range && stored.translation(Output::Document).is_none()
+            stored.range() == range
+                && matches!(
+                    stored,
+                    Stored::Translation(Output::Range, _) | Stored::Failure { .. }
+                )
         })?;
-        Some(match stored {
-            Stored::Translation(_, preview) => Ok(preview.message()),
-            Stored::Failure { message, .. } => Err(plain_text(message)),
-        })
+        match stored {
+            Stored::Translation(_, preview) => Some(Ok(preview.message())),
+            Stored::Failure { message, .. } => Some(Err(plain_text(message))),
+            Stored::SameLanguage { .. } => None,
+        }
     }
 
     /// The range translations and failures of a document, by their position.
@@ -190,7 +213,7 @@ impl<C: Clone + PartialEq> Cache<C> {
                     Some((preview.range, Lens::Translated(&preview.translation)))
                 }
                 Stored::Failure { range, .. } => Some((*range, Lens::Failed)),
-                Stored::Translation(Output::Document, _) => None,
+                Stored::Translation(Output::Document, _) | Stored::SameLanguage { .. } => None,
             })
             .collect();
         lenses.sort_by_key(|(range, _)| range.start);
@@ -254,11 +277,17 @@ impl<C: Clone + PartialEq> Cache<C> {
         let output = stored.output();
         let tab = output == Output::Document;
         let range = stored.range();
+        let same_language = stored.is_same_language();
+        let translation = matches!(stored, Stored::Translation(..));
+        // A result that shows nothing never takes the place of one that shows
+        // a translation: it neither keeps an older translation out nor
+        // removes one. It keeps an older failure out, as any newer result does.
         if self.entries.iter().any(|e| {
             e.uri == uri
                 && e.stored.output() == output
                 && e.ticket > ticket
                 && !e.stored.is_failure()
+                && !(translation && e.stored.is_same_language())
                 && (tab || contains(e.stored.range(), range))
         }) {
             return;
@@ -270,6 +299,10 @@ impl<C: Clone + PartialEq> Cache<C> {
             }
             if failure {
                 return !e.stored.is_failure() || e.stored.range() != range;
+            }
+            if same_language {
+                return !(e.stored.is_same_language() && e.stored.range() == range
+                    || e.stored.is_failure() && contains(range, e.stored.range()));
             }
             !(tab || contains(range, e.stored.range()))
         });
@@ -413,5 +446,101 @@ mod tests {
         );
         assert!(cache.latest(&b).is_none());
         assert!(cache.exact(&a, range(0, 1), Output::Range).is_some());
+    }
+
+    #[test]
+    fn same_language_results_show_nothing_and_go_with_their_context_and_document() {
+        let uri: Uri = "file:///same.rs".parse().unwrap();
+        let mut cache = Cache::new(TranslationLimits::default());
+        let same = |context: u8| Stored::SameLanguage {
+            context,
+            range: range(0, 10),
+        };
+        cache.insert(uri.clone(), 1, same(1));
+        assert!(cache.same_language(&uri, range(0, 10)));
+        assert!(!cache.same_language(&uri, range(0, 9)));
+        assert!(cache.lenses(&uri).is_empty());
+        assert!(cache.message(&uri, range(0, 10)).is_none());
+        assert!(cache.hover(&uri, Position::new(0, 3), |_| true).is_none());
+        assert!(cache.exact(&uri, range(0, 10), Output::Range).is_none());
+        // A later translation of the range replaces it.
+        cache.insert(
+            uri.clone(),
+            2,
+            Stored::Translation(
+                Output::Range,
+                Preview::new(1, range(0, 10), "訳".into(), false, None),
+            ),
+        );
+        assert!(!cache.same_language(&uri, range(0, 10)));
+        cache.insert(uri.clone(), 3, same(1));
+        cache.retain_context(&2);
+        assert!(!cache.same_language(&uri, range(0, 10)));
+        cache.insert(uri.clone(), 4, same(2));
+        cache.remove_document(&uri);
+        assert!(!cache.same_language(&uri, range(0, 10)));
+    }
+
+    #[test]
+    fn same_language_results_neither_remove_nor_keep_out_translations() {
+        let uri: Uri = "file:///same.rs".parse().unwrap();
+        let mut cache = Cache::new(TranslationLimits::default());
+        let translation = |range| Stored::Translation(Output::Range, preview(range, "訳"));
+        let same = |range| Stored::SameLanguage {
+            context: MockContext,
+            range,
+        };
+        // An older translation of a part comes in after a newer result that
+        // shows nothing; one that was there stays.
+        cache.insert(uri.clone(), 2, same(range(0, 20)));
+        cache.insert(uri.clone(), 1, translation(range(0, 5)));
+        cache.insert(uri.clone(), 3, translation(range(6, 10)));
+        cache.insert(uri.clone(), 4, same(range(0, 20)));
+        assert_eq!(cache.lenses(&uri).len(), 2);
+        assert!(cache.same_language(&uri, range(0, 20)));
+        // It replaces only the same result of the same range, and failures it
+        // covers.
+        cache.insert(
+            uri.clone(),
+            5,
+            Stored::failure(MockContext, range(12, 15), "failure"),
+        );
+        cache.insert(uri.clone(), 6, same(range(0, 20)));
+        assert!(cache.failure_hover(&uri, Position::new(0, 13)).is_none());
+        assert_eq!(
+            cache
+                .entries
+                .iter()
+                .filter(|e| e.stored.is_same_language())
+                .count(),
+            1
+        );
+        assert_eq!(cache.lenses(&uri).len(), 2);
+    }
+
+    #[test]
+    fn a_newer_same_language_result_keeps_an_older_failure_out_in_either_order() {
+        let uri: Uri = "file:///same.rs".parse().unwrap();
+        for reverse in [false, true] {
+            let mut cache = Cache::new(TranslationLimits::default());
+            let same = Stored::SameLanguage {
+                context: MockContext,
+                range: range(0, 20),
+            };
+            let failed = Stored::failure(MockContext, range(0, 5), "Old request failed");
+            if reverse {
+                cache.insert(uri.clone(), 2, same);
+                cache.insert(uri.clone(), 1, failed);
+            } else {
+                cache.insert(uri.clone(), 1, failed);
+                cache.insert(uri.clone(), 2, same);
+            }
+            assert!(
+                cache.failure_hover(&uri, Position::new(0, 3)).is_none(),
+                "reverse={reverse}"
+            );
+            assert!(cache.lenses(&uri).is_empty());
+            assert!(cache.same_language(&uri, range(0, 20)));
+        }
     }
 }

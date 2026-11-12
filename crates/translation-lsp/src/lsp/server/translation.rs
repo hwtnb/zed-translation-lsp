@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     config::limits::SizeSetting,
     lsp::preview::{Form, markdown::Urls},
-    providers::{Intent, Source, error::Notification as ErrorNotification},
+    providers::{Intent, Kind, Source, error::Notification as ErrorNotification},
 };
 
 impl<P: TranslationProvider> Server<P> {
@@ -30,6 +30,17 @@ impl<P: TranslationProvider> Server<P> {
     ) -> RequestResult<Option<Value>> {
         let context = self.check_cache()?;
         self.check_input(&target, request.output())?;
+        let running = self
+            .scheduler
+            .ticket(&target, request.output(), self.sharing());
+        // Work in progress on the range, such as an explicit translation after
+        // the text was found in the target language, answers it instead.
+        if running.is_none()
+            && !request.explicit()
+            && self.cache.same_language(&target.uri, target.range)
+        {
+            return Ok(matches!(request, TranslationRequest::Reply(..)).then_some(Value::Null));
+        }
         if request.reuses_completed()
             && let Some(preview) = self.completed(&target, &request)
         {
@@ -39,10 +50,7 @@ impl<P: TranslationProvider> Server<P> {
             request,
             TranslationRequest::Reply(_, PendingReply::Command { .. } | PendingReply::Retry { .. })
         );
-        match self
-            .scheduler
-            .ticket(&target, request.output(), self.sharing())
-        {
+        match running {
             Some(ticket) => self.join_running(ticket, request, &context)?,
             None => self.admit_new(target, request, context)?,
         }
@@ -278,6 +286,9 @@ impl<P: TranslationProvider> Server<P> {
                     "Translation authorization changed during translation",
                 ));
             }
+            if translation.kind == Kind::SameLanguage {
+                return Ok(Completed::SameLanguage(translation.context));
+            }
             self.settings
                 .translation_limits
                 .output_kib
@@ -290,7 +301,7 @@ impl<P: TranslationProvider> Server<P> {
                 work.is_comment,
                 P::capabilities().hover_note,
             );
-            preview.form = if translation.entry {
+            preview.form = if translation.kind == Kind::Entry {
                 Form::Entry
             } else if self.documents[&work.target.uri].language == Some(Language::Markdown) {
                 Form::Markdown(work.urls.clone())
@@ -298,10 +309,70 @@ impl<P: TranslationProvider> Server<P> {
                 Form::Text(work.urls.clone())
             };
             preview.hover = self.settings.hover;
-            Ok(preview)
+            Ok(Completed::Preview(preview))
         })();
-        self.complete(connection, completion.ticket, &work, result, silent)?;
+        match result {
+            Ok(Completed::SameLanguage(context)) => {
+                self.complete_same_language(connection, completion.ticket, &work, context)?;
+            }
+            Ok(Completed::Preview(preview)) => {
+                self.complete(connection, completion.ticket, &work, Ok(preview), silent)?;
+            }
+            Err(error) => {
+                self.complete(connection, completion.ticket, &work, Err(error), silent)?
+            }
+        }
         self.dispatch().map_err(|e| e.message)?;
+        Ok(())
+    }
+
+    /// Ends a translation whose text the provider found already in the target
+    /// language. Its Hover waiters get no Hover, and automatic requests reuse
+    /// the result. A Code Action or a tab that joined after the automatic
+    /// request was sent sends the text again as an explicit request, which
+    /// gives the ready message or opens the tab when it completes.
+    fn complete_same_language(
+        &mut self,
+        connection: &Connection,
+        ticket: u64,
+        work: &Translation<P::Context>,
+        context: P::Context,
+    ) -> ServerResult<()> {
+        if work.owners.range_output() || self.scheduler.has_waiters(ticket) {
+            self.cache.insert(
+                work.target.uri.clone(),
+                ticket,
+                Stored::SameLanguage {
+                    context,
+                    range: work.target.range,
+                },
+            );
+        }
+        self.ui.refresh_lenses()?;
+        for (id, _) in self.scheduler.take_waiters(ticket) {
+            respond(connection, id, Ok(Value::Null))?;
+        }
+        // A tab first, so that a range request joins the same work: a range
+        // request would not let a tab join once sent.
+        let mut requests = Vec::new();
+        if work.owners.tab() {
+            requests.push(TranslationRequest::Document);
+        }
+        if work.owners.manual() {
+            // A retry, so that a completed result, such as an older tab
+            // translation, does not stand in for the text sent again.
+            requests.push(TranslationRequest::Reply(
+                RequestId::from(format!("translation-resend-{ticket}")),
+                PendingReply::Retry {
+                    notice: work.owners.notice(),
+                },
+            ));
+        }
+        for request in requests {
+            if let Err(error) = self.queue_translation(work.target.clone(), request) {
+                self.command_failure(&error)?;
+            }
+        }
         Ok(())
     }
 
@@ -374,6 +445,13 @@ impl<P: TranslationProvider> Server<P> {
         }
         Ok(())
     }
+}
+
+/// What a completed translation gives the requests that own it.
+enum Completed<C> {
+    Preview(Preview<C>),
+    /// The text is already in the target language, as found with the context.
+    SameLanguage(C),
 }
 
 fn location(target: &TranslationTarget) -> String {

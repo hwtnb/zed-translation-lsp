@@ -158,7 +158,7 @@ async fn a_term_is_sent_with_its_line_and_its_entry_is_rendered() {
             .await
     };
     let entry = look_up().await.unwrap();
-    assert!(entry.entry);
+    assert_eq!(entry.kind, Kind::Entry);
     assert_eq!(entry.text, "**retain** — 語\n\n1. 訳retain\n");
     let record = fixture.state.lock().unwrap().records.pop().unwrap();
     let body: Value = serde_json::from_str(&record.body).unwrap();
@@ -667,4 +667,42 @@ fn capabilities_name_the_anthropic_server() {
         AnthropicProvider::capabilities().server_name,
         "Translation LSP (Anthropic)"
     );
+}
+
+/// Only an automatic request asks for the mark of text already in the target
+/// language, and only its reply is read as that mark.
+#[tokio::test(flavor = "current_thread")]
+async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
+    for (intent, kind, text) in [
+        (Intent::Automatic, Kind::SameLanguage, ""),
+        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+    ] {
+        let fixture = Fixture::new().await;
+        let provider = fixture.provider();
+        fixture.reply(Reply::stream(test_support::completed(
+            prompt::SAME_LANGUAGE,
+        )));
+        let translated = provider
+            .translate(
+                intent,
+                Output::Range,
+                SOURCE,
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((translated.kind, translated.text.as_str()), (kind, text));
+        let state = fixture.state.lock().unwrap();
+        let request: Value = serde_json::from_str(&state.records[0].body).unwrap();
+        let instructions = &request["system"];
+        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
+        assert_eq!(
+            instructions
+                .as_str()
+                .unwrap()
+                .contains(prompt::SAME_LANGUAGE),
+            intent == Intent::Automatic
+        );
+    }
 }

@@ -88,8 +88,20 @@ relative to the repository root.
   sentence, other than the whole document, is looked up instead
   (`text/term.rs`): the term is sent with its line, the model replies
   with the JSON fields in `providers/dictionary.rs`, and the server renders them
-  as Markdown with every text escaped. Comment Hover always translates, and so
-  does a provider without entries, such as DeepL or Google Cloud Translation.
+  as Markdown with every text escaped. Comment Hover never looks a term up, and
+  neither does a provider without entries, such as DeepL or Google Cloud
+  Translation.
+- The server never guesses a language. Automatic translations (comment Hover
+  and automatic selection) with `source_language` set to `auto` ask the model
+  to reply with only the mark in `providers/prompt.rs` when all the prose is
+  already in the target language; DeepL and Google Cloud Translation give the
+  language they detected in each segment (`providers/segments.rs`), which
+  decides without their translation, so a lost mark does not matter there. Such
+  text shows nothing, and the result is kept like a translation but used only
+  by automatic requests; it never removes or keeps out a translation. Explicit requests, dictionary lookups, and a set
+  `source_language` send the prompt unchanged, and explicit requests always
+  translate: one that joined an automatic request already sent sends the text
+  again as an explicit request, once.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to
   documents or authentication context must invalidate affected cached results.
   Hover waiters retain independent cancellation and deadlines, including queue

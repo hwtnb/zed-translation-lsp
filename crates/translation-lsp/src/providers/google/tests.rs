@@ -265,3 +265,132 @@ impl Interaction for Confirm {
         Ok(self.0.then(|| choices[0].clone()))
     }
 }
+
+/// A reply with a translation of each segment and the language detected in
+/// it, if any.
+fn detected_in(segments: &[(Option<&str>, &str)]) -> Reply {
+    let translations: Vec<Value> = segments
+        .iter()
+        .map(|(language, text)| match language {
+            Some(language) => json!({"translatedText": text, "detectedSourceLanguage": language}),
+            None => json!({"translatedText": text}),
+        })
+        .collect();
+    Reply {
+        status: 200,
+        body: json!({"data": {"translations": translations}}).to_string(),
+        headers: vec![("content-type", "application/json")],
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_text_detected_in_the_target_language_in_every_segment_is_not_shown() {
+    const TWO: &str = "First paragraph.\n\nSecond paragraph.";
+    for (intent, source_language, languages, kind) in [
+        (
+            Intent::Automatic,
+            None,
+            [Some("ja"), Some("ja")],
+            Kind::SameLanguage,
+        ),
+        (
+            Intent::Automatic,
+            None,
+            [Some("ja"), Some("en")],
+            Kind::Translation,
+        ),
+        (
+            Intent::Automatic,
+            None,
+            [Some("ja"), None],
+            Kind::Translation,
+        ),
+        (
+            Intent::Explicit,
+            None,
+            [Some("ja"), Some("ja")],
+            Kind::Translation,
+        ),
+        // The detected language reflects the source language that was sent.
+        (
+            Intent::Automatic,
+            Some("ja"),
+            [Some("ja"), Some("ja")],
+            Kind::Translation,
+        ),
+    ] {
+        let fixture = HttpFixture::new().await;
+        let keys = keys();
+        let mut provider = GoogleProvider::synthetic(format!("{}/v2", fixture.base), &keys.path);
+        if let Some(source_language) = source_language {
+            provider = provider.with_source_language(source_language);
+        }
+        fixture.reply(detected_in(&[
+            (languages[0], "第一段。"),
+            (languages[1], "第二段。"),
+        ]));
+        let translated = provider
+            .translate(
+                intent,
+                Output::Range,
+                TWO,
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            translated.kind, kind,
+            "{intent:?} {source_language:?} {languages:?}"
+        );
+        let shown = if kind == Kind::SameLanguage {
+            ""
+        } else {
+            "第一段。\n\n第二段。"
+        };
+        assert_eq!(translated.text, shown);
+        assert_eq!(fixture.records().len(), 1);
+    }
+    // `zh` is the code of Chinese (Simplified), as `zh-CN` is.
+    for (detected, target, kind) in [
+        ("zh-CN", "zh", Kind::SameLanguage),
+        ("zh-CN", "zh-CN", Kind::SameLanguage),
+        ("zh-TW", "zh", Kind::Translation),
+        ("zh-CN", "zh-TW", Kind::Translation),
+    ] {
+        let fixture = HttpFixture::new().await;
+        let keys = keys();
+        let provider = GoogleProvider::synthetic(format!("{}/v2", fixture.base), &keys.path);
+        fixture.reply(detected_in(&[(Some(detected), "第一段。")]));
+        let translated = provider
+            .translate(
+                Intent::Automatic,
+                Output::Range,
+                "First paragraph.",
+                target,
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(translated.kind, kind, "{detected} {target}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn text_in_the_target_language_shows_nothing_even_when_its_translation_lost_a_mark() {
+    let fixture = HttpFixture::new().await;
+    let keys = keys();
+    let provider = GoogleProvider::synthetic(format!("{}/v2", fixture.base), &keys.path);
+    fixture.reply(detected_in(&[(Some("ja"), "失敗なら再試行します。")]));
+    let translated = provider
+        .translate(
+            Intent::Automatic,
+            Output::Range,
+            "`Temporary` の失敗なら再試行します。",
+            "ja",
+            provider.context().unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(translated.kind, Kind::SameLanguage);
+}

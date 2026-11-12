@@ -24,9 +24,11 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Pythonのコメントとドキュメンテーション文字列は [samples/comment.py](../../samples/comment.py) で試せます。Go、Java、Kotlin、Swift、Ruby、PHP、SQLのコメントは [samples/comment.go](../../samples/comment.go)、[samples/comment.java](../../samples/comment.java)、[samples/comment.kt](../../samples/comment.kt)、[samples/comment.swift](../../samples/comment.swift)、[samples/comment.rb](../../samples/comment.rb)、[samples/comment.php](../../samples/comment.php)、[samples/comment.sql](../../samples/comment.sql) で試せます。[samples/comment.html](../../samples/comment.html) にはHTMLのコメントと、スクリプトとスタイルシートの中のコメントがあり、[samples/comment.css](../../samples/comment.css) にはCSSのコメントがあります。Vue.js、Svelte、Astroのコメントは [samples/comment.vue](../../samples/comment.vue)、[samples/comment.svelte](../../samples/comment.svelte)、[samples/comment.astro](../../samples/comment.astro) で試せます。XML、Lua、Zig、Protocol Buffers、GraphQL、メイクファイルのコメントは [samples/comment.xml](../../samples/comment.xml)、[samples/comment.lua](../../samples/comment.lua)、[samples/comment.zig](../../samples/comment.zig)、[samples/comment.proto](../../samples/comment.proto)、[samples/comment.graphql](../../samples/comment.graphql)、[samples/Makefile](../../samples/Makefile) で試せます。JSON、YAML、TOMLのコメントは [samples/comment.jsonc](../../samples/comment.jsonc)、[samples/comment.yaml](../../samples/comment.yaml)、[samples/comment.toml](../../samples/comment.toml) で試せます。シェルスクリプト、PowerShell、Dockerfile、Docker Composeのコメントは [samples/comment.sh](../../samples/comment.sh)、[samples/comment.ps1](../../samples/comment.ps1)、[samples/Dockerfile](../../samples/Dockerfile)、[samples/compose.yaml](../../samples/compose.yaml) で試せます。[samples/paragraph.md](../../samples/paragraph.md) では段落を選択し、コードアクションの `Translate selection to Japanese (ja)` を実行してから、選択範囲にマウスポインターを重ねます。辞書の項目を見るには、同じサンプルで `retry_count` だけを選択して、同じ操作を実行します。モックのプロバイダーでは、Markdownは手動実行が必要です。
 
+[samples/languages.rs](../../samples/languages.rs) には、英語、日本語、コードとURLを含む日本語、英語と日本語が半分ずつ、漢字だけ、中国語（簡体字）のコメントがあります。実際のプロバイダーで、翻訳先の言語だとしてホバーが訳さないのがどれかを試せます。モックのプロバイダーはこれらを訳しません。
+
 モックのプロバイダーはこれらのサンプル、その改行の違い、語 `retry_count` だけに対応します。ほかの本文や日本語以外の訳先ではエラーを返します。ホバーの見出しには `Mock translation (fixed sample)` と表示します。
 
-stdioのテストは、実行ファイルを `--mock-delay-ms <ミリ秒>`、`--mock-fail`、`--mock-timeout-ms <ミリ秒>` 付きで起動し、モックの翻訳を遅らせる、失敗させる、または期限を指定の値にします。これらの引数はモックのプロバイダーにだけ効きます。
+stdioのテストは、実行ファイルを `--mock-delay-ms <ミリ秒>`、`--mock-fail`、`--mock-timeout-ms <ミリ秒>`、`--mock-same-language` 付きで起動し、モックの翻訳を遅らせる、失敗させる、期限を指定の値にする、または自動の翻訳で文章をすでに翻訳先の言語だとします。これらの引数はモックのプロバイダーにだけ効きます。
 
 ## CIとリリース前の確認
 

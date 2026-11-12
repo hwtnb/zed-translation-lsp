@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 #[cfg(test)]
 use super::api_key::test_support::Terminal as SyntheticTerminal;
 use super::{
-    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Output, ProviderCommand,
+    AccountChange, AuthUiState, Capabilities, Intent, Interaction, Kind, Output, ProviderCommand,
     Translated, TranslationProvider,
     admission::{Admission, Attempt},
     api_key::{ApiKey, KeyFile, KeyId, KeySpec, Terminal},
     error::{Error, RemoteError, RemoteKind, Service, credentials::CredentialError},
-    segments::{Markup, Segmented, batches},
+    segments::{Detected, Markup, Segmented, all_in, batches},
     transport::{self, safe},
 };
 #[cfg(test)]
@@ -138,14 +138,21 @@ async fn translations(
     response: reqwest::Response,
     count: usize,
     output_limit: SizeLimit,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<Detected>, Error> {
     let body = transport::json_body(response, SERVICE, output_limit).await?;
-    let translations: Option<Vec<String>> = body["translations"]
+    let translations: Option<Vec<Detected>> = body["translations"]
         .as_array()
         .map(|translations| {
             translations
                 .iter()
-                .map(|translation| translation["text"].as_str().map(str::to_owned))
+                .map(|translation| {
+                    Some(Detected {
+                        text: translation["text"].as_str()?.to_owned(),
+                        language: translation["detected_source_language"]
+                            .as_str()
+                            .map(str::to_owned),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -232,7 +239,7 @@ impl DeepLProvider {
         target_language: &str,
         source: &str,
         expected: KeyId,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<Detected>, Error> {
         let key = self.key.in_use(expected)?;
         let secrets = [&*key.text, source];
         // The settings were checked when the server started.
@@ -342,13 +349,29 @@ impl TranslationProvider for DeepLProvider {
                     .await?,
             );
         }
+        // Before the marks are checked: they keep a translation from being
+        // shown broken, and text in the target language shows no translation.
+        if intent == Intent::Automatic
+            && self.source_language.is_none()
+            && all_in(&translations, target_language, &[])
+        {
+            return Ok(Translated {
+                text: String::new(),
+                context: expected,
+                kind: Kind::SameLanguage,
+            });
+        }
+        let translations: Vec<_> = translations
+            .into_iter()
+            .map(|translation| translation.text)
+            .collect();
         let text = segmented
             .assemble(Markup::Xml, &translations)
             .ok_or_else(|| Error::failed(UNMARKED))?;
         Ok(Translated {
             text,
             context: expected,
-            entry: false,
+            kind: Kind::Translation,
         })
     }
 

@@ -12,7 +12,7 @@ use tokio::{
 use super::*;
 use crate::{
     lsp::preview::markdown::{Urls, render},
-    providers::{AccountChange, Intent, Source, mock::MockContext},
+    providers::{AccountChange, Intent, Kind, Source, mock::MockContext},
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -43,7 +43,7 @@ async fn worker_keeps_non_send_futures_and_one_independent_admin_slot() {
             Ok(Translated {
                 text: (*text).clone(),
                 context,
-                entry: false,
+                kind: Kind::Translation,
             })
         }
         async fn administer(&self, _: &str, _: &impl Interaction) -> Result<String, ProviderError> {
@@ -158,7 +158,7 @@ fn generic_worker_receives_comment_bodies_and_adjacent_blocks_take_precedence() 
             Ok(Translated {
                 text: format!("fake: {text}"),
                 context,
-                entry: false,
+                kind: Kind::Translation,
             })
         }
     }
@@ -295,7 +295,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 result: Ok(Translated {
                     text: "stale result".into(),
                     context: MockContext,
-                    entry: false,
+                    kind: Kind::Translation,
                 }),
             }),
         )
@@ -311,7 +311,7 @@ fn stale_completion_ticket_cannot_answer_a_reused_hover_request_id() {
                 result: Ok(Translated {
                     text: "current result".into(),
                     context: MockContext,
-                    entry: false,
+                    kind: Kind::Translation,
                 }),
             }),
         )
@@ -369,7 +369,7 @@ fn provider_capabilities_drive_commands_and_account_actions() {
             Ok(Translated {
                 text: text.into(),
                 context,
-                entry: false,
+                kind: Kind::Translation,
             })
         }
         async fn administer(
