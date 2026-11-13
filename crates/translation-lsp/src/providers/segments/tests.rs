@@ -269,6 +269,11 @@ fn every_segment_must_be_detected_in_the_target_language() {
         (&[Some("zh-CN")], "zh-cn", true),
         (&[Some("zh-TW")], "zh-CN", false),
         (&[Some("zh-CN")], "zh-Hans", false),
+        // A code that names a script only in full, on either side.
+        (&[Some("SR")], "sr-Latn", false),
+        (&[Some("sr-Cyrl")], "sr-Latn", false),
+        (&[Some("sr-Latn")], "sr_latn", true),
+        (&[Some("sr-Latn")], "sr", false),
     ] {
         assert_eq!(
             all_in(&detected(languages), target, &[]),

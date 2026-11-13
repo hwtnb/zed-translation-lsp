@@ -472,11 +472,9 @@ async fn complete_translation_is_returned_as_text_without_reassembly_or_repeated
         let request: Value = serde_json::from_str(&record.body).unwrap();
         assert_eq!(request["input"][0]["content"], prompt::message(source));
         assert!(request.get("text").is_none());
-        assert!(
-            request["instructions"]
-                .as_str()
-                .unwrap()
-                .contains("Return only the translation")
+        assert_eq!(
+            request["instructions"],
+            prompt::instructions("ja", "auto", Intent::Automatic, Form::Translates)
         );
         assert!(
             request["instructions"]
@@ -1149,16 +1147,26 @@ async fn manual_selections_reach_http() {
     }
 }
 
-/// Only an automatic request asks for the mark of text already in the target
-/// language, and only its reply is read as that mark.
+/// Only an automatic request asks for the line of languages, and only its
+/// reply is read as text already in the target language when every code in
+/// that line is the target language.
 #[tokio::test(flavor = "current_thread")]
-async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
-    for (intent, kind, text) in [
-        (Intent::Automatic, Kind::SameLanguage, ""),
-        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+async fn only_automatic_requests_ask_for_and_read_the_line_of_languages() {
+    let same = prompt::same_language_reply("これは日本語です。");
+    let translation = "<languages>en</languages>\n訳文";
+    for (intent, reply, kind, text) in [
+        (Intent::Automatic, same.as_str(), Kind::SameLanguage, ""),
+        (Intent::Automatic, translation, Kind::Translation, "訳文"),
+        // An explicit request asks for no line, and its reply is read whole.
+        (
+            Intent::Explicit,
+            same.as_str(),
+            Kind::Translation,
+            same.as_str(),
+        ),
     ] {
         let fixture = Fixture::new().await;
-        fixture.state.lock().unwrap().translation = Some(prompt::SAME_LANGUAGE.into());
+        fixture.state.lock().unwrap().translation = Some(reply.into());
         let auth = fixture.auth();
         fixture.connected(&auth, 3600).await;
         let provider = ChatGptProvider::synthetic(
@@ -1185,12 +1193,12 @@ async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
             .unwrap();
         let request: Value = serde_json::from_str(&record.body).unwrap();
         let instructions = &request["instructions"];
-        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
         assert_eq!(
-            instructions
-                .as_str()
-                .unwrap()
-                .contains(prompt::SAME_LANGUAGE),
+            instructions,
+            &prompt::instructions("ja", "auto", intent, Form::Translates)
+        );
+        assert_eq!(
+            prompt::asks_for_languages(instructions.as_str().unwrap()),
             intent == Intent::Automatic
         );
     }

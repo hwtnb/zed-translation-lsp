@@ -19,6 +19,14 @@ pub(crate) fn is_tag(value: &str) -> bool {
     name(value).is_some()
 }
 
+/// Whether `code` names a script, such as `Latn` in `sr-Latn` or `sr_Latn_RS`:
+/// a part after the first of four ASCII letters, in any case.
+pub(crate) fn names_script(code: &str) -> bool {
+    code.split(['-', '_'])
+        .skip(1)
+        .any(|part| part.len() == 4 && part.bytes().all(|byte| byte.is_ascii_alphabetic()))
+}
+
 /// Checks that the language settings are codes, for a provider that takes no
 /// language names: `target_language` a language tag, and `source_language`
 /// one too, or `auto`.

@@ -669,19 +669,27 @@ fn capabilities_name_the_anthropic_server() {
     );
 }
 
-/// Only an automatic request asks for the mark of text already in the target
-/// language, and only its reply is read as that mark.
+/// Only an automatic request asks for the line of languages, and only its
+/// reply is read as text already in the target language when every code in
+/// that line is the target language.
 #[tokio::test(flavor = "current_thread")]
-async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
-    for (intent, kind, text) in [
-        (Intent::Automatic, Kind::SameLanguage, ""),
-        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+async fn only_automatic_requests_ask_for_and_read_the_line_of_languages() {
+    let same = prompt::same_language_reply("これは日本語です。");
+    let translation = "<languages>en</languages>\n訳文";
+    for (intent, reply, kind, text) in [
+        (Intent::Automatic, same.as_str(), Kind::SameLanguage, ""),
+        (Intent::Automatic, translation, Kind::Translation, "訳文"),
+        // An explicit request asks for no line, and its reply is read whole.
+        (
+            Intent::Explicit,
+            same.as_str(),
+            Kind::Translation,
+            same.as_str(),
+        ),
     ] {
         let fixture = Fixture::new().await;
         let provider = fixture.provider();
-        fixture.reply(Reply::stream(test_support::completed(
-            prompt::SAME_LANGUAGE,
-        )));
+        fixture.reply(Reply::stream(test_support::completed(reply)));
         let translated = provider
             .translate(
                 intent,
@@ -696,13 +704,76 @@ async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
         let state = fixture.state.lock().unwrap();
         let request: Value = serde_json::from_str(&state.records[0].body).unwrap();
         let instructions = &request["system"];
-        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
         assert_eq!(
-            instructions
-                .as_str()
-                .unwrap()
-                .contains(prompt::SAME_LANGUAGE),
+            instructions,
+            &prompt::instructions("ja", "auto", intent, Form::Translates)
+        );
+        assert_eq!(
+            prompt::asks_for_languages(instructions.as_str().unwrap()),
             intent == Intent::Automatic
+        );
+    }
+}
+
+/// Only the models seen to stop exactly when the text is in the target
+/// language are asked to, by the model of the output that sends the request.
+#[tokio::test(flavor = "current_thread")]
+async fn only_checked_models_are_asked_to_stop_after_the_line_of_languages() {
+    for (range, document, output, form) in [
+        ("claude-haiku-5-5", None, Output::Range, Form::Translates),
+        ("claude-sonnet-5-5", None, Output::Range, Form::Stops),
+        ("claude-opus-5-5", None, Output::Range, Form::Stops),
+        ("claude-opus-5-5", None, Output::Document, Form::Stops),
+        (
+            "claude-opus-5-5-20261101",
+            None,
+            Output::Range,
+            Form::Translates,
+        ),
+        ("Claude-Opus-5-5", None, Output::Range, Form::Translates),
+        ("claude-future", None, Output::Range, Form::Translates),
+        (
+            "claude-haiku-5-5",
+            Some("claude-sonnet-5-5"),
+            Output::Document,
+            Form::Stops,
+        ),
+        (
+            "claude-haiku-5-5",
+            Some("claude-sonnet-5-5"),
+            Output::Range,
+            Form::Translates,
+        ),
+        (
+            "claude-opus-5-5",
+            Some("claude-haiku-5-5"),
+            Output::Document,
+            Form::Translates,
+        ),
+    ] {
+        let fixture = Fixture::new().await;
+        let mut provider = fixture.provider();
+        provider.options.range.model = range.into();
+        provider.options.document = document.map(|model| AnthropicModel {
+            model: model.into(),
+            ..provider.options.range.clone()
+        });
+        provider
+            .translate(
+                Intent::Automatic,
+                output,
+                SOURCE,
+                "ja",
+                provider.context().unwrap(),
+            )
+            .await
+            .unwrap();
+        let state = fixture.state.lock().unwrap();
+        let request: Value = serde_json::from_str(&state.records[0].body).unwrap();
+        assert_eq!(
+            request["system"],
+            prompt::instructions("ja", "auto", Intent::Automatic, form),
+            "{range} {document:?} {output:?}"
         );
     }
 }

@@ -174,6 +174,15 @@ pub(crate) fn anthropic_thinking(
     thinking.unwrap_or(model != DEFAULT_ANTHROPIC_MODEL || effort.requires_thinking().is_some())
 }
 
+/// Whether `model` is asked to stop after its line of languages when the text
+/// is already in the target language. Only these models were seen to stop
+/// exactly then; the default model also stopped on text that needed
+/// translation, so every other model is asked to translate whatever the line
+/// says.
+pub(crate) fn anthropic_stops_at_same_language(model: &str) -> bool {
+    matches!(model, "claude-sonnet-5-5" | "claude-opus-5-5")
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ReasoningEffort {

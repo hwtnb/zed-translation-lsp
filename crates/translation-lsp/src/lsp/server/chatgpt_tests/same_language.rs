@@ -2,7 +2,10 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::{lsp::server::menu::RETRY, providers::prompt::SAME_LANGUAGE};
+use crate::{
+    lsp::server::menu::RETRY,
+    providers::prompt::{SAME_LANGUAGE, asks_for_languages},
+};
 
 /// A Rust comment of two Japanese lines, already in the target language.
 const COMMENT: &str = "// これは日本語の文です。\n// 二つ目の文です。\nfn main() {}\n";
@@ -115,7 +118,7 @@ async fn text_in_the_target_language_shows_nothing_until_an_explicit_request_or_
     assert_eq!(ready(&messages), 0);
     assert!(server.scheduler.translations().is_empty());
     assert_eq!(response_calls(&fixture), 1);
-    assert!(instructions(&fixture)[0].contains(SAME_LANGUAGE));
+    assert!(asks_for_languages(&instructions(&fixture)[0]));
     // Automatic requests reuse the result without sending the text again.
     assert_eq!(
         server
@@ -144,7 +147,7 @@ async fn text_in_the_target_language_shows_nothing_until_an_explicit_request_or_
         .unwrap();
     assert_eq!(ready(&received(&client)), 1);
     assert_eq!(response_calls(&fixture), 2);
-    assert!(!instructions(&fixture)[1].contains(SAME_LANGUAGE));
+    assert!(!asks_for_languages(&instructions(&fixture)[1]));
     let shown = server
         .queue(4.into(), target.clone(), hover(&target))
         .unwrap();
@@ -203,8 +206,8 @@ async fn join_after_sending(join: Vec<TranslationRequest>) -> (Vec<Message>, Opt
     assert!(server.scheduler.translations().is_empty());
     let sent = instructions(&fixture);
     assert_eq!(sent.len(), 2);
-    assert!(sent[0].contains(SAME_LANGUAGE));
-    assert!(!sent[1].contains(SAME_LANGUAGE));
+    assert!(asks_for_languages(&sent[0]));
+    assert!(!asks_for_languages(&sent[1]));
     let shown = server
         .queue(3.into(), target.clone(), hover(&target))
         .unwrap();
@@ -316,8 +319,8 @@ async fn an_explicit_request_that_joins_before_sending_sends_once_explicitly() {
     assert!(server.scheduler.translations().is_empty());
     let sent = instructions(&fixture);
     assert_eq!(sent.len(), 2);
-    assert!(sent[0].contains(SAME_LANGUAGE));
-    assert!(!sent[1].contains(SAME_LANGUAGE));
+    assert!(asks_for_languages(&sent[0]));
+    assert!(!asks_for_languages(&sent[1]));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -543,7 +546,7 @@ async fn a_card_retry_that_joins_after_sending_is_sent_again_despite_an_older_ta
         .finish(&connection, next(&completions).await)
         .unwrap();
     assert_eq!(response_calls(&fixture), 3);
-    assert!(!instructions(&fixture)[2].contains(SAME_LANGUAGE));
+    assert!(!asks_for_languages(&instructions(&fixture)[2]));
     assert!(
         server
             .cache

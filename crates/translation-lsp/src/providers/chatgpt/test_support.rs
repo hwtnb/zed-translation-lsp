@@ -770,7 +770,7 @@ async fn endpoint(
                 assert!(request["input"].as_array().unwrap().iter().all(|item| item["role"] != "system"));
                 assert!(request.get("text").is_none());
                 let mut text = state.translation.clone().unwrap_or_else(|| dictionary::synthetic_reply(request["input"][0]["content"].as_str().unwrap()));
-                if state.same_language && request["instructions"].as_str().unwrap().contains(prompt::SAME_LANGUAGE) { text = prompt::SAME_LANGUAGE.into(); }
+                if state.same_language && prompt::asks_for_languages(request["instructions"].as_str().unwrap()) { text = prompt::same_language_reply(&text); }
                 match state.response_mode.as_str() {
                     "empty_text" => text.clear(),
                     "output_limit" | "compact_output_limit" => text = "字".repeat(64*1024),

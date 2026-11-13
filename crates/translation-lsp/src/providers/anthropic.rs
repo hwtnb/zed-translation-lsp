@@ -13,7 +13,9 @@ use super::api_key::test_support::Terminal as SyntheticTerminal;
 
 #[cfg(test)]
 use crate::config::{AnthropicEffort, limits::TranslationLimits};
-use crate::config::{AnthropicModel, anthropic_thinking, limits::SizeLimit};
+use crate::config::{
+    AnthropicModel, anthropic_stops_at_same_language, anthropic_thinking, limits::SizeLimit,
+};
 
 use super::{
     AccountChange, AuthUiState, Capabilities, Intent, Interaction, Kind, Output, OutputOptions,
@@ -22,7 +24,8 @@ use super::{
     api_key::{KeyFile, KeyId, KeySpec, Terminal},
     dictionary,
     error::{Error, Service, credentials::CredentialError},
-    prompt, range_output_tokens, transport,
+    prompt::{self, Form},
+    range_output_tokens, transport,
 };
 
 const API: &str = "https://api.anthropic.com/v1";
@@ -283,7 +286,12 @@ impl TranslationProvider for AnthropicProvider {
         target_language: &str,
         expected: KeyId,
     ) -> Result<Translated<KeyId>, Error> {
-        let system = prompt::instructions(target_language, &self.source_language, intent);
+        let form = if anthropic_stops_at_same_language(&self.options.get(output).model) {
+            Form::Stops
+        } else {
+            Form::Translates
+        };
+        let system = prompt::instructions(target_language, &self.source_language, intent, form);
         let reply = self
             .send(
                 intent,
@@ -294,12 +302,14 @@ impl TranslationProvider for AnthropicProvider {
                 expected,
             )
             .await?;
-        Ok(prompt::translated(
+        prompt::translated(
             reply,
             intent,
             &self.source_language,
+            target_language,
+            SERVICE,
             expected,
-        ))
+        )
     }
 
     async fn look_up(

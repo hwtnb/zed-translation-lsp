@@ -22,7 +22,7 @@ use super::{
     admission::{Admission, Attempt},
     dictionary,
     error::{Error, ErrorKind, Service},
-    prompt,
+    prompt::{self, Form},
     responses::{self, Reading},
     transport,
 };
@@ -282,7 +282,8 @@ impl TranslationProvider for ChatGptProvider {
         target: &str,
         key: AccountKey,
     ) -> Result<Translated<AccountKey>, Error> {
-        let instructions = prompt::instructions(target, &self.source_language, intent);
+        let instructions =
+            prompt::instructions(target, &self.source_language, intent, Form::Translates);
         let (reply, context) = self
             .request(
                 instructions,
@@ -293,12 +294,14 @@ impl TranslationProvider for ChatGptProvider {
                 output,
             )
             .await?;
-        Ok(prompt::translated(
+        prompt::translated(
             reply,
             intent,
             &self.source_language,
+            target,
+            Service::OpenAi,
             context,
-        ))
+        )
     }
 
     async fn look_up(

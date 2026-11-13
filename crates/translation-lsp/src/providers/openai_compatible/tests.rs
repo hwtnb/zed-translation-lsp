@@ -313,19 +313,29 @@ fn base_url_without_an_origin_is_refused() {
     }
 }
 
-/// Only an automatic request asks for the mark of text already in the target
-/// language, and only its reply is read as that mark.
+/// Only an automatic request asks for the line of languages, and only its
+/// reply is read as text already in the target language when every code in
+/// that line is the target language.
 #[tokio::test(flavor = "current_thread")]
-async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
-    for (intent, kind, text) in [
-        (Intent::Automatic, Kind::SameLanguage, ""),
-        (Intent::Explicit, Kind::Translation, prompt::SAME_LANGUAGE),
+async fn only_automatic_requests_ask_for_and_read_the_line_of_languages() {
+    let same = prompt::same_language_reply("これは日本語です。");
+    let translation = "<languages>en</languages>\n訳文";
+    for (intent, reply, kind, text) in [
+        (Intent::Automatic, same.as_str(), Kind::SameLanguage, ""),
+        (Intent::Automatic, translation, Kind::Translation, "訳文"),
+        // An explicit request asks for no line, and its reply is read whole.
+        (
+            Intent::Explicit,
+            same.as_str(),
+            Kind::Translation,
+            same.as_str(),
+        ),
     ] {
         let fixture = HttpFixture::new().await;
         let keys = KeyDirectory::new();
         let provider =
             CompatibleProvider::synthetic(&format!("{}/api/v1/", fixture.base), &keys.path);
-        fixture.reply(Reply::stream(completed(prompt::SAME_LANGUAGE)));
+        fixture.reply(Reply::stream(completed(reply)));
         let translated = provider
             .translate(
                 intent,
@@ -340,12 +350,12 @@ async fn only_automatic_requests_ask_for_and_read_the_same_language_mark() {
         let records = fixture.records();
         let request = &records[0].body;
         let instructions = &request["messages"][0]["content"];
-        assert_eq!(instructions, &prompt::instructions("ja", "auto", intent));
         assert_eq!(
-            instructions
-                .as_str()
-                .unwrap()
-                .contains(prompt::SAME_LANGUAGE),
+            instructions,
+            &prompt::instructions("ja", "auto", intent, Form::Translates)
+        );
+        assert_eq!(
+            prompt::asks_for_languages(instructions.as_str().unwrap()),
             intent == Intent::Automatic
         );
     }

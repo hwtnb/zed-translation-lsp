@@ -92,14 +92,21 @@ relative to the repository root.
   neither does a provider without entries, such as DeepL or Google Cloud
   Translation.
 - The server never guesses a language. Automatic translations (comment Hover
-  and automatic selection) with `source_language` set to `auto` ask the model
-  to reply with only the mark in `providers/prompt.rs` when all the prose is
-  already in the target language; DeepL and Google Cloud Translation give the
-  language they detected in each segment (`providers/segments.rs`), which
-  decides without their translation, so a lost mark does not matter there. Such
-  text shows nothing, and the result is kept like a translation but used only
-  by automatic requests; it never removes or keeps out a translation. Explicit requests, dictionary lookups, and a set
-  `source_language` send the prompt unchanged, and explicit requests always
+  and automatic selection) with `source_language` set to `auto` and a
+  `target_language` code other than Chinese that names no script ask the model
+  to start its reply with a line of the language code of each sentence and to
+  write the translation after it. The server decides from the codes alone and
+  shows nothing when every code is the target language, whatever follows the
+  line; `claude-sonnet-5-5` and `claude-opus-5-5` of the Anthropic API are
+  asked to write only the mark in `providers/prompt.rs` and stop then. DeepL
+  and Google Cloud Translation give the language they detected in each segment
+  (`providers/segments.rs`), which decides without their translation, so a
+  lost mark does not matter there; a Chinese target or one that names a script
+  must be detected in full. Such text shows nothing, and the result is kept
+  like a translation but used only by automatic requests; it never removes or
+  keeps out a translation. Explicit requests, dictionary lookups, a set
+  `source_language`, and a target language name, Chinese code, or code that
+  names a script send the prompt unchanged, and explicit requests always
   translate: one that joined an automatic request already sent sends the text
   again as an explicit request, once.
 - Never publish partial, canceled, timed-out, or stale translations. Changes to

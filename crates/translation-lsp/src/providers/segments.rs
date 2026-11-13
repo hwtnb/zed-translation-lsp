@@ -7,6 +7,8 @@
 //! translations are put back after the marks that began their lines.
 use std::mem;
 
+use crate::config::language::names_script;
+
 /// How a service is told to leave a part of a segment untranslated.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Markup {
@@ -90,7 +92,8 @@ pub(crate) fn all_in(segments: &[Detected], target: &str, aliases: &[(&str, &str
 }
 
 /// Whether two language codes name the same language, by the language subtag
-/// alone, ignoring case and `-` or `_`: `pt-BR` is `PT`.
+/// alone, ignoring case and `-` or `_`: `pt-BR` is `PT`. Chinese codes, and
+/// codes of which either names a script, match only in full.
 fn same_language(a: &str, b: &str, aliases: &[(&str, &str)]) -> bool {
     let normal = |code: &str| {
         let code = code.replace('_', "-").to_ascii_lowercase();
@@ -104,10 +107,10 @@ fn same_language(a: &str, b: &str, aliases: &[(&str, &str)]) -> bool {
     if language(&a) != language(&b) {
         return false;
     }
-    // A reader of one Chinese script may not read the other, so Chinese codes
-    // match only in full: `zh-Hans` is not a detected `zh`, which names
-    // neither.
-    language(&a) != "zh" || a == b
+    // A reader of one script may not read another, so Chinese codes and codes
+    // that name a script match only in full: `zh-Hans` is not a detected `zh`,
+    // and `sr-Latn` is not a detected `sr`, which name neither.
+    (language(&a) != "zh" && !names_script(&a) && !names_script(&b)) || a == b
 }
 
 /// A text taken apart into segments, and the lines to put their translations

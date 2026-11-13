@@ -16,7 +16,8 @@ use super::{
     api_key::{KeyFile, KeyId, KeySpec, Origin, Terminal},
     dictionary,
     error::{Cause, Error, RemoteError, RemoteKind, Service, credentials::CredentialError},
-    prompt, range_output_tokens,
+    prompt::{self, Form},
+    range_output_tokens,
     responses::{self, Reading, request_id},
     transport::{self, safe},
 };
@@ -324,7 +325,12 @@ impl TranslationProvider for OpenAiApiProvider {
         target_language: &str,
         expected: KeyId,
     ) -> Result<Translated<KeyId>, Error> {
-        let instructions = prompt::instructions(target_language, &self.source_language, intent);
+        let instructions = prompt::instructions(
+            target_language,
+            &self.source_language,
+            intent,
+            Form::Translates,
+        );
         let reply = self
             .send(
                 intent,
@@ -335,12 +341,14 @@ impl TranslationProvider for OpenAiApiProvider {
                 expected,
             )
             .await?;
-        Ok(prompt::translated(
+        prompt::translated(
             reply,
             intent,
             &self.source_language,
+            target_language,
+            SERVICE,
             expected,
-        ))
+        )
     }
 
     async fn look_up(

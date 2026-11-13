@@ -18,7 +18,8 @@ use super::{
     api_key::{KeyFile, KeyId, KeySpec, Origin, Terminal},
     dictionary,
     error::{Error, Service, credentials::CredentialError},
-    prompt, range_output_tokens, transport,
+    prompt::{self, Form},
+    range_output_tokens, transport,
 };
 #[cfg(test)]
 use crate::config::limits::TranslationLimits;
@@ -275,7 +276,12 @@ impl TranslationProvider for CompatibleProvider {
         target_language: &str,
         expected: Option<KeyId>,
     ) -> Result<Translated<Option<KeyId>>, Error> {
-        let instructions = prompt::instructions(target_language, &self.source_language, intent);
+        let instructions = prompt::instructions(
+            target_language,
+            &self.source_language,
+            intent,
+            Form::Translates,
+        );
         let reply = self
             .send(
                 intent,
@@ -286,12 +292,14 @@ impl TranslationProvider for CompatibleProvider {
                 expected,
             )
             .await?;
-        Ok(prompt::translated(
+        prompt::translated(
             reply,
             intent,
             &self.source_language,
+            target_language,
+            SERVICE,
             expected,
-        ))
+        )
     }
 
     async fn look_up(

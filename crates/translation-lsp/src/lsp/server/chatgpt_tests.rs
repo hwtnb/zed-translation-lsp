@@ -2,11 +2,12 @@ use std::sync::atomic::Ordering;
 
 use super::*;
 use crate::providers::{
+    Intent,
     chatgpt::{
         auth::AccountKey,
         test_support::{Fixture, StreamTailGate},
     },
-    prompt,
+    prompt::{self, Form},
 };
 use serde_json::json;
 use tokio::{
@@ -314,18 +315,24 @@ async fn configured_auto_toggle_keeps_non_ja_manual_and_comment_translation() {
             .iter()
             .filter(|record| record.path == "/v1/responses")
             .collect();
-        assert_eq!(responses.len(), 2);
-        for response in responses {
-            let body: Value = serde_json::from_str(&response.body).unwrap();
-            assert!(
-                body["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with(
-                        "Translate the text inside the source_text tags into English (en). Source language: auto."
-                    )
-            );
-        }
+        // The comment and an automatic selection ask for a line of languages.
+        let mut sent: Vec<String> = responses
+            .iter()
+            .map(|response| {
+                let body: Value = serde_json::from_str(&response.body).unwrap();
+                body["instructions"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        let selection = if automatic {
+            Intent::Automatic
+        } else {
+            Intent::Explicit
+        };
+        let mut expected = [selection, Intent::Automatic]
+            .map(|intent| prompt::instructions("en", "auto", intent, Form::Translates));
+        sent.sort();
+        expected.sort();
+        assert_eq!(sent, expected);
         assert!(client.receiver.is_empty());
     }
 }
